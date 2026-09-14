@@ -20,10 +20,19 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK 37
+      - name: Install Android SDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;35.0.0"
+          echo "== installed platforms =="
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+          echo "== platform packages offered by sdkmanager =="
+          sdkmanager --list 2>/dev/null | grep -E 'platforms;android-3[5-9]' || true
+          echo "== build-tools packages offered by sdkmanager =="
+          sdkmanager --list 2>/dev/null | grep -E 'build-tools;3[4-9]' || true
+          # Keep going when the runner's sdkmanager does not offer API 37: the
+          # project sets android.builder.sdkDownload=true, so AGP can still
+          # resolve the compile SDK through its own downloader.
+          sdkmanager "platforms;android-37" "build-tools;35.0.0" || echo "SKIP: platforms;android-37 unavailable here, letting AGP resolve it"
 
       - name: Assemble Debug APK
         run: |
