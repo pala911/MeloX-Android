@@ -21,6 +21,8 @@ data class NeteasePlaybackSource(
     val bitrate: Int?,
     val format: String?,
     val quality: MusicQuality?,
+    /** True when the official API only handed back a free trial clip. */
+    val isPreview: Boolean = false,
 )
 
 class NeteasePlaybackUnavailableException(
@@ -112,6 +114,10 @@ class NeteaseQualityClient(
                     requested = requestedQuality,
                     actual = actual,
                 )
+                val isPreview = isPreviewClip(source)
+                if (isPreview) {
+                    Log.w(TAG, "Trial clip served: song=$songId level=${actual.apiLevel} bitrate=${source.optInt("br")}")
+                }
                 Log.i(
                     TAG,
                     "Playback quality resolved: song=$songId requested=${requestedQuality.apiLevel} candidate=${candidate.apiLevel} actual=${actual.apiLevel} bitrate=${source.optInt("br")}",
@@ -121,6 +127,7 @@ class NeteaseQualityClient(
                     bitrate = source.optInt("br").takeIf { it > 0 },
                     format = source.optString("type").takeIf(String::isNotBlank),
                     quality = actual,
+                    isPreview = isPreview,
                 )
             } catch (error: Throwable) {
                 lastError = error
@@ -150,6 +157,17 @@ class NeteaseQualityClient(
 
     internal companion object {
         const val TAG = "MeloXQuality"
+
+        /**
+         * Netease attaches `freeTrialInfo` to a source when the account is only
+         * allowed to hear a clip of it. Reading the field beats guessing from the
+         * duration: the clip length varies per song and the response carries no
+         * full-length reference to compare against.
+         */
+        internal fun isPreviewClip(data: JSONObject): Boolean {
+            val trial = data.opt("freeTrialInfo")
+            return trial != null && trial != JSONObject.NULL
+        }
 
         fun terminalPlaybackFailure(
             loggedIn: Boolean,

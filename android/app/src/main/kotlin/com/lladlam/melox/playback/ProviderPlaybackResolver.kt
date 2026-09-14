@@ -158,7 +158,19 @@ class ProviderPlaybackResolver(
                     )
                     ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
                 }
-                is PlaybackResolution.Preview -> ResolvedRequest(Uri.parse(resolution.url), emptyMap())
+                is PlaybackResolution.Preview -> {
+                    // Same membership case as Netease: the provider hands out a clip
+                    // instead of failing, so the URL on its own is not an answer. When
+                    // the third-party sources were held back for members-only use,
+                    // spend them now; otherwise they already ran earlier in this call.
+                    val replacement = if (allowExternalResolver && thirdPartySourcesEnabled() && thirdPartyOnlyForMembership()) {
+                        Log.i(TAG, "Provider served a trial clip source=${source.storageValue}, trying third-party")
+                        resolveThirdParty(track, quality, source)
+                    } else {
+                        null
+                    }
+                    replacement ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap())
+                }
                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
                 PlaybackResolution.SubscriptionRequired -> {
                     if (allowExternalResolver && thirdPartySourcesEnabled()) {

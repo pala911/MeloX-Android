@@ -91,10 +91,11 @@ class NeteasePlaybackResolver(
             val resolved = try {
                 // Third-party sources come first: LX scripts imported by the user,
                 // then CHKSZ, and only then the official Netease playback URL.
-                val thirdParty = if (thirdPartyOnlyForMembership()) {
-                    null
-                } else {
+                val thirdPartyTriedFirst = !thirdPartyOnlyForMembership()
+                val thirdParty = if (thirdPartyTriedFirst) {
                     resolveThirdParty(songId, quality, fallbackRequest)
+                } else {
+                    null
                 }
                 thirdParty ?: run {
                     val source = qualityClient.playbackSourceBlocking(
@@ -104,7 +105,18 @@ class NeteasePlaybackResolver(
                     if (quality == MusicQualityRuntime.selected) {
                         CrossProviderPlaybackRuntime.clear(songId)
                     }
-                    ResolvedRequest(Uri.parse(source.url))
+                    // A track that needs a membership the account does not have still
+                    // resolves to a short clip, so a URL alone is not an answer. If the
+                    // third-party sources were held back for members-only use, this is
+                    // the moment to spend them. Retrying them in the default order would
+                    // only double the latency of a stage that already failed.
+                    val replacement = if (source.isPreview && !thirdPartyTriedFirst) {
+                        Log.i(TAG, "Official source is a trial clip songId=$songId, trying third-party")
+                        resolveThirdParty(songId, quality, fallbackRequest)
+                    } else {
+                        null
+                    }
+                    replacement ?: ResolvedRequest(Uri.parse(source.url))
                 }
             } catch (error: NeteasePlaybackUnavailableException) {
                 val fallback = fallbackRequest

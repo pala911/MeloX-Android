@@ -412,7 +412,7 @@ fun ProviderServicesScreen(
             if (thirdPartySourcesEnabled) {
                 MeloXIosListRow(
                     title = "遇到会员歌曲时再调用",
-                    subtitle = "优先使用官方音源，仅在会员/版权受限时尝试第三方解析",
+                    subtitle = "优先使用官方音源，仅在会员/版权受限或官方只给试听片段时尝试第三方解析",
                     leading = { Spacer(Modifier.width(25.dp)) },
                     trailing = {
                         MeloXGlassToggle(
