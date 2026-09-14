@@ -1,6 +1,7 @@
 package com.lladlam.melox.playback
 
 import android.net.Uri
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
@@ -88,15 +89,14 @@ class NeteasePlaybackResolver(
             .getOrElse { throw IOException("Unable to resolve playback source", it.cause ?: it) }
         return try {
             val resolved = try {
-                val thirdParty = if (thirdPartySourcesEnabled() && !thirdPartyOnlyForMembership()) {
-                    runCatching { chkszPlayback?.resolve(songId, quality.toCommonTier()) }.getOrNull()
-                } else null
-                if (thirdParty != null) {
-                    ResolvedRequest(
-                        uri = Uri.parse(thirdParty.url),
-                        cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
-                    )
+                // Third-party sources come first: LX scripts imported by the user,
+                // then CHKSZ, and only then the official Netease playback URL.
+                val thirdParty = if (thirdPartyOnlyForMembership()) {
+                    null
                 } else {
+                    resolveThirdParty(songId, quality, fallbackRequest)
+                }
+                thirdParty ?: run {
                     val source = qualityClient.playbackSourceBlocking(
                         songId = songId,
                         requestedQuality = quality,
@@ -125,31 +125,9 @@ class NeteasePlaybackResolver(
                         expiresAtEpochMs = fallback.expiresAtEpochMs,
                         cacheIdentity = "${fallback.source.storageValue}:${fallback.resourceId}",
                     )
-                    } else {
-                        val chksz = if (thirdPartySourcesEnabled()) {
-                            chkszPlayback?.resolve(songId, quality.toCommonTier())
-                        } else null
-                        chksz?.let { result ->
-                            ResolvedRequest(
-                                uri = Uri.parse(result.url),
-                                cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
-                            )
-                        } ?: (if (thirdPartySourcesEnabled()) fallbackRequest?.let {
-                            lxUserPlayback?.resolve(
-                                songId = it.songId,
-                                title = it.title,
-                                artist = it.artist,
-                                durationMs = it.durationMs,
-                                quality = it.quality,
-                            )
-                        }?.let { result ->
-                            ResolvedRequest(
-                                uri = Uri.parse(result.url),
-                                headers = result.requestHeaders,
-                                cacheIdentity = "lx-user:${result.sourceId}",
-                            )
-                        } else null) ?: throw error
-                    }
+                } else {
+                    resolveThirdParty(songId, quality, fallbackRequest) ?: throw error
+                }
             }
             synchronized(cacheLock) { resolvedUris[key] = resolved }
             pending.complete(resolved)
@@ -223,6 +201,47 @@ class NeteasePlaybackResolver(
         val quality = MusicQuality.fromApiLevel(uri.getQueryParameter(QUALITY_QUERY))
             ?: MusicQualityRuntime.selected
         resolveSongRequest(songId, quality, fallbackRequest(uri, songId, quality))
+    }
+
+    /**
+     * Resolves through the user's third-party sources: LX Music scripts first, then
+     * CHKSZ. Returns null when third-party sources are off or both stages failed so
+     * the caller can fall back to the Netease native API.
+     */
+    private fun resolveThirdParty(
+        songId: Long,
+        quality: MusicQuality,
+        fallbackRequest: CrossProviderFallbackRequest?,
+    ): ResolvedRequest? {
+        if (!thirdPartySourcesEnabled()) return null
+        val lx = runCatching {
+            lxUserPlayback?.resolve(
+                songId = fallbackRequest?.songId ?: songId,
+                title = fallbackRequest?.title.orEmpty(),
+                artist = fallbackRequest?.artist.orEmpty(),
+                durationMs = fallbackRequest?.durationMs,
+                quality = quality.toCommonTier(),
+            )
+        }.onFailure { Log.w(TAG, "LX stage failed songId=$songId error=${it.javaClass.simpleName}") }
+            .getOrNull()
+        if (lx != null) {
+            Log.i(TAG, "Resolve success stage=lx script=${lx.sourceId}")
+            return ResolvedRequest(
+                uri = Uri.parse(lx.url),
+                headers = lx.requestHeaders,
+                cacheIdentity = "lx-user:${lx.sourceId}",
+            )
+        }
+        val chksz = runCatching { chkszPlayback?.resolve(songId, quality.toCommonTier()) }
+            .onFailure { Log.w(TAG, "CHKSZ stage failed songId=$songId error=${it.javaClass.simpleName}") }
+            .getOrNull()
+        return chksz?.let {
+            Log.i(TAG, "Resolve success stage=chksz")
+            ResolvedRequest(
+                uri = Uri.parse(it.url),
+                cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
+            )
+        }
     }
 
     private fun resolveKey(
@@ -320,6 +339,8 @@ class NeteasePlaybackResolver(
             .build()
     }
 }
+
+private const val TAG = "MeloXNeteaseResolve"
 
 private fun Long?.orZero(): Long = this ?: 0L
 

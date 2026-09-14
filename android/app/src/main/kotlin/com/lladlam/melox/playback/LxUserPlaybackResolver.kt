@@ -67,11 +67,16 @@ class LxUserPlaybackResolver(
             val result = runCatching {
                 LxUserRuntime().use { runtime ->
                     runtime.load(LxUserScript(script))
-                    runtime.callAction(action, song + mapOf(
-                        "source" to sourceCode,
-                        "type" to "128k",
-                        "musicInfo" to song,
-                    ))
+                    if (!runtime.supports(sourceCode, action)) {
+                        Log.d(TAG, "LX $action skipped script=${record.id} source=$sourceCode")
+                        null
+                    } else {
+                        runtime.callAction(action, song + mapOf(
+                            "source" to sourceCode,
+                            "type" to "128k",
+                            "musicInfo" to song,
+                        ))
+                    }
                 }
             }.onFailure { error ->
                 Log.w(TAG, "LX $action failed script=${record.id} detail=${error.safeLogMessage()}")
@@ -109,7 +114,14 @@ class LxUserPlaybackResolver(
         }
         val title = track.title
         val artist = track.artistText
-        if (title.isBlank() || artist.isBlank()) return null
+        // Legacy `melox://song/<id>` URIs may only carry a song id. Those can still be
+        // resolved through the `wy` source, but matching by name across every source
+        // would be guesswork, so only `wy` is attempted in that case.
+        val candidateSources = if (title.isBlank() || artist.isBlank()) {
+            listOf("wy")
+        } else {
+            sourceCode?.let(::listOf) ?: listOf("kw", "kg", "tx", "wy", "mg")
+        }
         val resourceId = track.id.value
         val lxQuality = quality.toLxQuality()
         val song = standardMusicInfo(track, sourceCode, lxQuality)
@@ -137,20 +149,24 @@ class LxUserPlaybackResolver(
                 LxUserRuntime().use { runtime ->
                     runtime.load(LxUserScript(script))
                     phase = "request"
-                    (sourceCode?.let(::listOf) ?: listOf("kw", "kg", "tx", "wy", "mg")).asSequence()
+                    candidateSources.asSequence()
+                        .filter { source -> runtime.supports(source, "musicUrl") }
                         .flatMap { source ->
                             lxQualityFallbacks(lxQuality).asSequence().map { requestedQuality -> source to requestedQuality }
                         }
                         .mapNotNull { (source, requestedQuality) ->
                             val sourceQuality = runtime.qualityFor(source, requestedQuality)
+                            // Scripts read `musicInfo.source`, so the nested music info
+                            // has to describe the source currently being tried.
+                            val sourceSong = standardMusicInfo(track, source, lxQuality)
                             Log.d(TAG, "LX candidate script=${record.id} source=$source requested=$requestedQuality actual=$sourceQuality")
                             runCatching {
                                 runtime.callAction(
                                     "musicUrl",
-                                    song + mapOf(
+                                    sourceSong + mapOf(
                                         "source" to source,
                                         "type" to sourceQuality,
-                                        "musicInfo" to song,
+                                        "musicInfo" to sourceSong,
                                     ),
                                 )
                             }.onFailure {
@@ -178,7 +194,7 @@ class LxUserPlaybackResolver(
                 )
                     }
         }
-        if (track.id.source != MusicSource.Netease) {
+        if (track.id.source != MusicSource.Netease && title.isNotBlank()) {
             resolveViaNeteaseMatch(track, quality)?.let { return it }
         }
         Log.i(TAG, "LX unresolved source=${track.id.source.storageValue} scripts=${LxUserSourceStore.list(appContext).size}")

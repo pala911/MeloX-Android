@@ -45,6 +45,8 @@ import com.lladlam.melox.core.music.provider.MusicProviderSelectionStore
 import com.lladlam.melox.core.music.provider.ProviderAccountManager
 import com.lladlam.melox.core.music.provider.ThirdPartyMusicSourceConsentStore
 import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
+import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
+import com.lladlam.melox.core.provider.lxuser.LxUserScript
 import com.lladlam.melox.core.provider.lxuser.ChkszApiKeyStore
 import com.lladlam.melox.core.provider.jellyfin.JellyfinApiClient
 import com.lladlam.melox.core.provider.jellyfin.JellyfinSessionStore
@@ -163,6 +165,7 @@ fun ProviderServicesScreen(
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             val failures = mutableListOf<String>()
+            val reports = mutableListOf<String>()
             var imported = 0
             uris.forEachIndexed { index, uri ->
                 runCatching {
@@ -170,19 +173,24 @@ fun ProviderServicesScreen(
                         context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                             ?: error("无法读取音乐源文件")
                     }
-                    withContext(Dispatchers.IO) { LxUserSourceStore.import(context, script) }
-                }.onSuccess {
+                    withContext(Dispatchers.IO) {
+                        LxUserSourceStore.import(context, script)
+                        describeLxSource(script)
+                    }
+                }.onSuccess { report ->
                     imported++
+                    reports += report
                 }.onFailure {
                     failures += "第 ${index + 1} 个文件：${it.message ?: "导入失败"}"
                 }
             }
             lxSources = LxUserSourceStore.list(context)
-            lxImportError = when {
-                failures.isEmpty() -> "已导入 $imported 个音乐源"
-                imported > 0 -> "已导入 $imported 个，失败 ${failures.size} 个\n${failures.joinToString("\n")}"
-                else -> failures.joinToString("\n")
-            }
+            lxImportError = buildList {
+                if (imported > 0) add("已导入 $imported 个音乐源")
+                addAll(reports)
+                if (failures.isNotEmpty() && imported > 0) add("失败 ${failures.size} 个")
+                addAll(failures)
+            }.joinToString("\n")
             showLxImportDialog = true
         }
     }
@@ -595,11 +603,14 @@ fun ProviderServicesScreen(
                                         response.body.string()
                                     }
                                 }
-                                withContext(Dispatchers.IO) { LxUserSourceStore.import(context, script) }
-                            }.onSuccess {
+                                withContext(Dispatchers.IO) {
+                                    LxUserSourceStore.import(context, script)
+                                    describeLxSource(script)
+                                }
+                            }.onSuccess { report ->
                                 lxSources = LxUserSourceStore.list(context)
                                 lxImportUrl = ""
-                                showLxImportDialog = false
+                                lxImportError = "导入成功 · $report"
                             }.onFailure { lxImportError = it.message ?: "导入音乐源失败" }
                         }
                     },
@@ -674,6 +685,30 @@ fun ProviderServicesScreen(
             }
         }
     }
+}
+
+/**
+ * Loads an imported script once so the user immediately sees whether the runtime
+ * accepted it and which platforms and qualities it announced.
+ */
+private fun describeLxSource(script: String): String {
+    val model = LxUserScript(script)
+    val name = model.metadata.name.orEmpty().ifBlank { "未命名音乐源" }
+    return runCatching {
+        LxUserRuntime().use { runtime ->
+            runtime.load(model)
+            val sources = runtime.declaredSources()
+            if (sources.isEmpty()) {
+                "$name：已导入，但脚本没有声明支持的平台"
+            } else {
+                val detail = sources.entries.joinToString("、") { (source, capability) ->
+                    val qualities = capability.qualitys.filter { it.isNotBlank() }
+                    if (qualities.isEmpty()) source else "$source(${qualities.joinToString("/")})"
+                }
+                "$name：支持 $detail"
+            }
+        }
+    }.getOrElse { "$name：已导入，但脚本无法初始化（${it.message ?: "运行时加载失败"}）" }
 }
 
 @Composable

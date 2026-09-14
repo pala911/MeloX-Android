@@ -169,10 +169,12 @@ class ProviderPlaybackResolver(
                     }
                 }
                 PlaybackResolution.RegionRestricted -> throw IOException("${provider.displayName} 当前地区不可播放")
-                PlaybackResolution.CopyrightRestricted -> throw IOException("${provider.displayName} 当前版权不可播放")
-                is PlaybackResolution.Unavailable -> throw IOException(
-                    resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
-                )
+                PlaybackResolution.CopyrightRestricted -> resolveThirdParty(track, quality, source)
+                    ?: throw IOException("${provider.displayName} 当前版权不可播放")
+                is PlaybackResolution.Unavailable -> resolveThirdParty(track, quality, source)
+                    ?: throw IOException(
+                        resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
+                    )
             }
             synchronized(cacheLock) { resolvedUris[key] = result }
             pending.complete(result)
@@ -190,6 +192,7 @@ class ProviderPlaybackResolver(
         quality: AudioQualityTier,
         source: MusicSource,
     ): ResolvedRequest? {
+        if (!thirdPartySourcesEnabled()) return null
         val lx = runCatching { lxUserPlayback?.resolve(track, quality) }
             .onFailure { Log.w(TAG, "LX membership fallback failed source=${source.storageValue}", it) }
             .getOrNull()
