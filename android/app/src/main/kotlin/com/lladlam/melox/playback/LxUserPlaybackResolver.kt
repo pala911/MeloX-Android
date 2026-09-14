@@ -328,7 +328,6 @@ class LxUserPlaybackResolver(
     }
 
     private companion object {
-        const val TAG = "MeloXThirdParty"
         /** Sources to try, in order, for a track whose own source has no match. */
         val LX_SOURCES = listOf("wy", "kw", "kg", "tx", "mg")
         /** Wall-clock budget for one LX resolve; past this we stop burning the user's waiting time. */
@@ -337,12 +336,15 @@ class LxUserPlaybackResolver(
         const val FALLBACK_BUDGET_MS = 5_000L
         /** Public LX endpoints rate-limit hard; a short pause is cheaper than a 429. */
         const val MIN_REQUEST_GAP_MS = 400L
-        /** At most this many CDN probes per resolve; each one is a single ranged GET. */
-        const val MAX_PROBES = 4
-        /** Give up on a probe after this long so a slow CDN never blocks playback. */
-        const val PROBE_TIMEOUT_MS = 3500
     }
 }
+
+/** Log tag shared by the resolver class and its file-level helpers. */
+private const val TAG = "MeloXThirdParty"
+/** At most this many CDN probes per resolve; each one is a single ranged GET. */
+private const val MAX_PROBES = 4
+/** Give up on a probe after this long so a slow CDN never blocks playback. */
+private const val PROBE_TIMEOUT_MS = 3500
 
 /**
  * Coarse bucket for "how good is this file really", shared by the requested
