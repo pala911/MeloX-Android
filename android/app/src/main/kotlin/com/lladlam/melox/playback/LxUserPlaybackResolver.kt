@@ -361,15 +361,24 @@ class LxUserPlaybackResolver(
          */
         val LX_SOURCES = listOf("wy", "kg", "tx", "mg")
         /**
-         * Hard cap on one LX resolve. The first sources answer in 0.4-1.5 s, so four
-         * seconds is generous for a working source while keeping a broken one from
-         * parking the user in front of a spinner.
+         * Hard cap while nothing has been found yet. One source costs 1-2 s (the
+         * scripts also hit a per-song telemetry endpoint that occasionally times
+         * out at 3 s), so a short cap here silently throws away lossless links that
+         * a slower platform would have produced - measured as 13 failed resolutions
+         * out of 34 at a 4 s cap. This only applies when the official answer was
+         * rejected, and the user is served the official stream if we give up, so
+         * looking a little longer costs nothing but the fallback.
          */
-        const val RESOLVE_BUDGET_MS = 4_000L
+        const val RESOLVE_BUDGET_MS = 8_000L
         /** Shorter cap once a playable link exists and we are only chasing a better tier. */
-        const val FALLBACK_BUDGET_MS = 2_000L
-        /** Public LX endpoints rate-limit hard; a short pause is cheaper than a 429. */
-        const val MIN_REQUEST_GAP_MS = 400L
+        const val FALLBACK_BUDGET_MS = 3_000L
+        /**
+         * Pause between actions. Each action fires two to three upstream requests of
+         * its own, so the sources' own "no more than 4 requests per 2 s" rule needs a
+         * wider gap than the action count suggests; at 400 ms the mirror answered
+         * `429 请求过于频繁` and the affected songs fell back to the official stream.
+         */
+        const val MIN_REQUEST_GAP_MS = 800L
     }
 }
 
