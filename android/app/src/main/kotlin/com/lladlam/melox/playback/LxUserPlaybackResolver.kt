@@ -150,19 +150,26 @@ class LxUserPlaybackResolver(
                 LxUserRuntime().use { runtime ->
                     runtime.load(LxUserScript(script))
                     phase = "request"
-                    val deadline = android.os.SystemClock.elapsedRealtime() + RESOLVE_BUDGET_MS
+                    val start = android.os.SystemClock.elapsedRealtime()
+                    val deadline = start + RESOLVE_BUDGET_MS
                     var lastRequestAt = 0L
                     // Quality first, source second. Every source gets a chance at the
                     // best quality before anything settles for a lower one; iterating
                     // the other way round let the first source's 128k link win over
                     // another source's lossless one.
+                    var bestUrl: String? = null
+                    var bestRank = -1
                     for (requestedQuality in lxQualityFallbacks(lxQuality)) {
+                        val need = lxQualityRank(requestedQuality)
                         for (source in candidateSources) {
                             if (!runtime.supports(source, "musicUrl")) continue
                             val now = android.os.SystemClock.elapsedRealtime()
-                            if (now > deadline) {
-                                Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source")
-                                return@use null
+                            // Once something playable is in hand, stop hunting much
+                            // sooner: the user is waiting on a song, not on a tier.
+                            val softDeadline = if (bestUrl == null) deadline else start + FALLBACK_BUDGET_MS
+                            if (now > softDeadline) {
+                                Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source best=$bestRank")
+                                return@use bestUrl?.let { LxUserPlaybackResult(record.id, it) }
                             }
                             // Most public LX endpoints throttle aggressively (the bundled
                             // scripts themselves ask for "no more than 4 requests per 2
@@ -193,11 +200,30 @@ class LxUserPlaybackResolver(
                                 is Map<*, *> -> value["url"]?.toString()
                                 else -> null
                             }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-                            Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality url=${url != null}")
-                            if (url != null) return@use LxUserPlaybackResult(record.id, url)
+                            // Most scripts hand back the raw API body, so the tier that
+                            // actually came back is usually one of these fields.
+                            val reported = (value as? Map<*, *>)?.let { body ->
+                                sequenceOf("quality", "type", "level", "br", "bitrate")
+                                    .mapNotNull { body[it]?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+                                    .firstOrNull()
+                            }
+                            val rank = lxQualityRank(reported)
+                            Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality " +
+                                "url=${url != null} reported=$reported rank=$rank need=$need")
+                            if (url == null) continue
+                            // Several public mirrors accept any quality you ask for and
+                            // quietly serve 128k, so the requested tier is not proof of
+                            // what will play. Only accept a link that is at least as good
+                            // as the tier being tried, and keep the best miss around in
+                            // case nothing reaches the bar.
+                            if (rank < 0 || rank >= need) return@use LxUserPlaybackResult(record.id, url)
+                            if (rank > bestRank) {
+                                bestRank = rank
+                                bestUrl = url
+                            }
                         }
                     }
-                    null
+                    bestUrl?.let { LxUserPlaybackResult(record.id, it) }
                 }
             }.onFailure { error ->
                 Log.w(
@@ -292,8 +318,39 @@ class LxUserPlaybackResolver(
         val LX_SOURCES = listOf("wy", "kw", "kg", "tx", "mg")
         /** Wall-clock budget for one LX resolve; past this we stop burning the user's waiting time. */
         const val RESOLVE_BUDGET_MS = 10_000L
+        /** Shorter budget used once a playable link exists and we are only chasing a better tier. */
+        const val FALLBACK_BUDGET_MS = 5_000L
         /** Public LX endpoints rate-limit hard; a short pause is cheaper than a 429. */
         const val MIN_REQUEST_GAP_MS = 400L
+    }
+}
+
+/**
+ * Coarse bucket for "how good is this file really", shared by the requested
+ * quality and whatever a source reports back: 1 = 128k, 2 = 320k,
+ * 3 = lossless, 4 = hi-res. `-1` means "no idea", which callers treat as
+ * acceptable so an unknown-but-playable link is never thrown away.
+ */
+private fun lxQualityRank(raw: String?): Int {
+    val value = raw?.lowercase(Locale.ROOT) ?: return -1
+    if (value.isEmpty() || value == "null" || value == "undefined") return -1
+    if (value.all(Char::isDigit)) {
+        val bitrate = value.toLongOrNull() ?: return -1
+        return when {
+            bitrate < 200_000L -> 1
+            bitrate < 500_000L -> 2
+            bitrate < 1_000_000L -> 3
+            else -> 4
+        }
+    }
+    return when (value) {
+        "128k", "128", "standard", "l", "pq" -> 1
+        "320k", "320", "exhigh", "high", "h", "hq" -> 2
+        "flac", "lossless", "sq", "999", "999k" -> 3
+        "flac24bit", "hires", "hi-res", "hr", "atmos", "atmos_plus",
+        "master", "sky", "jyeffect", "jymaster", "zq", "super",
+        -> 4
+        else -> -1
     }
 }
 
