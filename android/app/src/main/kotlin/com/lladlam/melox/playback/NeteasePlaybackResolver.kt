@@ -105,13 +105,20 @@ class NeteasePlaybackResolver(
                     if (quality == MusicQualityRuntime.selected) {
                         CrossProviderPlaybackRuntime.clear(songId)
                     }
-                    // A track that needs a membership the account does not have still
-                    // resolves to a short clip, so a URL alone is not an answer. If the
-                    // third-party sources were held back for members-only use, this is
-                    // the moment to spend them. Retrying them in the default order would
-                    // only double the latency of a stage that already failed.
-                    val replacement = if (source.isPreview && !thirdPartyTriedFirst) {
-                        Log.i(TAG, "Official source is a trial clip songId=$songId, trying third-party")
+                    // Two reasons to spend the third-party sources that were held
+                    // back: the official answer is only a short clip, or it is a
+                    // complete track below the quality the user picked (a non-VIP
+                    // account asking for master quality is served 128k). Retrying
+                    // them in the default order would only double the latency of a
+                    // stage that already failed.
+                    val actual = source.quality
+                    val belowRequested = actual == null || actual.ordinal < quality.ordinal
+                    val replacement = if (!thirdPartyTriedFirst && (source.isPreview || belowRequested)) {
+                        Log.i(
+                            TAG,
+                            "Official source insufficient songId=$songId preview=${source.isPreview} " +
+                                "actual=${actual?.apiLevel} requested=${quality.apiLevel}, trying third-party",
+                        )
                         resolveThirdParty(songId, quality, fallbackRequest)
                     } else {
                         null

@@ -14,7 +14,6 @@ import com.lladlam.melox.core.lyrics.LyricsDocument
 import com.lladlam.melox.core.music.model.MusicArtistRef
 import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.model.ProviderTrackMetadata
-import java.io.IOException
 import java.util.Locale
 
 internal data class LxUserPlaybackResult(
@@ -120,7 +119,9 @@ class LxUserPlaybackResolver(
         val candidateSources = if (title.isBlank() || artist.isBlank()) {
             listOf("wy")
         } else {
-            sourceCode?.let(::listOf) ?: listOf("kw", "kg", "tx", "wy", "mg")
+            // The track's own source is the only one that can be matched by id, so
+            // it is worth spending before any name-based lookup.
+            listOfNotNull(sourceCode) + LX_SOURCES.filterNot { it == sourceCode }
         }
         val resourceId = track.id.value
         val lxQuality = quality.toLxQuality()
@@ -145,22 +146,37 @@ class LxUserPlaybackResolver(
         for (record in LxUserSourceStore.list(appContext)) {
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             var phase = "load"
-                    runCatching {
+            val result: LxUserPlaybackResult? = runCatching {
                 LxUserRuntime().use { runtime ->
                     runtime.load(LxUserScript(script))
                     phase = "request"
-                    candidateSources.asSequence()
-                        .filter { source -> runtime.supports(source, "musicUrl") }
-                        .flatMap { source ->
-                            lxQualityFallbacks(lxQuality).asSequence().map { requestedQuality -> source to requestedQuality }
-                        }
-                        .mapNotNull { (source, requestedQuality) ->
+                    val deadline = android.os.SystemClock.elapsedRealtime() + RESOLVE_BUDGET_MS
+                    var lastRequestAt = 0L
+                    // Quality first, source second. Every source gets a chance at the
+                    // best quality before anything settles for a lower one; iterating
+                    // the other way round let the first source's 128k link win over
+                    // another source's lossless one.
+                    for (requestedQuality in lxQualityFallbacks(lxQuality)) {
+                        for (source in candidateSources) {
+                            if (!runtime.supports(source, "musicUrl")) continue
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now > deadline) {
+                                Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source")
+                                return@use null
+                            }
+                            // Most public LX endpoints throttle aggressively (the bundled
+                            // scripts themselves ask for "no more than 4 requests per 2
+                            // seconds"), and a 429 costs far more time than the pause.
+                            val gap = MIN_REQUEST_GAP_MS - (now - lastRequestAt)
+                            if (lastRequestAt > 0L && gap > 0L) Thread.sleep(gap)
+                            lastRequestAt = android.os.SystemClock.elapsedRealtime()
                             val sourceQuality = runtime.qualityFor(source, requestedQuality)
-                            // Scripts read `musicInfo.source`, so the nested music info
-                            // has to describe the source currently being tried.
-                            val sourceSong = standardMusicInfo(track, source, lxQuality)
+                            // Scripts read `musicInfo.source` and `musicInfo.quality`, so
+                            // the nested music info has to describe the source and the
+                            // quality currently being tried - not the top one.
+                            val sourceSong = standardMusicInfo(track, source, requestedQuality)
                             Log.d(TAG, "LX candidate script=${record.id} source=$source requested=$requestedQuality actual=$sourceQuality")
-                            runCatching {
+                            val value = runCatching {
                                 runtime.callAction(
                                     "musicUrl",
                                     sourceSong + mapOf(
@@ -171,28 +187,30 @@ class LxUserPlaybackResolver(
                                 )
                             }.onFailure {
                                 Log.w(TAG, "LX candidate failed script=${record.id} source=$source quality=$sourceQuality detail=${it.safeLogMessage()}")
-                            }.getOrNull()?.let { value ->
-                                val url = when (value) {
-                                    is String -> value
-                                    is Map<*, *> -> value["url"]?.toString()
-                                    else -> null
-                                }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-                                Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality url=${url != null}")
-                                url?.let { LxUserPlaybackResult(record.id, it) }
-                            }
+                            }.getOrNull()
+                            val url = when (value) {
+                                is String -> value
+                                is Map<*, *> -> value["url"]?.toString()
+                                else -> null
+                            }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                            Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality url=${url != null}")
+                            if (url != null) return@use LxUserPlaybackResult(record.id, url)
                         }
-                        .firstOrNull() ?: throw IOException("LX 音乐源没有返回可播放链接")
+                    }
+                    null
                 }
-                    }.onSuccess {
-                Log.i(TAG, "LX resolved source=${track.id.source.storageValue} script=${record.id}")
-                return it
-                    }.onFailure { error ->
+            }.onFailure { error ->
                 Log.w(
                     TAG,
                     "LX failed source=${track.id.source.storageValue} script=${record.id} phase=$phase " +
                         "error=${error.javaClass.simpleName} detail=${error.safeLogMessage()}",
                 )
-                    }
+            }.getOrNull()
+            if (result != null) {
+                Log.i(TAG, "LX resolved source=${track.id.source.storageValue} script=${record.id}")
+                return result
+            }
+            Log.i(TAG, "LX exhausted source=${track.id.source.storageValue} script=${record.id}")
         }
         if (track.id.source != MusicSource.Netease && title.isNotBlank()) {
             resolveViaNeteaseMatch(track, quality)?.let { return it }
@@ -236,7 +254,6 @@ class LxUserPlaybackResolver(
     }
 
     private fun resolveNeteaseTrack(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
-        val song = standardMusicInfo(track, "wy", quality.toLxQuality())
         for (record in LxUserSourceStore.list(appContext)) {
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             val result = runCatching {
@@ -244,6 +261,10 @@ class LxUserPlaybackResolver(
                     runtime.load(LxUserScript(script))
                     lxQualityFallbacks(quality.toLxQuality()).asSequence().mapNotNull { requestedQuality ->
                         val sourceQuality = runtime.qualityFor("wy", requestedQuality)
+                        // Same rule as the main loop: the nested music info must carry
+                        // the quality being tried, otherwise the script keeps asking
+                        // for the top quality and the fallbacks never happen.
+                        val song = standardMusicInfo(track, "wy", requestedQuality)
                         val response = runCatching {
                             runtime.callAction("musicUrl", song + mapOf(
                                 "source" to "wy",
@@ -267,6 +288,12 @@ class LxUserPlaybackResolver(
 
     private companion object {
         const val TAG = "MeloXThirdParty"
+        /** Sources to try, in order, for a track whose own source has no match. */
+        val LX_SOURCES = listOf("wy", "kw", "kg", "tx", "mg")
+        /** Wall-clock budget for one LX resolve; past this we stop burning the user's waiting time. */
+        const val RESOLVE_BUDGET_MS = 10_000L
+        /** Public LX endpoints rate-limit hard; a short pause is cheaper than a 429. */
+        const val MIN_REQUEST_GAP_MS = 400L
     }
 }
 
