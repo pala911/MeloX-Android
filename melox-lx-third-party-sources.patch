@@ -1,0 +1,1819 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -128,9 +128,11 @@
+ ### 第三方音乐源
+ 
+ - 可在“音乐服务”中单独开启第三方音乐源设置并阅读专用协议；该功能完全由本地开关控制，不属于云控范围。
+-- 支持导入 LX Music 兼容的 JavaScript 音乐源，并在受限 QuickJS 运行时中解析播放地址。
++- 支持导入 LX Music（移动端自定义音源 v2 接口：`lx.on('request')` / `lx.send('inited')` / `lx.request` / `lx.utils`）的 JavaScript 音乐源，在 QuickJS 运行时中解析播放地址。
+ - 可配置 CHKSZ 个人 API Key，优先解析网易云、QQ音乐和酷狗歌曲；配置前需要前往 `api.chksz.com` 注册，目前仅支持 LinuxDo 用户注册。
+-- 第三方解析失败时才回退到对应平台的原生播放；歌词仍由 MeloX 自己的歌词路线处理。
++- 开启第三方音乐源后，播放解析顺序为 **导入的 LX 音乐源 → CHKSZ → 平台原生**；三者都失败才会报不可播放。歌词仍由 MeloX 自己的歌词路线处理。
++- 官方接口对没有对应会员权益的歌曲会返回试听片段（response 里带 `freeTrialInfo`）。MeloX 会识别这种情况并改用第三方音源，不再只播试听片段；第三方也拿不到时才退回试听。
++- 若只想在会员/版权受限歌曲上使用第三方源，可打开“遇到会员歌曲时再调用”，此时恢复为平台原生优先，但官方只给试听片段时仍会尝试第三方。
+ 
+ ## 平台范围
+ 
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserRuntime.kt b/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserRuntime.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserRuntime.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserRuntime.kt
+@@ -29,12 +29,25 @@
+ import org.json.JSONObject
+ 
+ private const val HTTP_TIMEOUT_MS = 13_000L
++/**
++ * Default ceiling for one action when the caller does not set one. Sources fire a
++ * telemetry request before the real one, so this has to cover two round trips.
++ */
++private const val ACTION_DRAIN_TIMEOUT_MS = 12_000L
++private const val JSON_MEDIA_TYPE = "application/json; charset=utf-8"
++private const val TEXT_MEDIA_TYPE = "text/plain; charset=utf-8"
+ 
+ data class LxUserScript(
+     val source: String,
+     val metadata: LxUserScriptMetadata = LxUserScriptMetadata.parse(source),
+ )
+ 
++/** What a script declares through `lx.send(lx.EVENT_NAMES.inited, info)`. */
++data class LxUserSourceCapability(
++    val actions: List<String> = emptyList(),
++    val qualitys: List<String> = emptyList(),
++)
++
+ /**
+  * Self-contained LX Music user API runtime.
+  *
+@@ -54,6 +67,7 @@
+     private val context = createContext()
+     private val requestHandlers = mutableListOf<JSFunction>()
+     private val sourceQualities = mutableMapOf<String, List<String>>()
++    private val sourceCapabilities = mutableMapOf<String, LxUserSourceCapability>()
+     private val timers = ConcurrentHashMap<Int, Pair<Long, JSCallFunction>>()
+     private var nextTimerId = 1
+     private val closed = AtomicBoolean(false)
+@@ -90,12 +104,16 @@
+         // v5 sources commonly fetch remote configuration before registering the
+         // request listener. Drain that initialization before the first action.
+         drainScriptInitialization()
+-        Log.d(TAG, "load done name=${info.name.orEmpty()} handlers=${requestHandlers.size} qualities=${sourceQualities}")
++        Log.d(TAG, "load done name=${info.name.orEmpty()} handlers=${requestHandlers.size} sources=${sourceCapabilities}")
+         return info
+     }
+ 
+     /** Invokes a V5 action (musicUrl, lyric, or pic) and returns its raw result. */
+-    fun callAction(action: String, args: Map<String, Any?>): Any? {
++    fun callAction(
++        action: String,
++        args: Map<String, Any?>,
++        timeoutMs: Long = ACTION_DRAIN_TIMEOUT_MS,
++    ): Any? {
+         require(action == "musicUrl" || action == "lyric" || action == "pic") {
+             "Unsupported LX action: $action"
+         }
+@@ -109,8 +127,16 @@
+         val errorRef = AtomicReference<Throwable?>()
+         val done = CountDownLatch(1)
+ 
++        // When the runtime is reused across songs it can still be holding the reply to
++        // an earlier action whose drain budget ran out - the HTTP thread keeps going
++        // after the caller gives up. Dropping it here stops a late answer from being
++        // handed to this action.
++        pendingHttpResponses.clear()
++
+         val requestArg = createJsObject(mapOf("source" to source, "action" to action, "info" to info))
+-        val handler = requestHandlers.firstOrNull()
++        // LX keeps a single request handler: a second lx.on('request') replaces the
++        // first one. Use the newest registration so re-registering scripts win.
++        val handler = requestHandlers.lastOrNull()
+         Log.d(TAG, "action start source=$source quality=${args["type"]} handler=${handler != null} export=${handler == null}")
+         val returned = if (handler != null) {
+             handler.call(requestArg)
+@@ -136,7 +162,7 @@
+             done.countDown()
+         })
+ 
+-        drainUntil(done)
++        drainUntil(done, timeoutMs)
+         errorRef.get()?.let { throw it }
+         val resolved = resultRef.get()
+         if (action != "musicUrl") {
+@@ -160,6 +186,19 @@
+             ?: requested
+     }
+ 
++    /** Sources the script announced through `lx.send('inited', ...)`. */
++    fun declaredSources(): Map<String, LxUserSourceCapability> = sourceCapabilities.toMap()
++
++    /**
++     * Whether the script announced support for [action] on [source]. Scripts that
++     * never announce anything are treated as supporting everything so that older
++     * sources keep working.
++     */
++    fun supports(source: String, action: String): Boolean {
++        val capability = sourceCapabilities[source] ?: return true
++        return capability.actions.isEmpty() || action in capability.actions
++    }
++
+     fun sentEvents(): List<Pair<String, Any?>> = emptyList()
+ 
+     private fun installGlobals() {
+@@ -194,7 +233,6 @@
+             val options = args.getOrNull(1)
+             val callback = args.getOrNull(2) as? JSFunction
+             executeHttpRequest(url, options, callback)
+-            null
+         })
+         lx.setProperty("on", JSCallFunction { args ->
+             val event = args.getOrNull(0)?.toString().orEmpty()
+@@ -205,7 +243,10 @@
+         })
+         lx.setProperty("send", JSCallFunction { args ->
+             val event = args.firstOrNull()?.toString().orEmpty()
+-            if (event == "inited") recordSourceQualities(args.getOrNull(1))
++            when (event) {
++                "inited" -> recordSourceInfo(args.getOrNull(1))
++                "updateAlert" -> Log.i(TAG, "event updateAlert received")
++            }
+             Log.d(TAG, "event send name=$event")
+             context.evaluate("Promise.resolve()")
+         })
+@@ -215,29 +256,135 @@
+         lx.setProperty("env", "mobile")
+         context.globalObject.setProperty("lx", lx)
+ 
++        installBuiltins()
+         lockdownSandbox()
+     }
+ 
+-    private fun lockdownSandbox() {
++    /**
++     * Adds the JS built-ins that QuickJS does not always ship but that LX Music
++     * user sources rely on: UTF-8 codecs, base64 helpers and `fetch`.
++     */
++    private fun installBuiltins() {
+         context.evaluate(
+             """
+             (function() {
+               'use strict'
+-              const noop = function() {}
+-              // Disable dynamic code execution.
+-              globalThis.eval = function() { throw new Error('eval is not available') }
+-              const proxyFunctionConstructor = new Proxy(Function.prototype.constructor, {
+-                apply() { throw new Error('Dynamic code execution is not allowed.') },
+-                construct() { throw new Error('Dynamic code execution is not allowed.') }
+-              })
+-              Object.defineProperty(Function.prototype, 'constructor', {
+-                value: proxyFunctionConstructor,
+-                writable: false,
+-                configurable: false,
+-                enumerable: false
+-              })
+-              globalThis.Function = proxyFunctionConstructor
++              var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
++              function utf8Bytes(input) {
++                var text = String(input == null ? '' : input)
++                var out = []
++                for (var i = 0; i < text.length; i++) {
++                  var code = text.charCodeAt(i)
++                  if (code < 0x80) { out.push(code) }
++                  else if (code < 0x800) { out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f)) }
++                  else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
++                    var next = text.charCodeAt(++i)
++                    var point = 0x10000 + (((code & 0x3ff) << 10) | (next & 0x3ff))
++                    out.push(0xf0 | (point >> 18), 0x80 | ((point >> 12) & 0x3f), 0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f))
++                  } else { out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)) }
++                }
++                return out
++              }
++              function utf8String(bytes) {
++                var out = []
++                for (var i = 0; i < bytes.length; i++) {
++                  var byte = bytes[i] & 0xff
++                  if (byte < 0x80) { out.push(String.fromCharCode(byte)) }
++                  else if (byte < 0xe0) { out.push(String.fromCharCode(((byte & 0x1f) << 6) | (bytes[++i] & 0x3f))) }
++                  else if (byte < 0xf0) { out.push(String.fromCharCode(((byte & 0x0f) << 12) | ((bytes[++i] & 0x3f) << 6) | (bytes[++i] & 0x3f))) }
++                  else {
++                    var point = ((byte & 0x07) << 18) | ((bytes[++i] & 0x3f) << 12) | ((bytes[++i] & 0x3f) << 6) | (bytes[++i] & 0x3f)
++                    point -= 0x10000
++                    out.push(String.fromCharCode(0xd800 + (point >> 10), 0xdc00 + (point & 0x3ff)))
++                  }
++                }
++                return out.join('')
++              }
++              if (typeof globalThis.TextEncoder === 'undefined') {
++                globalThis.TextEncoder = function TextEncoder() {}
++                globalThis.TextEncoder.prototype.encode = function(value) { return new Uint8Array(utf8Bytes(value)) }
++              }
++              if (typeof globalThis.TextDecoder === 'undefined') {
++                globalThis.TextDecoder = function TextDecoder(encoding) { this.encoding = encoding || 'utf-8' }
++                globalThis.TextDecoder.prototype.decode = function(value) { return value ? utf8String(value) : '' }
++              }
++              if (typeof globalThis.btoa === 'undefined') {
++                globalThis.btoa = function(value) {
++                  var bytes = utf8Bytes(value)
++                  var out = ''
++                  for (var i = 0; i < bytes.length; i += 3) {
++                    var b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2]
++                    out += B64[b0 >> 2]
++                    out += B64[((b0 & 0x03) << 4) | ((b1 === undefined ? 0 : b1) >> 4)]
++                    out += b1 === undefined ? '=' : B64[((b1 & 0x0f) << 2) | ((b2 === undefined ? 0 : b2) >> 6)]
++                    out += b2 === undefined ? '=' : B64[b2 & 0x3f]
++                  }
++                  return out
++                }
++              }
++              if (typeof globalThis.atob === 'undefined') {
++                globalThis.atob = function(value) {
++                  var text = String(value).replace(/[^A-Za-z0-9+/]/g, '')
++                  var bytes = []
++                  for (var i = 0; i < text.length; i += 4) {
++                    var c0 = B64.indexOf(text[i]), c1 = B64.indexOf(text[i + 1])
++                    var c2 = B64.indexOf(text[i + 2]), c3 = B64.indexOf(text[i + 3])
++                    if (c1 >= 0) bytes.push((c0 << 2) | (c1 >> 4))
++                    if (c2 >= 0) bytes.push(((c1 & 0x0f) << 4) | (c2 >> 2))
++                    if (c3 >= 0) bytes.push(((c2 & 0x03) << 6) | c3)
++                  }
++                  return utf8String(bytes)
++                }
++              }
++              if (typeof globalThis.fetch === 'undefined' && typeof globalThis.lx !== 'undefined') {
++                globalThis.fetch = function(input, init) {
++                  return new Promise(function(resolve, reject) {
++                    var url = typeof input === 'string' ? input : (input && input.url) || ''
++                    var options = init || {}
++                    globalThis.lx.request(url, {
++                      method: options.method || 'get',
++                      headers: options.headers || {},
++                      body: options.body,
++                      binary: options.binary === true
++                    }, function(err, resp, body) {
++                      if (err) { reject(new Error((err && err.message) || String(err) || 'fetch failed')); return }
++                      var headers = (resp && resp.headers) || {}
++                      resolve({
++                        ok: resp.statusCode >= 200 && resp.statusCode < 300,
++                        status: resp.statusCode,
++                        statusText: resp.statusMessage || '',
++                        url: resp.url || url,
++                        headers: {
++                          get: function(name) {
++                            var target = String(name).toLowerCase()
++                            for (var key in headers) { if (String(key).toLowerCase() === target) return headers[key] }
++                            return null
++                          }
++                        },
++                        text: function() { return Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)) },
++                        json: function() { return Promise.resolve(typeof body === 'string' ? JSON.parse(body) : body) }
++                      })
++                    })
++                  })
++                }
++              }
++            })()
++            """.trimIndent(),
++            "lx-builtins.js",
++        )
++    }
+ 
++    /**
++     * LX Music runs user scripts in a bare QuickJS context and obfuscated sources
++     * legitimately use `eval` / `new Function` to unpack themselves, so dynamic code
++     * execution stays available. Every native bridge is still removed and `lx`
++     * stays frozen: a script can only reach the network through `lx.request`.
++     */
++    private fun lockdownSandbox() {
++        context.evaluate(
++            """
++            (function() {
++              'use strict'
+               // Remove dangerous globals if present.
+               delete globalThis.java
+               delete globalThis.Java
+@@ -254,11 +401,6 @@
+                   enumerable: true
+                 })
+               } catch (e) {}
+-
+-              // Freeze console/setTimeout to prevent tampering.
+-              [globalThis.console, globalThis.setTimeout, globalThis.clearTimeout].forEach(function(obj) {
+-                if (obj && typeof obj === 'object') try { Object.freeze(obj) } catch (e) {}
+-              })
+             })()
+             """.trimIndent(),
+             "sandbox-lockdown.js",
+@@ -269,14 +411,16 @@
+         val utils = context.createNewJSObject()
+         val crypto = context.createNewJSObject()
+         crypto.setProperty("md5", JSCallFunction { args ->
+-            val input = args.firstOrNull()?.toString().orEmpty()
++            // LX Music mobile hashes encodeURIComponent(str), not the raw string.
++            // Sources derive signed query strings from this, so the quirk matters.
++            val input = encodeUriComponent(args.firstOrNull()?.toString().orEmpty())
+             MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
+                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+         })
+         crypto.setProperty("randomBytes", JSCallFunction { args ->
+-            ByteArray((args.firstOrNull() as? Number)?.toInt()?.coerceIn(0, 65_536) ?: 0).also {
+-                java.security.SecureRandom().nextBytes(it)
+-            }
++            val size = (args.firstOrNull() as? Number)?.toInt()?.coerceIn(0, 65_536) ?: 0
++            val data = ByteArray(size).also { java.security.SecureRandom().nextBytes(it) }
++            createJsArray(data.map { it.toInt() and 0xff })
+         })
+         crypto.setProperty("aesEncrypt", JSCallFunction { args ->
+             val data = bytes(args.getOrNull(0))
+@@ -284,13 +428,14 @@
+             val key = bytes(args.getOrNull(2))
+             val iv = bytes(args.getOrNull(3))
+             val transformation = if (mode == "aes-128-cbc") "AES/CBC/PKCS5Padding" else "AES/ECB/NoPadding"
+-            Cipher.getInstance(transformation).apply {
++            val encrypted = Cipher.getInstance(transformation).apply {
+                 init(
+                     Cipher.ENCRYPT_MODE,
+                     SecretKeySpec(key, "AES"),
+                     if (transformation.contains("CBC")) IvParameterSpec(iv) else null,
+                 )
+             }.doFinal(data)
++            createJsArray(encrypted.map { it.toInt() and 0xff })
+         })
+         crypto.setProperty("rsaEncrypt", JSCallFunction { args ->
+             val data = bytes(args.getOrNull(0))
+@@ -298,31 +443,44 @@
+                 ?.replace("-----END PUBLIC KEY-----", "") ?: ""
+             val keyBytes = Base64.getDecoder().decode(keyText)
+             val key = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(keyBytes))
+-            Cipher.getInstance("RSA/ECB/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }.doFinal(data)
++            val encrypted = Cipher.getInstance("RSA/ECB/NoPadding")
++                .apply { init(Cipher.ENCRYPT_MODE, key) }.doFinal(data)
++            createJsArray(encrypted.map { it.toInt() and 0xff })
+         })
+         utils.setProperty("crypto", crypto)
+ 
+         val buffer = context.createNewJSObject()
+         buffer.setProperty("from", JSCallFunction { args ->
+-            bytes(args.getOrNull(0), args.getOrNull(1)?.toString())
++            val data = bytes(args.getOrNull(0), args.getOrNull(1)?.toString())
++            createJsArray(data.map { it.toInt() and 0xff })
+         })
+         buffer.setProperty("bufToString", JSCallFunction { args ->
+-            val data = bytes(args.getOrNull(0))
+-            when (args.getOrNull(1)?.toString()) {
+-                "hex" -> data.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+-                "base64" -> Base64.getEncoder().encodeToString(data)
+-                else -> data.toString(Charsets.UTF_8)
++            val format = args.getOrNull(1)?.toString()
++            if (format == "binary") {
++                args.getOrNull(0)
++            } else {
++                val data = bytes(args.getOrNull(0))
++                when (format) {
++                    "hex" -> data.joinToString("") { "%02x".format(it.toInt() and 0xff) }
++                    "base64" -> Base64.getEncoder().encodeToString(data)
++                    else -> data.toString(Charsets.UTF_8)
++                }
+             }
+         })
+         utils.setProperty("buffer", buffer)
+         return utils
+     }
+ 
+-    private fun executeHttpRequest(url: String, optionsValue: Any?, callback: JSFunction?) {
+-        if (callback == null) return
++    /**
++     * Mirrors `lx.request(url, options, callback)` from the LX Music mobile preload
++     * and returns the abort function that the preload hands back to the script.
++     */
++    private fun executeHttpRequest(url: String, optionsValue: Any?, callback: JSFunction?): JSCallFunction {
++        val abort = JSCallFunction { null }
++        if (callback == null) return abort
+         if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+             enqueueHttpResponse(HttpResponse(callback, "Unsupported URL scheme: $url", null, null))
+-            return
++            return abort
+         }
+         val options = when (optionsValue) {
+             is QuickJSObject -> optionsValue.toMap()
+@@ -333,10 +491,13 @@
+         val headers = options["headers"].asHostMap()
+         val bodyValue = options["body"]
+         val form = options["form"].asHostMap().takeIf { it.isNotEmpty() }
++        val formData = options["formData"]
++        val binary = options["binary"] as? Boolean ?: (options["binary"]?.toString() == "true")
+         val timeoutMs = (options["timeout"] as? Number)?.toLong()?.coerceIn(1_000L, 60_000L) ?: HTTP_TIMEOUT_MS
+         Log.d(TAG, "http start endpoint=${url.toSafeEndpoint()} method=$method headers=${headers.keys.joinToString(",")} " +
+-            "form=${form != null} body=${bodyValue != null} timeoutMs=$timeoutMs")
++            "form=${form != null} formData=${formData != null} body=${bodyValue != null} binary=$binary timeoutMs=$timeoutMs")
+ 
++        val callRef = AtomicReference<okhttp3.Call?>(null)
+         Thread {
+             try {
+                 val requestBuilder = Request.Builder().url(url)
+@@ -344,50 +505,96 @@
+                     if (key != null && value != null) requestBuilder.addHeader(key.toString(), value.toString())
+                 }
+                 if (method != "GET" && method != "HEAD") {
+-                    when {
+-                        form != null -> {
+-                            val formBody = okhttp3.FormBody.Builder().apply {
+-                                form.forEach { (key, value) ->
+-                                    if (key != null && value != null) add(key.toString(), value.toString())
+-                                }
+-                            }.build()
+-                            requestBuilder.method(method, formBody)
+-                        }
+-                        bodyValue != null -> requestBuilder.method(
+-                            method,
+-                            JSONObject(bodyValue as? Map<*, *> ?: emptyMap<Any?, Any?>()).toString()
+-                                .toRequestBody("application/json".toMediaTypeOrNull()),
+-                        )
+-                        else -> requestBuilder.method(method, null)
+-                    }
++                    requestBuilder.method(method, requestBody(form, formData, bodyValue, headers))
+                 }
+-                httpClient.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
+-                    .newCall(requestBuilder.build()).execute().use { response ->
+-                        val rawBody = response.body.string()
+-                        val parsedBody = parseResponseBody(rawBody)
+-                        Log.i(
+-                            TAG,
+-                            "LX HTTP status=${response.code} contentType=${response.header("Content-Type").orEmpty()} " +
+-                                "body=${responseShape(parsedBody)}",
+-                        )
+-                        Log.d(TAG, "http response endpoint=${url.toSafeEndpoint()} code=${response.code} urlAvailable=${responseShape(parsedBody).contains("url")}")
+-                        val result = mapOf(
+-                            "statusCode" to response.code,
+-                            "statusMessage" to response.message,
+-                            "headers" to response.headers.toMultimap().mapValues { it.value.joinToString(",") },
+-                            "body" to parsedBody,
+-                            "url" to response.request.url.toString(),
+-                            "ok" to response.isSuccessful,
+-                        )
+-                        enqueueHttpResponse(HttpResponse(callback, null, result, parsedBody))
++                val call = httpClient.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
++                    .newCall(requestBuilder.build())
++                callRef.set(call)
++                call.execute().use { response ->
++                    val parsedBody: Any = if (binary) {
++                        (response.body.bytes().map { it.toInt() and 0xff })
++                    } else {
++                        parseResponseBody(response.body.string())
+                     }
++                    Log.i(
++                        TAG,
++                        "LX HTTP status=${response.code} contentType=${response.header("Content-Type").orEmpty()} " +
++                            "body=${responseShape(parsedBody)}",
++                    )
++                    Log.d(TAG, "http response endpoint=${url.toSafeEndpoint()} code=${response.code} urlAvailable=${responseShape(parsedBody).contains("url")}")
++                    val result = mapOf(
++                        "statusCode" to response.code,
++                        "statusMessage" to response.message,
++                        "headers" to response.headers.toMultimap().mapValues { it.value.joinToString(",") },
++                        "body" to parsedBody,
++                        "url" to response.request.url.toString(),
++                        "ok" to response.isSuccessful,
++                    )
++                    enqueueHttpResponse(HttpResponse(callback, null, result, parsedBody))
++                }
+             } catch (error: Throwable) {
+                 Log.w(TAG, "LX HTTP failed error=${error.javaClass.simpleName}: ${error.message.safeLogMessage()}")
+                 enqueueHttpResponse(HttpResponse(callback, error.message ?: "request failed", null, null))
+             }
+         }.start()
++        return JSCallFunction {
++            runCatching { callRef.get()?.cancel() }
++            null
++        }
+     }
+ 
++    /** Builds the request body for `form`, `formData` or a raw `body` payload. */
++    private fun requestBody(
++        form: Map<*, *>?,
++        formData: Any?,
++        bodyValue: Any?,
++        headers: Map<*, *>,
++    ): okhttp3.RequestBody {
++        val declaredContentType = headers.entries
++            .firstOrNull { (key, _) -> key?.toString().equals("content-type", ignoreCase = true) }
++            ?.value?.toString()
++        if (formData != null) {
++            val builder = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
++            var added = false
++            val parts: Iterable<Pair<Any?, Any?>> = when (formData) {
++                is QuickJSObject -> formData.toMap().toList()
++                is Map<*, *> -> formData.toList()
++                is List<*> -> formData.mapIndexed { index, value -> index.toString() to value }
++                else -> emptyList()
++            }
++            parts.forEach { (key, value) ->
++                if (key == null || value == null) return@forEach
++                builder.addFormDataPart(key.toString(), value.toString())
++                added = true
++            }
++            if (added) return builder.build()
++        }
++        if (form != null) {
++            val builder = okhttp3.FormBody.Builder()
++            form.forEach { (key, value) ->
++                if (key != null && value != null) builder.add(key.toString(), value.toString())
++            }
++            return builder.build()
++        }
++        return when (val body = bodyValue) {
++            is String -> body.toRequestBody(
++                (declaredContentType ?: if (body.trimStart().firstOrNull()?.let { it == '{' || it == '[' } == true) {
++                    JSON_MEDIA_TYPE
++                } else {
++                    TEXT_MEDIA_TYPE
++                }).toMediaTypeOrNull(),
++            )
++            is QuickJSObject -> jsonBody(body.toMap())
++            is Map<*, *> -> jsonBody(body)
++            is List<*> -> JSONArray(body).toString().toRequestBody(JSON_MEDIA_TYPE.toMediaTypeOrNull())
++            null -> "".toRequestBody(declaredContentType?.toMediaTypeOrNull())
++            else -> body.toString().toRequestBody(TEXT_MEDIA_TYPE.toMediaTypeOrNull())
++        }
++    }
++
++    private fun jsonBody(value: Map<*, *>): okhttp3.RequestBody =
++        JSONObject(value.toStringKeyedMap()).toString().toRequestBody(JSON_MEDIA_TYPE.toMediaTypeOrNull())
++
+     private fun enqueueHttpResponse(response: HttpResponse) {
+         pendingHttpResponses.add(response)
+         synchronized(drainSignal) { drainSignal.notifyAll() }
+@@ -424,33 +631,42 @@
+         }
+     }.getOrDefault(body)
+ 
+-    private fun recordSourceQualities(value: Any?) {
++    /**
++     * Stores what `lx.send('inited', { sources: { kw: { type, actions, qualitys } } })`
++     * announced. Older scripts pass the quality list directly, so both shapes are read.
++     */
++    private fun recordSourceInfo(value: Any?) {
+         val data = when (value) {
+             is QuickJSObject -> value.toMap()
+             is Map<*, *> -> value
+             else -> return
+         }
+-        val sources = data["sources"]
+-        val sourceMap = when (sources) {
++        val sourceMap = when (val sources = data["sources"]) {
+             is QuickJSObject -> sources.toMap()
+             is Map<*, *> -> sources
+             else -> return
+         }
+         sourceMap.forEach { (name, rawInfo) ->
+-            val info = when (rawInfo) {
+-                is QuickJSObject -> rawInfo.toMap()
++            val source = name?.toString() ?: return@forEach
++            val rawMap = when (rawInfo) {
++                is QuickJSObject -> runCatching { rawInfo.toMap() }.getOrNull()
+                 is Map<*, *> -> rawInfo
+-                else -> return@forEach
+-            }
+-            val qualities = when (val raw = info["qualitys"]) {
+-                is QuickJSObject -> raw.toArray().mapNotNull { it?.toString() }
+-                is List<*> -> raw.mapNotNull { it?.toString() }
+-                else -> emptyList()
++                else -> null
+             }
+-            if (name != null && qualities.isNotEmpty()) sourceQualities[name.toString()] = qualities
++            val actions = rawMap?.let { stringList(it["actions"]) }.orEmpty()
++            val qualitys = rawMap?.let { stringList(it["qualitys"]) }.orEmpty()
++                .ifEmpty { stringList(rawInfo) }
++            sourceCapabilities[source] = LxUserSourceCapability(actions = actions, qualitys = qualitys)
++            if (qualitys.isNotEmpty()) sourceQualities[source] = qualitys
+         }
+     }
+ 
++    private fun stringList(value: Any?): List<String> = when (value) {
++        is QuickJSObject -> value.toArray().mapNotNull { it?.toString() }
++        is List<*> -> value.mapNotNull { it?.toString() }
++        else -> emptyList()
++    }
++
+     private fun settle(value: Any?, onSuccess: (Any?) -> Unit, onError: (Throwable) -> Unit) {
+         if (value !is QuickJSObject) {
+             onSuccess(value)
+@@ -472,16 +688,26 @@
+         runCatching { then.call(resolve, reject) }.onFailure { onSuccess(value) }
+     }
+ 
+-    private fun drainUntil(done: CountDownLatch) {
+-        repeat(400) {
+-            if (done.count == 0L) return
++    /**
++     * Pumps JS timers and HTTP replies until the action settles or [timeoutMs] passes.
++     *
++     * The sources usually call a telemetry endpoint before their real request, and
++     * that first call alone can take two seconds. This used to stop after a fixed
++     * number of iterations - roughly two seconds - which discarded answers that
++     * arrived moments later and made songs fall back to the official trial clip.
++     */
++    private fun drainUntil(done: CountDownLatch, timeoutMs: Long) {
++        val deadline = System.currentTimeMillis() + timeoutMs
++        while (done.count != 0L && System.currentTimeMillis() < deadline) {
+             dispatchTimers()
+             processPendingHttpResponses()
+             runCatching { context.evaluate("void 0") }
+             if (done.count == 0L) return
+             synchronized(drainSignal) {
+                 if (done.count == 0L || pendingHttpResponses.isNotEmpty()) return@synchronized
+-                drainSignal.wait(5)
++                // Wake early when a reply lands so a finished action does not wait
++                // out the rest of the slot.
++                drainSignal.wait(10)
+             }
+         }
+     }
+@@ -619,6 +845,24 @@
+     .replace('\n', ' ')
+     .take(240)
+ 
++/** Matches the characters JavaScript `encodeURIComponent` leaves untouched. */
++private fun encodeUriComponent(value: String): String {
++    val hex = "0123456789ABCDEF"
++    return buildString(value.length) {
++        for (byte in value.toByteArray(Charsets.UTF_8)) {
++            val code = byte.toInt() and 0xff
++            val char = code.toChar()
++            if (char in UnreservedCharacters) {
++                append(char)
++            } else {
++                append('%').append(hex[code shr 4]).append(hex[code and 0xf])
++            }
++        }
++    }
++}
++
++private const val UnreservedCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
++
+ private fun JSONObject.toHostValue(): Map<String, Any?> = keys().asSequence().associateWith { key ->
+     jsonValue(opt(key))
+ }
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserScriptMetadata.kt b/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserScriptMetadata.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserScriptMetadata.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserScriptMetadata.kt
+@@ -10,7 +10,7 @@
+     val raw: Map<String, String> = emptyMap(),
+ ) {
+     companion object {
+-        private val field = Regex("^\\s*(?:[*#/]\\s*)?@([A-Za-z][\\w-]*)\\s+(.+?)\\s*$")
++        private val field = Regex("^\\s*[^\\w@]*@([A-Za-z][\\w-]*)\\s+(.+?)\\s*$")
+ 
+         /** Reads @name-style fields from the leading comment block only. */
+         fun parse(script: String): LxUserScriptMetadata {
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClient.kt b/android/app/src/main/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClient.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClient.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClient.kt
+@@ -21,6 +21,8 @@
+     val bitrate: Int?,
+     val format: String?,
+     val quality: MusicQuality?,
++    /** True when the official API only handed back a free trial clip. */
++    val isPreview: Boolean = false,
+ )
+ 
+ class NeteasePlaybackUnavailableException(
+@@ -112,6 +114,10 @@
+                     requested = requestedQuality,
+                     actual = actual,
+                 )
++                val isPreview = isPreviewClip(source)
++                if (isPreview) {
++                    Log.w(TAG, "Trial clip served: song=$songId level=${actual.apiLevel} bitrate=${source.optInt("br")}")
++                }
+                 Log.i(
+                     TAG,
+                     "Playback quality resolved: song=$songId requested=${requestedQuality.apiLevel} candidate=${candidate.apiLevel} actual=${actual.apiLevel} bitrate=${source.optInt("br")}",
+@@ -121,6 +127,7 @@
+                     bitrate = source.optInt("br").takeIf { it > 0 },
+                     format = source.optString("type").takeIf(String::isNotBlank),
+                     quality = actual,
++                    isPreview = isPreview,
+                 )
+             } catch (error: Throwable) {
+                 lastError = error
+@@ -151,6 +158,17 @@
+     internal companion object {
+         const val TAG = "MeloXQuality"
+ 
++        /**
++         * Netease attaches `freeTrialInfo` to a source when the account is only
++         * allowed to hear a clip of it. Reading the field beats guessing from the
++         * duration: the clip length varies per song and the response carries no
++         * full-length reference to compare against.
++         */
++        internal fun isPreviewClip(data: JSONObject): Boolean {
++            val trial = data.opt("freeTrialInfo")
++            return trial != null && trial != JSONObject.NULL
++        }
++
+         fun terminalPlaybackFailure(
+             loggedIn: Boolean,
+             serverReportedUnavailable: Boolean,
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserPlaybackResolver.kt b/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserPlaybackResolver.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserPlaybackResolver.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserPlaybackResolver.kt
+@@ -5,8 +5,7 @@
+ import com.lladlam.melox.core.music.model.AudioQualityTier
+ import com.lladlam.melox.core.music.model.MusicSource
+ import com.lladlam.melox.core.music.model.MusicTrack
+-import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
+-import com.lladlam.melox.core.provider.lxuser.LxUserScript
++import com.lladlam.melox.core.audio.MusicQuality
+ import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
+ import com.lladlam.melox.core.network.NeteaseSearchClient
+ import com.lladlam.melox.core.lyrics.LrcLyricsParser
+@@ -14,13 +13,20 @@
+ import com.lladlam.melox.core.music.model.MusicArtistRef
+ import com.lladlam.melox.core.music.model.MusicResourceId
+ import com.lladlam.melox.core.music.model.ProviderTrackMetadata
+-import java.io.IOException
++import java.net.HttpURLConnection
++import java.net.URL
+ import java.util.Locale
+ 
+ internal data class LxUserPlaybackResult(
+     val sourceId: String,
+     val url: String,
+     val requestHeaders: Map<String, String> = emptyMap(),
++    /**
++     * Tier measured from the resolved link, when it could be determined. Callers
++     * use it to report what is actually playing, because the quality the source
++     * was *asked* for says nothing about the file it hands back.
++     */
++    val quality: MusicQuality? = null,
+ )
+ 
+ /** Resolves a song through locally installed LX Music user API scripts. */
+@@ -65,13 +71,17 @@
+         for (record in LxUserSourceStore.list(appContext)) {
+             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
+             val result = runCatching {
+-                LxUserRuntime().use { runtime ->
+-                    runtime.load(LxUserScript(script))
+-                    runtime.callAction(action, song + mapOf(
+-                        "source" to sourceCode,
+-                        "type" to "128k",
+-                        "musicInfo" to song,
+-                    ))
++                LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
++                    if (!runtime.supports(sourceCode, action)) {
++                        Log.d(TAG, "LX $action skipped script=${record.id} source=$sourceCode")
++                        null
++                    } else {
++                        runtime.callAction(action, song + mapOf(
++                            "source" to sourceCode,
++                            "type" to "128k",
++                            "musicInfo" to song,
++                        ))
++                    }
+                 }
+             }.onFailure { error ->
+                 Log.w(TAG, "LX $action failed script=${record.id} detail=${error.safeLogMessage()}")
+@@ -87,6 +97,8 @@
+         artist: String,
+         durationMs: Long?,
+         quality: AudioQualityTier,
++        hasPlayableFallback: Boolean = false,
++        urgent: Boolean = true,
+     ): LxUserPlaybackResult? {
+         return resolve(
+             MusicTrack(
+@@ -96,10 +108,25 @@
+                 durationMs = durationMs,
+             ),
+             quality,
++            hasPlayableFallback,
++            urgent,
+         )
+     }
+ 
+-    internal fun resolve(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
++    /**
++     * @param hasPlayableFallback true when the caller already holds a complete stream
++     *   it can fall back to. Hunting for a better tier is then a bonus, so the search
++     *   gets a short leash; when the only alternative is a 30 s trial clip it is worth
++     *   waiting much longer.
++     * @param urgent false for background work such as prefetching, so a track the user
++     *   actually tapped is not queued behind upcoming ones.
++     */
++    internal fun resolve(
++        track: MusicTrack,
++        quality: AudioQualityTier,
++        hasPlayableFallback: Boolean = false,
++        urgent: Boolean = true,
++    ): LxUserPlaybackResult? {
+         val sourceCode = when (track.id.source) {
+             MusicSource.QQMusic -> "tx"
+             MusicSource.Kugou -> "kg"
+@@ -109,7 +136,16 @@
+         }
+         val title = track.title
+         val artist = track.artistText
+-        if (title.isBlank() || artist.isBlank()) return null
++        // Legacy `melox://song/<id>` URIs may only carry a song id. Those can still be
++        // resolved through the `wy` source, but matching by name across every source
++        // would be guesswork, so only `wy` is attempted in that case.
++        val candidateSources = if (title.isBlank() || artist.isBlank()) {
++            listOf("wy")
++        } else {
++            // The track's own source is the only one that can be matched by id, so
++            // it is worth spending before any name-based lookup.
++            listOfNotNull(sourceCode) + LX_SOURCES.filterNot { it == sourceCode }
++        }
+         val resourceId = track.id.value
+         val lxQuality = quality.toLxQuality()
+         val song = standardMusicInfo(track, sourceCode, lxQuality)
+@@ -133,59 +169,145 @@
+         for (record in LxUserSourceStore.list(appContext)) {
+             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
+             var phase = "load"
+-                    runCatching {
+-                LxUserRuntime().use { runtime ->
+-                    runtime.load(LxUserScript(script))
++            val result: LxUserPlaybackResult? = runCatching {
++                LxUserRuntimeSession.withRuntime(record.id, script, urgent) { runtime ->
+                     phase = "request"
+-                    (sourceCode?.let(::listOf) ?: listOf("kw", "kg", "tx", "wy", "mg")).asSequence()
+-                        .flatMap { source ->
+-                            lxQualityFallbacks(lxQuality).asSequence().map { requestedQuality -> source to requestedQuality }
+-                        }
+-                        .mapNotNull { (source, requestedQuality) ->
++                    val start = android.os.SystemClock.elapsedRealtime()
++                    val deadline = start + if (hasPlayableFallback) {
++                        RESOLVE_BUDGET_WITH_FALLBACK_MS
++                    } else {
++                        RESOLVE_BUDGET_MS
++                    }
++                    // Quality first, source second. Every source gets a chance at the
++                    // best quality before anything settles for a lower one; iterating
++                    // the other way round let the first source's 128k link win over
++                    // another source's lossless one.
++                    var bestUrl: String? = null
++                    var bestRank = -1
++                    var probes = 0
++                    // A source that already handed back a link has shown us its best;
++                    // asking it again one tier lower almost always returns the same
++                    // file, so remember it and skip the repeat.
++                    val answered = mutableSetOf<String>()
++                    for (requestedQuality in lxQualityFallbacks(lxQuality)) {
++                        val need = lxQualityRank(requestedQuality)
++                        for (source in candidateSources) {
++                            if (source in answered) continue
++                            if (!runtime.supports(source, "musicUrl")) continue
++                            // Once something playable is in hand, stop hunting much
++                            // sooner: the user is waiting on a song, not on a tier.
++                            val softDeadline = if (bestUrl == null) deadline else start + FALLBACK_BUDGET_MS
++                            if (android.os.SystemClock.elapsedRealtime() > softDeadline) {
++                                Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source best=$bestRank")
++                                return@withRuntime bestUrl?.let {
++                                    LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank))
++                                }
++                            }
++                            LxUserRuntimeSession.awaitRequestSlot(MIN_REQUEST_GAP_MS)
+                             val sourceQuality = runtime.qualityFor(source, requestedQuality)
++                            // Scripts read `musicInfo.source` and `musicInfo.quality`, so
++                            // the nested music info has to describe the source and the
++                            // quality currently being tried - not the top one.
++                            val sourceSong = standardMusicInfo(track, source, requestedQuality)
+                             Log.d(TAG, "LX candidate script=${record.id} source=$source requested=$requestedQuality actual=$sourceQuality")
+-                            runCatching {
++                            // Give the action whatever is left of this song's budget
++                            // rather than a fixed slice: a source that answers slowly
++                            // should still get its answer in, but it may not overshoot
++                            // the time the user is willing to wait.
++                            val actionBudget = (softDeadline - android.os.SystemClock.elapsedRealtime())
++                                .coerceAtLeast(MIN_ACTION_TIMEOUT_MS)
++                            val value = runCatching {
+                                 runtime.callAction(
+                                     "musicUrl",
+-                                    song + mapOf(
++                                    sourceSong + mapOf(
+                                         "source" to source,
+                                         "type" to sourceQuality,
+-                                        "musicInfo" to song,
++                                        "musicInfo" to sourceSong,
+                                     ),
++                                    actionBudget,
+                                 )
+                             }.onFailure {
+                                 Log.w(TAG, "LX candidate failed script=${record.id} source=$source quality=$sourceQuality detail=${it.safeLogMessage()}")
+-                            }.getOrNull()?.let { value ->
+-                                val url = when (value) {
+-                                    is String -> value
+-                                    is Map<*, *> -> value["url"]?.toString()
+-                                    else -> null
+-                                }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+-                                Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality url=${url != null}")
+-                                url?.let { LxUserPlaybackResult(record.id, it) }
++                            }.getOrNull()
++                            val url = when (value) {
++                                is String -> value
++                                is Map<*, *> -> value["url"]?.toString()
++                                else -> null
++                            }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
++                            // Most scripts hand back the raw API body, so the tier that
++                            // actually came back is usually one of these fields.
++                            val reported = (value as? Map<*, *>)?.let { body ->
++                                sequenceOf("quality", "type", "level", "br", "bitrate")
++                                    .mapNotNull { body[it]?.toString()?.trim()?.takeIf(String::isNotEmpty) }
++                                    .firstOrNull()
+                             }
++                            // Most scripts hand back a bare URL with no quality field, so
++                            // the requested tier says nothing about what will actually play.
++                            // When the duration is known we probe the CDN (one ranged GET)
++                            // and read the total size off Content-Range to derive the true
++                            // bitrate. That probe hits the final CDN, not the rate-limited
++                            // LX API, so it costs nothing against the "4 requests / 2s" rule.
++                            val reportedRank = lxQualityRank(reported)
++                            val rank = if (reportedRank >= 0 || url == null || track.durationMs == null || probes >= MAX_PROBES) {
++                                reportedRank
++                            } else {
++                                probes++
++                                probeQualityRank(url, track.durationMs, record.id)
++                            }
++                            Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality " +
++                                "url=${url != null} reported=$reported rank=$rank need=$need link=${url?.take(220)}")
++                            if (url == null) continue
++                            answered += source
++                            // Several public mirrors accept any quality you ask for
++                            // and quietly serve 128k, so the requested tier is not
++                            // proof of what will play. Only accept a link that is at
++                            // least as good as the tier being tried, and keep the best
++                            // miss around in case nothing reaches the bar.
++                            //
++                            // Lossless from `wy` is taken straight away: these mirrors
++                            // rarely hold a 24-bit master of a track the official API
++                            // only serves as a clip, and hunting one across the other
++                            // platforms costs the user seconds for nothing.
++                            if (rank < 0 || rank >= need || (source == "wy" && rank >= LOSSLESS_RANK)) {
++                                return@withRuntime LxUserPlaybackResult(
++                                    record.id,
++                                    url,
++                                    quality = rankToMusicQuality(rank),
++                                )
++                            }
++                            if (rank > bestRank) {
++                                bestRank = rank
++                                bestUrl = url
++                            }
+                         }
+-                        .firstOrNull() ?: throw IOException("LX 音乐源没有返回可播放链接")
++                    }
++                    bestUrl?.let { LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank)) }
+                 }
+-                    }.onSuccess {
+-                Log.i(TAG, "LX resolved source=${track.id.source.storageValue} script=${record.id}")
+-                return it
+-                    }.onFailure { error ->
++            }.onFailure { error ->
+                 Log.w(
+                     TAG,
+                     "LX failed source=${track.id.source.storageValue} script=${record.id} phase=$phase " +
+                         "error=${error.javaClass.simpleName} detail=${error.safeLogMessage()}",
+                 )
+-                    }
++            }.getOrNull()
++            if (result != null) {
++                Log.i(TAG, "LX resolved source=${track.id.source.storageValue} script=${record.id} link=${result.url.take(220)}")
++                return result
++            }
++            Log.i(TAG, "LX exhausted source=${track.id.source.storageValue} script=${record.id}")
+         }
+-        if (track.id.source != MusicSource.Netease) {
+-            resolveViaNeteaseMatch(track, quality)?.let { return it }
++        if (track.id.source != MusicSource.Netease && title.isNotBlank()) {
++            resolveViaNeteaseMatch(track, quality, urgent)?.let { return it }
+         }
+         Log.i(TAG, "LX unresolved source=${track.id.source.storageValue} scripts=${LxUserSourceStore.list(appContext).size}")
+         return null
+     }
+ 
+-    private fun resolveViaNeteaseMatch(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
++    private fun resolveViaNeteaseMatch(
++        track: MusicTrack,
++        quality: AudioQualityTier,
++        urgent: Boolean,
++    ): LxUserPlaybackResult? {
+         val query = track.title.trim()
+         val candidates = runCatching {
+             kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+@@ -216,31 +338,48 @@
+             providerMetadata = ProviderTrackMetadata.Netease(match.id),
+         )
+         Log.i(TAG, "LX Netease match source=${track.id.source.storageValue} id=${track.id.value.take(8)} -> ${match.id}")
+-        return resolveNeteaseTrack(neteaseTrack, quality)
++        return resolveNeteaseTrack(neteaseTrack, quality, urgent)
+     }
+ 
+-    private fun resolveNeteaseTrack(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
+-        val song = standardMusicInfo(track, "wy", quality.toLxQuality())
++    private fun resolveNeteaseTrack(
++        track: MusicTrack,
++        quality: AudioQualityTier,
++        urgent: Boolean,
++    ): LxUserPlaybackResult? {
+         for (record in LxUserSourceStore.list(appContext)) {
+             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
+             val result = runCatching {
+-                LxUserRuntime().use { runtime ->
+-                    runtime.load(LxUserScript(script))
++                LxUserRuntimeSession.withRuntime(record.id, script, urgent) { runtime ->
++                    val start = android.os.SystemClock.elapsedRealtime()
++                    val deadline = start + RESOLVE_BUDGET_MS
+                     lxQualityFallbacks(quality.toLxQuality()).asSequence().mapNotNull { requestedQuality ->
++                        LxUserRuntimeSession.awaitRequestSlot(MIN_REQUEST_GAP_MS)
++                        if (android.os.SystemClock.elapsedRealtime() > deadline) return@mapNotNull null
+                         val sourceQuality = runtime.qualityFor("wy", requestedQuality)
++                        // Same rule as the main loop: the nested music info must carry
++                        // the quality being tried, otherwise the script keeps asking
++                        // for the top quality and the fallbacks never happen.
++                        val song = standardMusicInfo(track, "wy", requestedQuality)
++                        val actionBudget = (deadline - android.os.SystemClock.elapsedRealtime())
++                            .coerceAtLeast(MIN_ACTION_TIMEOUT_MS)
+                         val response = runCatching {
+                             runtime.callAction("musicUrl", song + mapOf(
+                                 "source" to "wy",
+                                 "type" to sourceQuality,
+                                 "musicInfo" to song,
+-                            ))
++                            ), actionBudget)
+                         }.onFailure { Log.w(TAG, "LX Netease candidate failed quality=$sourceQuality detail=${it.safeLogMessage()}") }.getOrNull()
+                         val url = when (response) {
+                             is String -> response
+                             is Map<*, *> -> response["url"]?.toString()
+                             else -> null
+                         }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+-                        url?.let { LxUserPlaybackResult(record.id, it) }
++                        url?.let {
++                            val rank = track.durationMs?.let { duration ->
++                                probeQualityRank(it, duration, record.id)
++                            } ?: -1
++                            LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(rank))
++                        }
+                     }.firstOrNull()
+                 }
+             }.getOrNull()
+@@ -250,10 +389,88 @@
+     }
+ 
+     private companion object {
+-        const val TAG = "MeloXThirdParty"
++        /**
++         * Sources to try, in order, for a track whose own source has no match.
++         * Kuwo is deliberately absent: its car-head-unit endpoint answers with
++         * 22-60 kbps fragments, so querying it only costs time.
++         */
++        val LX_SOURCES = listOf("wy", "kg", "tx", "mg")
++        /**
++         * Cap while the only alternative is the official trial clip. A source costs
++         * 1-4 s because the scripts call a telemetry endpoint before their real
++         * request, so this has to cover a couple of attempts. Giving up early here
++         * leaves the user on a 30 s clip, which is worth waiting to avoid.
++         */
++        const val RESOLVE_BUDGET_MS = 10_000L
++        /**
++         * Cap when the caller already holds a complete stream. Chasing a higher tier is
++         * then a bonus, and the user should not wait long for it.
++         */
++        const val RESOLVE_BUDGET_WITH_FALLBACK_MS = 3_000L
++        /** Shorter cap once a third-party link exists and we are only chasing a better tier. */
++        const val FALLBACK_BUDGET_MS = 3_000L
++        /**
++         * Pause between actions. Each action fires two to three upstream requests of
++         * its own, so the sources' own "no more than 4 requests per 2 s" rule needs a
++         * wider gap than the action count suggests; at 400 ms the mirror answered
++         * `429 请求过于频繁` and the affected songs fell back to the official stream.
++         */
++        const val MIN_REQUEST_GAP_MS = 800L
+     }
+ }
+ 
++/** Log tag shared by the resolver class and its file-level helpers. */
++private const val TAG = "MeloXThirdParty"
++/** Floor for one action so a nearly exhausted budget still lets a request finish. */
++private const val MIN_ACTION_TIMEOUT_MS = 1_500L
++/** [lxQualityRank] bucket for a lossless (16-bit) file. */
++private const val LOSSLESS_RANK = 3
++/** At most this many CDN probes per resolve; each one is a single ranged GET. */
++private const val MAX_PROBES = 4
++/**
++ * Give up on a probe after this long. The probe runs on the shared LX thread, so a
++ * slow CDN would otherwise stall the next song's resolve behind it.
++ */
++private const val PROBE_TIMEOUT_MS = 2000
++
++/** Maps a measured [lxQualityRank] back onto the tier the UI should show. */
++private fun rankToMusicQuality(rank: Int): MusicQuality? = when (rank) {
++    1 -> MusicQuality.Standard
++    2 -> MusicQuality.High
++    3 -> MusicQuality.Lossless
++    4 -> MusicQuality.HiResolution
++    else -> null
++}
++
++/**
++ * Coarse bucket for "how good is this file really", shared by the requested
++ * quality and whatever a source reports back: 1 = 128k, 2 = 320k,
++ * 3 = lossless, 4 = hi-res. `-1` means "no idea", which callers treat as
++ * acceptable so an unknown-but-playable link is never thrown away.
++ */
++private fun lxQualityRank(raw: String?): Int {
++    val value = raw?.lowercase(Locale.ROOT) ?: return -1
++    if (value.isEmpty() || value == "null" || value == "undefined") return -1
++    if (value.all(Char::isDigit)) {
++        val bitrate = value.toLongOrNull() ?: return -1
++        return when {
++            bitrate < 200_000L -> 1
++            bitrate < 500_000L -> 2
++            bitrate < 1_000_000L -> 3
++            else -> 4
++        }
++    }
++    return when (value) {
++        "128k", "128", "standard", "l", "pq" -> 1
++        "320k", "320", "exhigh", "high", "h", "hq" -> 2
++        "flac", "lossless", "sq", "999", "999k" -> 3
++        "flac24bit", "hires", "hi-res", "hr", "atmos", "atmos_plus",
++        "master", "sky", "jyeffect", "jymaster", "zq", "super",
++        -> 4
++        else -> -1
++    }
++}
++
+ private fun lxQualityFallbacks(requested: String): List<String> = when (requested) {
+     "flac24bit" -> listOf("flac24bit", "flac", "320k", "128k")
+     "flac" -> listOf("flac", "320k", "128k")
+@@ -331,3 +548,40 @@
+     .replace('\n', ' ')
+     .take(240)
+     .ifBlank { "none" }
++
++/**
++ * Derives the real quality of a resolved link by asking the CDN for its total
++ * size (a single `Range: bytes=0-0` GET, which returns the full length in
++ * `Content-Range` without downloading the audio) and dividing by the track
++ * duration. Returns [lxQualityRank]'s bucket, or `-1` when the size cannot be
++ * determined or the probe times out.
++ */
++private fun probeQualityRank(url: String, durationMs: Long, scriptId: String): Int {
++    try {
++        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
++            requestMethod = "GET"
++            setRequestProperty("Range", "bytes=0-0")
++            connectTimeout = PROBE_TIMEOUT_MS
++            readTimeout = PROBE_TIMEOUT_MS
++            instanceFollowRedirects = true
++        }
++        conn.connect()
++        val total = run {
++            val cr = conn.getHeaderField("Content-Range")
++            if (!cr.isNullOrBlank() && cr.contains('/')) {
++                cr.substring(cr.lastIndexOf('/') + 1).toLongOrNull()
++            } else {
++                conn.contentLengthLong.takeIf { it > 0L }
++            }
++        }
++        conn.disconnect()
++        if (total == null || total <= 0L) return -1
++        val seconds = (durationMs.coerceAtLeast(1L) / 1000L).coerceAtLeast(1L)
++        val bitrate = (total * 8L) / seconds
++        Log.d(TAG, "LX probe script=$scriptId total=$total bitrate=$bitrate rank=${lxQualityRank(bitrate.toString())}")
++        return lxQualityRank(bitrate.toString())
++    } catch (e: Throwable) {
++        Log.w(TAG, "LX probe failed script=$scriptId detail=${e.safeLogMessage()}")
++        return -1
++    }
++}
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserRuntimeSession.kt b/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserRuntimeSession.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/kotlin/com/lladlam/melox/playback/LxUserRuntimeSession.kt
+@@ -0,0 +1,133 @@
++package com.lladlam.melox.playback
++
++import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
++import com.lladlam.melox.core.provider.lxuser.LxUserScript
++import java.util.concurrent.CompletableFuture
++import java.util.concurrent.ExecutionException
++import java.util.concurrent.PriorityBlockingQueue
++import java.util.concurrent.ThreadPoolExecutor
++import java.util.concurrent.TimeUnit
++import java.util.concurrent.atomic.AtomicLong
++
++/**
++ * Keeps one LX runtime alive across songs.
++ *
++ * Building a runtime means compiling the user's script - measured at ~200 ms for a
++ * 145 KB obfuscated source - and discarding whatever cache the script had built up.
++ * Keeping it alive skips that work and lets the source reuse its own cached
++ * lookups, which most public sources keep for around twenty minutes.
++ *
++ * A QuickJS context may only be touched from the thread that created it, so every
++ * call is funnelled through one dedicated thread. Resolves are serialised by the
++ * caller anyway, so this costs no parallelism; it just pins the context to a
++ * stable thread. The caller's own wall-clock budget still bounds each song, and a
++ * failed action discards the context so the next song starts clean.
++ *
++ * Work is queued by priority. The prefetcher resolves several upcoming tracks at
++ * once, and each of those takes seconds; without priority the track the user just
++ * tapped would sit behind them.
++ */
++internal object LxUserRuntimeSession {
++    private class Task(
++        val urgent: Boolean,
++        val sequence: Long,
++        val body: () -> Unit,
++    ) : Runnable, Comparable<Task> {
++        override fun run() = body()
++
++        override fun compareTo(other: Task): Int = when {
++            urgent != other.urgent -> if (urgent) -1 else 1
++            else -> sequence.compareTo(other.sequence)
++        }
++    }
++
++    private val sequence = AtomicLong()
++
++    private val executor = ThreadPoolExecutor(
++        1,
++        1,
++        0L,
++        TimeUnit.MILLISECONDS,
++        PriorityBlockingQueue(),
++    ) { runnable -> Thread(runnable, "lx-user-runtime").apply { isDaemon = true } }
++
++    // Only ever touched on the executor's thread, so no extra locking is needed.
++    private var runtime: LxUserRuntime? = null
++    private var identity: String? = null
++
++    private val pacingLock = Any()
++    private var nextRequestAt = 0L
++
++    /**
++     * Blocks until this caller is allowed to issue the next request to the source.
++     *
++     * The quota is shared by every concurrent resolve. Pacing each resolve on its own
++     * multiplied the intended gap by the prefetcher's four parallel resolves, and the
++     * public mirrors answered `429 请求过于频繁` - which made songs fall back to the
++     * official 30 s trial clip.
++     */
++    fun awaitRequestSlot(gapMs: Long) {
++        val waitMs = synchronized(pacingLock) {
++            val now = android.os.SystemClock.elapsedRealtime()
++            val slot = if (nextRequestAt > now) nextRequestAt else now
++            nextRequestAt = slot + gapMs
++            slot - now
++        }
++        if (waitMs > 0L) Thread.sleep(waitMs)
++    }
++
++    /**
++     * Runs [block] against the shared runtime. Pass `urgent = false` for background
++     * work such as prefetching so a user-initiated resolve is served first.
++     */
++    fun <T> withRuntime(
++        recordId: String,
++        scriptSource: String,
++        urgent: Boolean = true,
++        block: (LxUserRuntime) -> T,
++    ): T {
++        val result = CompletableFuture<T>()
++        executor.execute(
++            Task(urgent, sequence.incrementAndGet()) {
++                try {
++                    result.complete(block(runtimeFor(recordId, scriptSource)))
++                } catch (error: Throwable) {
++                    result.completeExceptionally(error)
++                }
++            },
++        )
++        return try {
++            result.get()
++        } catch (error: ExecutionException) {
++            // An action that threw may have left the context mid-flight. Drop it on
++            // the owning thread so the next song rebuilds from a known-good state.
++            executor.execute(
++                Task(true, sequence.incrementAndGet()) {
++                    runCatching { runtime?.close() }
++                    runtime = null
++                    identity = null
++                },
++            )
++            throw error.cause ?: error
++        }
++    }
++
++    private fun runtimeFor(recordId: String, scriptSource: String): LxUserRuntime {
++        runtime?.let { existing ->
++            if (identity == recordId) return existing
++        }
++        runCatching { runtime?.close() }
++        runtime = null
++        identity = null
++        val candidate = LxUserRuntime()
++        try {
++            candidate.load(LxUserScript(scriptSource))
++        } catch (error: Throwable) {
++            runCatching { candidate.close() }
++            throw error
++        }
++        runtime = candidate
++        identity = recordId
++        return candidate
++    }
++}
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/playback/NeteasePlaybackResolver.kt b/android/app/src/main/kotlin/com/lladlam/melox/playback/NeteasePlaybackResolver.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/playback/NeteasePlaybackResolver.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/playback/NeteasePlaybackResolver.kt
+@@ -1,6 +1,7 @@
+ package com.lladlam.melox.playback
+ 
+ import android.net.Uri
++import android.util.Log
+ import androidx.annotation.OptIn
+ import androidx.media3.common.util.UnstableApi
+ import androidx.media3.datasource.DataSpec
+@@ -42,6 +43,12 @@
+         val headers: Map<String, String> = emptyMap(),
+         val expiresAtEpochMs: Long? = null,
+         val cacheIdentity: String = "netease",
++        /**
++         * True when this is a stand-in that a later attempt may improve - currently a
++         * trial clip the third-party sources could not replace. Caching it would make
++         * one transient failure stick for the rest of the session.
++         */
++        val provisional: Boolean = false,
+     )
+ 
+     private val cacheLock = Any()
+@@ -63,12 +70,13 @@
+     fun resolveSongUri(
+         songId: Long,
+         quality: MusicQuality = MusicQualityRuntime.selected,
+-    ): Uri = resolveSongRequest(songId, quality, fallbackRequest = null).uri
++    ): Uri = resolveSongRequest(songId, quality, fallbackRequest = null, urgent = false).uri
+ 
+     private fun resolveSongRequest(
+         songId: Long,
+         quality: MusicQuality,
+         fallbackRequest: CrossProviderFallbackRequest?,
++        urgent: Boolean,
+     ): ResolvedRequest {
+         localSourceProvider(songId)?.let { return ResolvedRequest(it) }
+         val cookieHeader = cookieProvider()
+@@ -88,15 +96,15 @@
+             .getOrElse { throw IOException("Unable to resolve playback source", it.cause ?: it) }
+         return try {
+             val resolved = try {
+-                val thirdParty = if (thirdPartySourcesEnabled() && !thirdPartyOnlyForMembership()) {
+-                    runCatching { chkszPlayback?.resolve(songId, quality.toCommonTier()) }.getOrNull()
+-                } else null
+-                if (thirdParty != null) {
+-                    ResolvedRequest(
+-                        uri = Uri.parse(thirdParty.url),
+-                        cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
+-                    )
++                // Third-party sources come first: LX scripts imported by the user,
++                // then CHKSZ, and only then the official Netease playback URL.
++                val thirdPartyTriedFirst = !thirdPartyOnlyForMembership()
++                val thirdParty = if (thirdPartyTriedFirst) {
++                    resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
+                 } else {
++                    null
++                }
++                thirdParty ?: run {
+                     val source = qualityClient.playbackSourceBlocking(
+                         songId = songId,
+                         requestedQuality = quality,
+@@ -104,7 +112,44 @@
+                     if (quality == MusicQualityRuntime.selected) {
+                         CrossProviderPlaybackRuntime.clear(songId)
+                     }
+-                    ResolvedRequest(Uri.parse(source.url))
++                    // Two reasons to spend the third-party sources that were held
++                    // back: the official answer is only a short clip, or it is a
++                    // complete track below the quality the user picked (a non-VIP
++                    // account asking for master quality is served 128k). Retrying
++                    // them in the default order would only double the latency of a
++                    // stage that already failed.
++                    val actual = source.quality
++                    val belowRequested = actual == null || actual.ordinal < quality.ordinal
++                    val replacement = if (!thirdPartyTriedFirst && (source.isPreview || belowRequested)) {
++                        Log.i(
++                            TAG,
++                            "Official source insufficient songId=$songId preview=${source.isPreview} " +
++                                "actual=${actual?.apiLevel} requested=${quality.apiLevel}, trying third-party",
++                        )
++                        // A preview is worthless, so wait on it; a complete stream is a
++                        // perfectly good fallback and is only worth a brief look for
++                        // something better.
++                        val playableFallback = !source.isPreview
++                        var resolved = resolveThirdParty(
++                            songId,
++                            quality,
++                            fallbackRequest,
++                            hasPlayableFallback = playableFallback,
++                            urgent = urgent,
++                        )
++                        // The public mirrors answer `429 请求过于频繁` when several songs
++                        // resolve at once, so one retry after a pause recovers songs that
++                        // would otherwise be left on the trial clip.
++                        if (resolved == null && source.isPreview) {
++                            Thread.sleep(PREVIEW_RETRY_PAUSE_MS)
++                            Log.i(TAG, "Official answer is a trial clip and third-party found nothing, retrying songId=$songId")
++                            resolved = resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
++                        }
++                        resolved
++                    } else {
++                        null
++                    }
++                    replacement ?: ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview)
+                 }
+             } catch (error: NeteasePlaybackUnavailableException) {
+                 val fallback = fallbackRequest
+@@ -125,33 +170,13 @@
+                         expiresAtEpochMs = fallback.expiresAtEpochMs,
+                         cacheIdentity = "${fallback.source.storageValue}:${fallback.resourceId}",
+                     )
+-                    } else {
+-                        val chksz = if (thirdPartySourcesEnabled()) {
+-                            chkszPlayback?.resolve(songId, quality.toCommonTier())
+-                        } else null
+-                        chksz?.let { result ->
+-                            ResolvedRequest(
+-                                uri = Uri.parse(result.url),
+-                                cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
+-                            )
+-                        } ?: (if (thirdPartySourcesEnabled()) fallbackRequest?.let {
+-                            lxUserPlayback?.resolve(
+-                                songId = it.songId,
+-                                title = it.title,
+-                                artist = it.artist,
+-                                durationMs = it.durationMs,
+-                                quality = it.quality,
+-                            )
+-                        }?.let { result ->
+-                            ResolvedRequest(
+-                                uri = Uri.parse(result.url),
+-                                headers = result.requestHeaders,
+-                                cacheIdentity = "lx-user:${result.sourceId}",
+-                            )
+-                        } else null) ?: throw error
+-                    }
++                } else {
++                    resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent) ?: throw error
++                }
+             }
+-            synchronized(cacheLock) { resolvedUris[key] = resolved }
++            if (!resolved.provisional) {
++                synchronized(cacheLock) { resolvedUris[key] = resolved }
++            }
+             pending.complete(resolved)
+             resolved
+         } catch (error: Throwable) {
+@@ -184,7 +209,7 @@
+         val fallbackRequest = fallbackRequest(uri, songId, requestedQuality)
+         val key = resolveKey(songId, requestedQuality, currentCookieHeader, fallbackRequest)
+ 
+-        val resolved = resolveSongRequest(songId, requestedQuality, fallbackRequest)
++        val resolved = resolveSongRequest(songId, requestedQuality, fallbackRequest, urgent = true)
+         val cacheKey = playbackCacheKey(
+             songId = songId,
+             quality = requestedQuality,
+@@ -222,9 +247,61 @@
+         val songId = uri.lastPathSegment?.toLongOrNull() ?: return
+         val quality = MusicQuality.fromApiLevel(uri.getQueryParameter(QUALITY_QUERY))
+             ?: MusicQualityRuntime.selected
+-        resolveSongRequest(songId, quality, fallbackRequest(uri, songId, quality))
++        // Prefetching must not delay the track the user is actually waiting for.
++        resolveSongRequest(songId, quality, fallbackRequest(uri, songId, quality), urgent = false)
+     }
+ 
++    /**
++     * Resolves through the user's third-party sources: LX Music scripts first, then
++     * CHKSZ. Returns null when third-party sources are off or both stages failed so
++     * the caller can fall back to the Netease native API.
++     */
++    private fun resolveThirdParty(
++        songId: Long,
++        quality: MusicQuality,
++        fallbackRequest: CrossProviderFallbackRequest?,
++        hasPlayableFallback: Boolean = false,
++        urgent: Boolean = true,
++    ): ResolvedRequest? {
++        if (!thirdPartySourcesEnabled()) return null
++        val lx = runCatching {
++            lxUserPlayback?.resolve(
++                songId = fallbackRequest?.songId ?: songId,
++                title = fallbackRequest?.title.orEmpty(),
++                artist = fallbackRequest?.artist.orEmpty(),
++                durationMs = fallbackRequest?.durationMs,
++                quality = quality.toCommonTier(),
++                hasPlayableFallback = hasPlayableFallback,
++                urgent = urgent,
++            )
++        }.onFailure { Log.w(TAG, "LX stage failed songId=$songId error=${it.javaClass.simpleName}") }
++            .getOrNull()
++        if (lx != null) {
++            Log.i(TAG, "Resolve success stage=lx script=${lx.sourceId} quality=${lx.quality?.apiLevel}")
++            // The official answer for a trial clip is Standard, and without this the
++            // player chip would keep claiming "标准" while a measured lossless stream
++            // from the LX source is what actually plays.
++            lx.quality?.let {
++                MusicQualityRuntime.recordActual(songId = songId, requested = quality, actual = it)
++            }
++            return ResolvedRequest(
++                uri = Uri.parse(lx.url),
++                headers = lx.requestHeaders,
++                cacheIdentity = "lx-user:${lx.sourceId}",
++            )
++        }
++        val chksz = runCatching { chkszPlayback?.resolve(songId, quality.toCommonTier()) }
++            .onFailure { Log.w(TAG, "CHKSZ stage failed songId=$songId error=${it.javaClass.simpleName}") }
++            .getOrNull()
++        return chksz?.let {
++            Log.i(TAG, "Resolve success stage=chksz")
++            ResolvedRequest(
++                uri = Uri.parse(it.url),
++                cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
++            )
++        }
++    }
++
+     private fun resolveKey(
+         songId: Long,
+         quality: MusicQuality,
+@@ -291,6 +368,8 @@
+         private const val DURATION_QUERY = "durationMs"
+         private const val MAX_RESOLVED_URIS = 96
+         private const val PLAYBACK_CACHE_VERSION = 3
++        /** Pause before retrying third-party sources for a song the official API only clips. */
++        private const val PREVIEW_RETRY_PAUSE_MS = 1_500L
+ 
+         private fun playbackCacheKey(
+             songId: Long,
+@@ -321,6 +400,8 @@
+     }
+ }
+ 
++private const val TAG = "MeloXNeteaseResolve"
++
+ private fun Long?.orZero(): Long = this ?: 0L
+ 
+ private fun AudioQualityTier.toMusicQuality(requested: MusicQuality): MusicQuality = when (this) {
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/playback/ProviderPlaybackResolver.kt b/android/app/src/main/kotlin/com/lladlam/melox/playback/ProviderPlaybackResolver.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/playback/ProviderPlaybackResolver.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/playback/ProviderPlaybackResolver.kt
+@@ -158,7 +158,19 @@
+                     )
+                     ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
+                 }
+-                is PlaybackResolution.Preview -> ResolvedRequest(Uri.parse(resolution.url), emptyMap())
++                is PlaybackResolution.Preview -> {
++                    // Same membership case as Netease: the provider hands out a clip
++                    // instead of failing, so the URL on its own is not an answer. When
++                    // the third-party sources were held back for members-only use,
++                    // spend them now; otherwise they already ran earlier in this call.
++                    val replacement = if (allowExternalResolver && thirdPartySourcesEnabled() && thirdPartyOnlyForMembership()) {
++                        Log.i(TAG, "Provider served a trial clip source=${source.storageValue}, trying third-party")
++                        resolveThirdParty(track, quality, source)
++                    } else {
++                        null
++                    }
++                    replacement ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap())
++                }
+                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
+                 PlaybackResolution.SubscriptionRequired -> {
+                     if (allowExternalResolver && thirdPartySourcesEnabled()) {
+@@ -169,10 +181,12 @@
+                     }
+                 }
+                 PlaybackResolution.RegionRestricted -> throw IOException("${provider.displayName} 当前地区不可播放")
+-                PlaybackResolution.CopyrightRestricted -> throw IOException("${provider.displayName} 当前版权不可播放")
+-                is PlaybackResolution.Unavailable -> throw IOException(
+-                    resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
+-                )
++                PlaybackResolution.CopyrightRestricted -> resolveThirdParty(track, quality, source)
++                    ?: throw IOException("${provider.displayName} 当前版权不可播放")
++                is PlaybackResolution.Unavailable -> resolveThirdParty(track, quality, source)
++                    ?: throw IOException(
++                        resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
++                    )
+             }
+             synchronized(cacheLock) { resolvedUris[key] = result }
+             pending.complete(result)
+@@ -190,6 +204,7 @@
+         quality: AudioQualityTier,
+         source: MusicSource,
+     ): ResolvedRequest? {
++        if (!thirdPartySourcesEnabled()) return null
+         val lx = runCatching { lxUserPlayback?.resolve(track, quality) }
+             .onFailure { Log.w(TAG, "LX membership fallback failed source=${source.storageValue}", it) }
+             .getOrNull()
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -53,7 +53,25 @@
+         }
+     } else null
+ 
++    // AGP resolves the default debug keystore through an Android *user* home that
++    // varies between CI runners, so every build ends up with a different signer and
++    // `adb install -r` fails with a signature mismatch (wiping the app's data).
++    // Pinning it to a property-defined file lets CI cache one keystore and keep a
++    // stable signature across builds.
++    val debugKeystorePath = providers.gradleProperty("meloxDebugStoreFile").orNull
++    val meloxDebugSigning = if (debugKeystorePath != null) {
++        signingConfigs.create("meloxDebug") {
++            storeFile = file(debugKeystorePath)
++            storePassword = providers.gradleProperty("meloxDebugStorePassword").orNull ?: "android"
++            keyAlias = providers.gradleProperty("meloxDebugKeyAlias").orNull ?: "androiddebugkey"
++            keyPassword = providers.gradleProperty("meloxDebugKeyPassword").orNull ?: "android"
++        }
++    } else null
++
+     buildTypes {
++        getByName("debug") {
++            meloxDebugSigning?.let { signingConfig = it }
++        }
+         getByName("release") {
+             meloxReleaseSigning?.let { signingConfig = it }
+             isMinifyEnabled = true
+diff --git a/android/app/src/main/kotlin/com/lladlam/melox/ui/provider/ProviderServicesScreen.kt b/android/app/src/main/kotlin/com/lladlam/melox/ui/provider/ProviderServicesScreen.kt
+--- a/android/app/src/main/kotlin/com/lladlam/melox/ui/provider/ProviderServicesScreen.kt
++++ b/android/app/src/main/kotlin/com/lladlam/melox/ui/provider/ProviderServicesScreen.kt
+@@ -45,6 +45,8 @@
+ import com.lladlam.melox.core.music.provider.ProviderAccountManager
+ import com.lladlam.melox.core.music.provider.ThirdPartyMusicSourceConsentStore
+ import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
++import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
++import com.lladlam.melox.core.provider.lxuser.LxUserScript
+ import com.lladlam.melox.core.provider.lxuser.ChkszApiKeyStore
+ import com.lladlam.melox.core.provider.jellyfin.JellyfinApiClient
+ import com.lladlam.melox.core.provider.jellyfin.JellyfinSessionStore
+@@ -163,6 +165,7 @@
+         if (uris.isEmpty()) return@rememberLauncherForActivityResult
+         scope.launch {
+             val failures = mutableListOf<String>()
++            val reports = mutableListOf<String>()
+             var imported = 0
+             uris.forEachIndexed { index, uri ->
+                 runCatching {
+@@ -170,19 +173,24 @@
+                         context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                             ?: error("无法读取音乐源文件")
+                     }
+-                    withContext(Dispatchers.IO) { LxUserSourceStore.import(context, script) }
+-                }.onSuccess {
++                    withContext(Dispatchers.IO) {
++                        LxUserSourceStore.import(context, script)
++                        describeLxSource(script)
++                    }
++                }.onSuccess { report ->
+                     imported++
++                    reports += report
+                 }.onFailure {
+                     failures += "第 ${index + 1} 个文件：${it.message ?: "导入失败"}"
+                 }
+             }
+             lxSources = LxUserSourceStore.list(context)
+-            lxImportError = when {
+-                failures.isEmpty() -> "已导入 $imported 个音乐源"
+-                imported > 0 -> "已导入 $imported 个，失败 ${failures.size} 个\n${failures.joinToString("\n")}"
+-                else -> failures.joinToString("\n")
+-            }
++            lxImportError = buildList {
++                if (imported > 0) add("已导入 $imported 个音乐源")
++                addAll(reports)
++                if (failures.isNotEmpty() && imported > 0) add("失败 ${failures.size} 个")
++                addAll(failures)
++            }.joinToString("\n")
+             showLxImportDialog = true
+         }
+     }
+@@ -404,7 +412,7 @@
+             if (thirdPartySourcesEnabled) {
+                 MeloXIosListRow(
+                     title = "遇到会员歌曲时再调用",
+-                    subtitle = "优先使用官方音源，仅在会员/版权受限时尝试第三方解析",
++                    subtitle = "优先使用官方音源，仅在会员/版权受限或官方只给试听片段时尝试第三方解析",
+                     leading = { Spacer(Modifier.width(25.dp)) },
+                     trailing = {
+                         MeloXGlassToggle(
+@@ -595,11 +603,14 @@
+                                         response.body.string()
+                                     }
+                                 }
+-                                withContext(Dispatchers.IO) { LxUserSourceStore.import(context, script) }
+-                            }.onSuccess {
++                                withContext(Dispatchers.IO) {
++                                    LxUserSourceStore.import(context, script)
++                                    describeLxSource(script)
++                                }
++                            }.onSuccess { report ->
+                                 lxSources = LxUserSourceStore.list(context)
+                                 lxImportUrl = ""
+-                                showLxImportDialog = false
++                                lxImportError = "导入成功 · $report"
+                             }.onFailure { lxImportError = it.message ?: "导入音乐源失败" }
+                         }
+                     },
+@@ -676,6 +687,30 @@
+     }
+ }
+ 
++/**
++ * Loads an imported script once so the user immediately sees whether the runtime
++ * accepted it and which platforms and qualities it announced.
++ */
++private fun describeLxSource(script: String): String {
++    val model = LxUserScript(script)
++    val name = model.metadata.name.orEmpty().ifBlank { "未命名音乐源" }
++    return runCatching {
++        LxUserRuntime().use { runtime ->
++            runtime.load(model)
++            val sources = runtime.declaredSources()
++            if (sources.isEmpty()) {
++                "$name：已导入，但脚本没有声明支持的平台"
++            } else {
++                val detail = sources.entries.joinToString("、") { (source, capability) ->
++                    val qualities = capability.qualitys.filter { it.isNotBlank() }
++                    if (qualities.isEmpty()) source else "$source(${qualities.joinToString("/")})"
++                }
++                "$name：支持 $detail"
++            }
++        }
++    }.getOrElse { "$name：已导入，但脚本无法初始化（${it.message ?: "运行时加载失败"}）" }
++}
++
+ @Composable
+ private fun ServicesSectionLabel(text: String) {
+     Text(
+diff --git a/android/app/src/test/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClientTest.kt b/android/app/src/test/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClientTest.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/test/kotlin/com/lladlam/melox/core/audio/NeteaseQualityClientTest.kt
+@@ -0,0 +1,31 @@
++package com.lladlam.melox.core.audio
++
++import org.json.JSONObject
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class NeteaseQualityClientTest {
++
++    @Test
++    fun detectsFreeTrialClip() {
++        val data = JSONObject()
++            .put("url", "https://example.com/trial.mp3")
++            .put("freeTrialInfo", JSONObject().put("start", 0).put("end", 30))
++        assertTrue(NeteaseQualityClient.isPreviewClip(data))
++    }
++
++    @Test
++    fun ignoresExplicitNullTrialInfo() {
++        val data = JSONObject()
++            .put("url", "https://example.com/full.mp3")
++            .put("freeTrialInfo", JSONObject.NULL)
++        assertFalse(NeteaseQualityClient.isPreviewClip(data))
++    }
++
++    @Test
++    fun treatsMissingTrialInfoAsFullTrack() {
++        val data = JSONObject().put("url", "https://example.com/full.mp3")
++        assertFalse(NeteaseQualityClient.isPreviewClip(data))
++    }
++}
+diff --git a/android/app/src/test/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserSourceStoreTest.kt b/android/app/src/test/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserSourceStoreTest.kt
+--- a/android/app/src/test/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserSourceStoreTest.kt
++++ b/android/app/src/test/kotlin/com/lladlam/melox/core/provider/lxuser/LxUserSourceStoreTest.kt
+@@ -1,5 +1,6 @@
+ package com.lladlam.melox.core.provider.lxuser
+ 
++import org.junit.Assert.assertEquals
+ import org.junit.Assert.assertFalse
+ import org.junit.Assert.assertTrue
+ import org.junit.Test
+@@ -20,4 +21,18 @@
+     fun rejectsUnrelatedJavascript() {
+         assertFalse(LxUserSourceStore.looksLikeLxMusicSource("console.log('hello')"))
+     }
++
++    @Test
++    fun parsesSlashSlashMetadataHeaders() {
++        val metadata = LxUserScriptMetadata.parse(
++            """
++            // @name 测试音源
++            // @version 2.1
++            // @author tester
++            """.trimIndent(),
++        )
++        assertEquals("测试音源", metadata.name)
++        assertEquals("2.1", metadata.version)
++        assertEquals("tester", metadata.author)
++    }
+ }
