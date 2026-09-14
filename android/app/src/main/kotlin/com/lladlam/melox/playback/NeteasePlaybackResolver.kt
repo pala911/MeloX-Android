@@ -244,7 +244,13 @@ class NeteasePlaybackResolver(
         }.onFailure { Log.w(TAG, "LX stage failed songId=$songId error=${it.javaClass.simpleName}") }
             .getOrNull()
         if (lx != null) {
-            Log.i(TAG, "Resolve success stage=lx script=${lx.sourceId}")
+            Log.i(TAG, "Resolve success stage=lx script=${lx.sourceId} quality=${lx.quality?.apiLevel}")
+            // The official answer for a trial clip is Standard, and without this the
+            // player chip would keep claiming "标准" while a measured lossless stream
+            // from the LX source is what actually plays.
+            lx.quality?.let {
+                MusicQualityRuntime.recordActual(songId = songId, requested = quality, actual = it)
+            }
             return ResolvedRequest(
                 uri = Uri.parse(lx.url),
                 headers = lx.requestHeaders,

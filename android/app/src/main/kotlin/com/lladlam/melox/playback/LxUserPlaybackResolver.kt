@@ -5,6 +5,7 @@ import android.util.Log
 import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
+import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
 import com.lladlam.melox.core.provider.lxuser.LxUserScript
 import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
@@ -22,6 +23,12 @@ internal data class LxUserPlaybackResult(
     val sourceId: String,
     val url: String,
     val requestHeaders: Map<String, String> = emptyMap(),
+    /**
+     * Tier measured from the resolved link, when it could be determined. Callers
+     * use it to report what is actually playing, because the quality the source
+     * was *asked* for says nothing about the file it hands back.
+     */
+    val quality: MusicQuality? = null,
 )
 
 /** Resolves a song through locally installed LX Music user API scripts. */
@@ -172,7 +179,9 @@ class LxUserPlaybackResolver(
                             val softDeadline = if (bestUrl == null) deadline else start + FALLBACK_BUDGET_MS
                             if (now > softDeadline) {
                                 Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source best=$bestRank")
-                                return@use bestUrl?.let { LxUserPlaybackResult(record.id, it) }
+                                return@use bestUrl?.let {
+                                    LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank))
+                                }
                             }
                             // Most public LX endpoints throttle aggressively (the bundled
                             // scripts themselves ask for "no more than 4 requests per 2
@@ -226,19 +235,30 @@ class LxUserPlaybackResolver(
                             Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality " +
                                 "url=${url != null} reported=$reported rank=$rank need=$need link=${url?.take(220)}")
                             if (url == null) continue
-                            // Several public mirrors accept any quality you ask for and
-                            // quietly serve 128k, so the requested tier is not proof of
-                            // what will play. Only accept a link that is at least as good
-                            // as the tier being tried, and keep the best miss around in
-                            // case nothing reaches the bar.
-                            if (rank < 0 || rank >= need) return@use LxUserPlaybackResult(record.id, url)
+                            // Several public mirrors accept any quality you ask for
+                            // and quietly serve 128k, so the requested tier is not
+                            // proof of what will play. Only accept a link that is at
+                            // least as good as the tier being tried, and keep the best
+                            // miss around in case nothing reaches the bar.
+                            //
+                            // Lossless from `wy` is taken straight away: these mirrors
+                            // rarely hold a 24-bit master of a track the official API
+                            // only serves as a clip, and hunting one across the other
+                            // platforms costs the user seconds for nothing.
+                            if (rank < 0 || rank >= need || (source == "wy" && rank >= LOSSLESS_RANK)) {
+                                return@use LxUserPlaybackResult(
+                                    record.id,
+                                    url,
+                                    quality = rankToMusicQuality(rank),
+                                )
+                            }
                             if (rank > bestRank) {
                                 bestRank = rank
                                 bestUrl = url
                             }
                         }
                     }
-                    bestUrl?.let { LxUserPlaybackResult(record.id, it) }
+                    bestUrl?.let { LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank)) }
                 }
             }.onFailure { error ->
                 Log.w(
@@ -318,7 +338,12 @@ class LxUserPlaybackResolver(
                             is Map<*, *> -> response["url"]?.toString()
                             else -> null
                         }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-                        url?.let { LxUserPlaybackResult(record.id, it) }
+                        url?.let {
+                            val rank = track.durationMs?.let { duration ->
+                                probeQualityRank(it, duration, record.id)
+                            } ?: -1
+                            LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(rank))
+                        }
                     }.firstOrNull()
                 }
             }.getOrNull()
@@ -328,8 +353,12 @@ class LxUserPlaybackResolver(
     }
 
     private companion object {
-        /** Sources to try, in order, for a track whose own source has no match. */
-        val LX_SOURCES = listOf("wy", "kw", "kg", "tx", "mg")
+        /**
+         * Sources to try, in order, for a track whose own source has no match.
+         * Kuwo is deliberately absent: its car-head-unit endpoint answers with
+         * 22-60 kbps fragments, so querying it only costs time.
+         */
+        val LX_SOURCES = listOf("wy", "kg", "tx", "mg")
         /** Wall-clock budget for one LX resolve; past this we stop burning the user's waiting time. */
         const val RESOLVE_BUDGET_MS = 10_000L
         /** Shorter budget used once a playable link exists and we are only chasing a better tier. */
@@ -341,10 +370,21 @@ class LxUserPlaybackResolver(
 
 /** Log tag shared by the resolver class and its file-level helpers. */
 private const val TAG = "MeloXThirdParty"
+/** [lxQualityRank] bucket for a lossless (16-bit) file. */
+private const val LOSSLESS_RANK = 3
 /** At most this many CDN probes per resolve; each one is a single ranged GET. */
 private const val MAX_PROBES = 4
 /** Give up on a probe after this long so a slow CDN never blocks playback. */
 private const val PROBE_TIMEOUT_MS = 3500
+
+/** Maps a measured [lxQualityRank] back onto the tier the UI should show. */
+private fun rankToMusicQuality(rank: Int): MusicQuality? = when (rank) {
+    1 -> MusicQuality.Standard
+    2 -> MusicQuality.High
+    3 -> MusicQuality.Lossless
+    4 -> MusicQuality.HiResolution
+    else -> null
+}
 
 /**
  * Coarse bucket for "how good is this file really", shared by the requested
