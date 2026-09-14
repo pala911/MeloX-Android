@@ -157,7 +157,6 @@ class LxUserPlaybackResolver(
                     phase = "request"
                     val start = android.os.SystemClock.elapsedRealtime()
                     val deadline = start + RESOLVE_BUDGET_MS
-                    var lastRequestAt = 0L
                     // Quality first, source second. Every source gets a chance at the
                     // best quality before anything settles for a lower one; iterating
                     // the other way round let the first source's 128k link win over
@@ -174,22 +173,16 @@ class LxUserPlaybackResolver(
                         for (source in candidateSources) {
                             if (source in answered) continue
                             if (!runtime.supports(source, "musicUrl")) continue
-                            val now = android.os.SystemClock.elapsedRealtime()
                             // Once something playable is in hand, stop hunting much
                             // sooner: the user is waiting on a song, not on a tier.
                             val softDeadline = if (bestUrl == null) deadline else start + FALLBACK_BUDGET_MS
-                            if (now > softDeadline) {
+                            if (android.os.SystemClock.elapsedRealtime() > softDeadline) {
                                 Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source best=$bestRank")
                                 return@withRuntime bestUrl?.let {
                                     LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank))
                                 }
                             }
-                            // Most public LX endpoints throttle aggressively (the bundled
-                            // scripts themselves ask for "no more than 4 requests per 2
-                            // seconds"), and a 429 costs far more time than the pause.
-                            val gap = MIN_REQUEST_GAP_MS - (now - lastRequestAt)
-                            if (lastRequestAt > 0L && gap > 0L) Thread.sleep(gap)
-                            lastRequestAt = android.os.SystemClock.elapsedRealtime()
+                            LxUserRuntimeSession.awaitRequestSlot(MIN_REQUEST_GAP_MS)
                             val sourceQuality = runtime.qualityFor(source, requestedQuality)
                             // Scripts read `musicInfo.source` and `musicInfo.quality`, so
                             // the nested music info has to describe the source and the
@@ -322,6 +315,7 @@ class LxUserPlaybackResolver(
             val result = runCatching {
                 LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
                     lxQualityFallbacks(quality.toLxQuality()).asSequence().mapNotNull { requestedQuality ->
+                        LxUserRuntimeSession.awaitRequestSlot(MIN_REQUEST_GAP_MS)
                         val sourceQuality = runtime.qualityFor("wy", requestedQuality)
                         // Same rule as the main loop: the nested music info must carry
                         // the quality being tried, otherwise the script keeps asking
