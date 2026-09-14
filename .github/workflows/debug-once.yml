@@ -53,12 +53,16 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
           ls -l ~/.android/debug.keystore
+          # Report where AGP would look on its own, so a future runner change is
+          # visible in the log instead of silently producing a new signer.
+          echo "HOME=$HOME ANDROID_USER_HOME=${ANDROID_USER_HOME:-unset} ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-unset}"
 
       - name: Assemble Debug APK
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 --stacktrace
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 --stacktrace \
+            -PmeloxDebugStoreFile="$HOME/.android/debug.keystore"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4

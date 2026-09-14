@@ -53,7 +53,25 @@ android {
         }
     } else null
 
+    // AGP resolves the default debug keystore through an Android *user* home that
+    // varies between CI runners, so every build ends up with a different signer and
+    // `adb install -r` fails with a signature mismatch (wiping the app's data).
+    // Pinning it to a property-defined file lets CI cache one keystore and keep a
+    // stable signature across builds.
+    val debugKeystorePath = providers.gradleProperty("meloxDebugStoreFile").orNull
+    val meloxDebugSigning = if (debugKeystorePath != null) {
+        signingConfigs.create("meloxDebug") {
+            storeFile = file(debugKeystorePath)
+            storePassword = providers.gradleProperty("meloxDebugStorePassword").orNull ?: "android"
+            keyAlias = providers.gradleProperty("meloxDebugKeyAlias").orNull ?: "androiddebugkey"
+            keyPassword = providers.gradleProperty("meloxDebugKeyPassword").orNull ?: "android"
+        }
+    } else null
+
     buildTypes {
+        getByName("debug") {
+            meloxDebugSigning?.let { signingConfig = it }
+        }
         getByName("release") {
             meloxReleaseSigning?.let { signingConfig = it }
             isMinifyEnabled = true
