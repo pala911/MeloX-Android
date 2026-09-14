@@ -14,6 +14,8 @@ import com.lladlam.melox.core.lyrics.LyricsDocument
 import com.lladlam.melox.core.music.model.MusicArtistRef
 import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.model.ProviderTrackMetadata
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 
 internal data class LxUserPlaybackResult(
@@ -159,6 +161,7 @@ class LxUserPlaybackResolver(
                     // another source's lossless one.
                     var bestUrl: String? = null
                     var bestRank = -1
+                    var probes = 0
                     for (requestedQuality in lxQualityFallbacks(lxQuality)) {
                         val need = lxQualityRank(requestedQuality)
                         for (source in candidateSources) {
@@ -207,9 +210,21 @@ class LxUserPlaybackResolver(
                                     .mapNotNull { body[it]?.toString()?.trim()?.takeIf(String::isNotEmpty) }
                                     .firstOrNull()
                             }
-                            val rank = lxQualityRank(reported)
+                            // Most scripts hand back a bare URL with no quality field, so
+                            // the requested tier says nothing about what will actually play.
+                            // When the duration is known we probe the CDN (one ranged GET)
+                            // and read the total size off Content-Range to derive the true
+                            // bitrate. That probe hits the final CDN, not the rate-limited
+                            // LX API, so it costs nothing against the "4 requests / 2s" rule.
+                            val reportedRank = lxQualityRank(reported)
+                            val rank = if (reportedRank >= 0 || url == null || track.durationMs == null || probes >= MAX_PROBES) {
+                                reportedRank
+                            } else {
+                                probes++
+                                probeQualityRank(url, track.durationMs, record.id)
+                            }
                             Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality " +
-                                "url=${url != null} reported=$reported rank=$rank need=$need")
+                                "url=${url != null} reported=$reported rank=$rank need=$need link=${url?.take(220)}")
                             if (url == null) continue
                             // Several public mirrors accept any quality you ask for and
                             // quietly serve 128k, so the requested tier is not proof of
@@ -233,7 +248,7 @@ class LxUserPlaybackResolver(
                 )
             }.getOrNull()
             if (result != null) {
-                Log.i(TAG, "LX resolved source=${track.id.source.storageValue} script=${record.id}")
+                Log.i(TAG, "LX resolved source=${track.id.source.storageValue} script=${record.id} link=${result.url.take(220)}")
                 return result
             }
             Log.i(TAG, "LX exhausted source=${track.id.source.storageValue} script=${record.id}")
@@ -322,6 +337,10 @@ class LxUserPlaybackResolver(
         const val FALLBACK_BUDGET_MS = 5_000L
         /** Public LX endpoints rate-limit hard; a short pause is cheaper than a 429. */
         const val MIN_REQUEST_GAP_MS = 400L
+        /** At most this many CDN probes per resolve; each one is a single ranged GET. */
+        const val MAX_PROBES = 4
+        /** Give up on a probe after this long so a slow CDN never blocks playback. */
+        const val PROBE_TIMEOUT_MS = 3500
     }
 }
 
@@ -431,3 +450,40 @@ private fun Throwable.safeLogMessage(): String = message.orEmpty()
     .replace('\n', ' ')
     .take(240)
     .ifBlank { "none" }
+
+/**
+ * Derives the real quality of a resolved link by asking the CDN for its total
+ * size (a single `Range: bytes=0-0` GET, which returns the full length in
+ * `Content-Range` without downloading the audio) and dividing by the track
+ * duration. Returns [lxQualityRank]'s bucket, or `-1` when the size cannot be
+ * determined or the probe times out.
+ */
+private fun probeQualityRank(url: String, durationMs: Long, scriptId: String): Int {
+    try {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Range", "bytes=0-0")
+            connectTimeout = PROBE_TIMEOUT_MS
+            readTimeout = PROBE_TIMEOUT_MS
+            instanceFollowRedirects = true
+        }
+        conn.connect()
+        val total = run {
+            val cr = conn.getHeaderField("Content-Range")
+            if (!cr.isNullOrBlank() && cr.contains('/')) {
+                cr.substring(cr.lastIndexOf('/') + 1).toLongOrNull()
+            } else {
+                conn.contentLengthLong.takeIf { it > 0L }
+            }
+        }
+        conn.disconnect()
+        if (total == null || total <= 0L) return -1
+        val seconds = (durationMs.coerceAtLeast(1L) / 1000L).coerceAtLeast(1L)
+        val bitrate = (total * 8L) / seconds
+        Log.d(TAG, "LX probe script=$scriptId total=$total bitrate=$bitrate rank=${lxQualityRank(bitrate.toString())}")
+        return lxQualityRank(bitrate.toString())
+    } catch (e: Throwable) {
+        Log.w(TAG, "LX probe failed script=$scriptId detail=${e.safeLogMessage()}")
+        return -1
+    }
+}
