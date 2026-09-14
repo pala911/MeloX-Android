@@ -118,6 +118,12 @@ class LxUserRuntime(
         val errorRef = AtomicReference<Throwable?>()
         val done = CountDownLatch(1)
 
+        // When the runtime is reused across songs it can still be holding the reply to
+        // an earlier action whose drain budget ran out - the HTTP thread keeps going
+        // after the caller gives up. Dropping it here stops a late answer from being
+        // handed to this action.
+        pendingHttpResponses.clear()
+
         val requestArg = createJsObject(mapOf("source" to source, "action" to action, "info" to info))
         // LX keeps a single request handler: a second lx.on('request') replaces the
         // first one. Use the newest registration so re-registering scripts win.

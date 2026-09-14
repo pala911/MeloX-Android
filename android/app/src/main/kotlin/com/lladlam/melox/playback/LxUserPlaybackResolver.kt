@@ -6,8 +6,6 @@ import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
 import com.lladlam.melox.core.audio.MusicQuality
-import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
-import com.lladlam.melox.core.provider.lxuser.LxUserScript
 import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
 import com.lladlam.melox.core.network.NeteaseSearchClient
 import com.lladlam.melox.core.lyrics.LrcLyricsParser
@@ -73,8 +71,7 @@ class LxUserPlaybackResolver(
         for (record in LxUserSourceStore.list(appContext)) {
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             val result = runCatching {
-                LxUserRuntime().use { runtime ->
-                    runtime.load(LxUserScript(script))
+                LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
                     if (!runtime.supports(sourceCode, action)) {
                         Log.d(TAG, "LX $action skipped script=${record.id} source=$sourceCode")
                         null
@@ -156,8 +153,7 @@ class LxUserPlaybackResolver(
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             var phase = "load"
             val result: LxUserPlaybackResult? = runCatching {
-                LxUserRuntime().use { runtime ->
-                    runtime.load(LxUserScript(script))
+                LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
                     phase = "request"
                     val start = android.os.SystemClock.elapsedRealtime()
                     val deadline = start + RESOLVE_BUDGET_MS
@@ -169,9 +165,14 @@ class LxUserPlaybackResolver(
                     var bestUrl: String? = null
                     var bestRank = -1
                     var probes = 0
+                    // A source that already handed back a link has shown us its best;
+                    // asking it again one tier lower almost always returns the same
+                    // file, so remember it and skip the repeat.
+                    val answered = mutableSetOf<String>()
                     for (requestedQuality in lxQualityFallbacks(lxQuality)) {
                         val need = lxQualityRank(requestedQuality)
                         for (source in candidateSources) {
+                            if (source in answered) continue
                             if (!runtime.supports(source, "musicUrl")) continue
                             val now = android.os.SystemClock.elapsedRealtime()
                             // Once something playable is in hand, stop hunting much
@@ -179,7 +180,7 @@ class LxUserPlaybackResolver(
                             val softDeadline = if (bestUrl == null) deadline else start + FALLBACK_BUDGET_MS
                             if (now > softDeadline) {
                                 Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source best=$bestRank")
-                                return@use bestUrl?.let {
+                                return@withRuntime bestUrl?.let {
                                     LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank))
                                 }
                             }
@@ -235,6 +236,7 @@ class LxUserPlaybackResolver(
                             Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality " +
                                 "url=${url != null} reported=$reported rank=$rank need=$need link=${url?.take(220)}")
                             if (url == null) continue
+                            answered += source
                             // Several public mirrors accept any quality you ask for
                             // and quietly serve 128k, so the requested tier is not
                             // proof of what will play. Only accept a link that is at
@@ -246,7 +248,7 @@ class LxUserPlaybackResolver(
                             // only serves as a clip, and hunting one across the other
                             // platforms costs the user seconds for nothing.
                             if (rank < 0 || rank >= need || (source == "wy" && rank >= LOSSLESS_RANK)) {
-                                return@use LxUserPlaybackResult(
+                                return@withRuntime LxUserPlaybackResult(
                                     record.id,
                                     url,
                                     quality = rankToMusicQuality(rank),
@@ -318,8 +320,7 @@ class LxUserPlaybackResolver(
         for (record in LxUserSourceStore.list(appContext)) {
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             val result = runCatching {
-                LxUserRuntime().use { runtime ->
-                    runtime.load(LxUserScript(script))
+                LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
                     lxQualityFallbacks(quality.toLxQuality()).asSequence().mapNotNull { requestedQuality ->
                         val sourceQuality = runtime.qualityFor("wy", requestedQuality)
                         // Same rule as the main loop: the nested music info must carry
@@ -359,10 +360,14 @@ class LxUserPlaybackResolver(
          * 22-60 kbps fragments, so querying it only costs time.
          */
         val LX_SOURCES = listOf("wy", "kg", "tx", "mg")
-        /** Wall-clock budget for one LX resolve; past this we stop burning the user's waiting time. */
-        const val RESOLVE_BUDGET_MS = 10_000L
-        /** Shorter budget used once a playable link exists and we are only chasing a better tier. */
-        const val FALLBACK_BUDGET_MS = 5_000L
+        /**
+         * Hard cap on one LX resolve. The first sources answer in 0.4-1.5 s, so four
+         * seconds is generous for a working source while keeping a broken one from
+         * parking the user in front of a spinner.
+         */
+        const val RESOLVE_BUDGET_MS = 4_000L
+        /** Shorter cap once a playable link exists and we are only chasing a better tier. */
+        const val FALLBACK_BUDGET_MS = 2_000L
         /** Public LX endpoints rate-limit hard; a short pause is cheaper than a 429. */
         const val MIN_REQUEST_GAP_MS = 400L
     }
@@ -374,8 +379,11 @@ private const val TAG = "MeloXThirdParty"
 private const val LOSSLESS_RANK = 3
 /** At most this many CDN probes per resolve; each one is a single ranged GET. */
 private const val MAX_PROBES = 4
-/** Give up on a probe after this long so a slow CDN never blocks playback. */
-private const val PROBE_TIMEOUT_MS = 3500
+/**
+ * Give up on a probe after this long. The probe runs on the shared LX thread, so a
+ * slow CDN would otherwise stall the next song's resolve behind it.
+ */
+private const val PROBE_TIMEOUT_MS = 2000
 
 /** Maps a measured [lxQualityRank] back onto the tier the UI should show. */
 private fun rankToMusicQuality(rank: Int): MusicQuality? = when (rank) {
