@@ -97,6 +97,8 @@ class LxUserPlaybackResolver(
         artist: String,
         durationMs: Long?,
         quality: AudioQualityTier,
+        hasPlayableFallback: Boolean = false,
+        urgent: Boolean = true,
     ): LxUserPlaybackResult? {
         return resolve(
             MusicTrack(
@@ -106,10 +108,25 @@ class LxUserPlaybackResolver(
                 durationMs = durationMs,
             ),
             quality,
+            hasPlayableFallback,
+            urgent,
         )
     }
 
-    internal fun resolve(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
+    /**
+     * @param hasPlayableFallback true when the caller already holds a complete stream
+     *   it can fall back to. Hunting for a better tier is then a bonus, so the search
+     *   gets a short leash; when the only alternative is a 30 s trial clip it is worth
+     *   waiting much longer.
+     * @param urgent false for background work such as prefetching, so a track the user
+     *   actually tapped is not queued behind upcoming ones.
+     */
+    internal fun resolve(
+        track: MusicTrack,
+        quality: AudioQualityTier,
+        hasPlayableFallback: Boolean = false,
+        urgent: Boolean = true,
+    ): LxUserPlaybackResult? {
         val sourceCode = when (track.id.source) {
             MusicSource.QQMusic -> "tx"
             MusicSource.Kugou -> "kg"
@@ -153,10 +170,14 @@ class LxUserPlaybackResolver(
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             var phase = "load"
             val result: LxUserPlaybackResult? = runCatching {
-                LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
+                LxUserRuntimeSession.withRuntime(record.id, script, urgent) { runtime ->
                     phase = "request"
                     val start = android.os.SystemClock.elapsedRealtime()
-                    val deadline = start + RESOLVE_BUDGET_MS
+                    val deadline = start + if (hasPlayableFallback) {
+                        RESOLVE_BUDGET_WITH_FALLBACK_MS
+                    } else {
+                        RESOLVE_BUDGET_MS
+                    }
                     // Quality first, source second. Every source gets a chance at the
                     // best quality before anything settles for a lower one; iterating
                     // the other way round let the first source's 128k link win over
@@ -189,6 +210,12 @@ class LxUserPlaybackResolver(
                             // quality currently being tried - not the top one.
                             val sourceSong = standardMusicInfo(track, source, requestedQuality)
                             Log.d(TAG, "LX candidate script=${record.id} source=$source requested=$requestedQuality actual=$sourceQuality")
+                            // Give the action whatever is left of this song's budget
+                            // rather than a fixed slice: a source that answers slowly
+                            // should still get its answer in, but it may not overshoot
+                            // the time the user is willing to wait.
+                            val actionBudget = (softDeadline - android.os.SystemClock.elapsedRealtime())
+                                .coerceAtLeast(MIN_ACTION_TIMEOUT_MS)
                             val value = runCatching {
                                 runtime.callAction(
                                     "musicUrl",
@@ -197,6 +224,7 @@ class LxUserPlaybackResolver(
                                         "type" to sourceQuality,
                                         "musicInfo" to sourceSong,
                                     ),
+                                    actionBudget,
                                 )
                             }.onFailure {
                                 Log.w(TAG, "LX candidate failed script=${record.id} source=$source quality=$sourceQuality detail=${it.safeLogMessage()}")
@@ -269,13 +297,17 @@ class LxUserPlaybackResolver(
             Log.i(TAG, "LX exhausted source=${track.id.source.storageValue} script=${record.id}")
         }
         if (track.id.source != MusicSource.Netease && title.isNotBlank()) {
-            resolveViaNeteaseMatch(track, quality)?.let { return it }
+            resolveViaNeteaseMatch(track, quality, urgent)?.let { return it }
         }
         Log.i(TAG, "LX unresolved source=${track.id.source.storageValue} scripts=${LxUserSourceStore.list(appContext).size}")
         return null
     }
 
-    private fun resolveViaNeteaseMatch(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
+    private fun resolveViaNeteaseMatch(
+        track: MusicTrack,
+        quality: AudioQualityTier,
+        urgent: Boolean,
+    ): LxUserPlaybackResult? {
         val query = track.title.trim()
         val candidates = runCatching {
             kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
@@ -306,27 +338,36 @@ class LxUserPlaybackResolver(
             providerMetadata = ProviderTrackMetadata.Netease(match.id),
         )
         Log.i(TAG, "LX Netease match source=${track.id.source.storageValue} id=${track.id.value.take(8)} -> ${match.id}")
-        return resolveNeteaseTrack(neteaseTrack, quality)
+        return resolveNeteaseTrack(neteaseTrack, quality, urgent)
     }
 
-    private fun resolveNeteaseTrack(track: MusicTrack, quality: AudioQualityTier): LxUserPlaybackResult? {
+    private fun resolveNeteaseTrack(
+        track: MusicTrack,
+        quality: AudioQualityTier,
+        urgent: Boolean,
+    ): LxUserPlaybackResult? {
         for (record in LxUserSourceStore.list(appContext)) {
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             val result = runCatching {
-                LxUserRuntimeSession.withRuntime(record.id, script) { runtime ->
+                LxUserRuntimeSession.withRuntime(record.id, script, urgent) { runtime ->
+                    val start = android.os.SystemClock.elapsedRealtime()
+                    val deadline = start + RESOLVE_BUDGET_MS
                     lxQualityFallbacks(quality.toLxQuality()).asSequence().mapNotNull { requestedQuality ->
                         LxUserRuntimeSession.awaitRequestSlot(MIN_REQUEST_GAP_MS)
+                        if (android.os.SystemClock.elapsedRealtime() > deadline) return@mapNotNull null
                         val sourceQuality = runtime.qualityFor("wy", requestedQuality)
                         // Same rule as the main loop: the nested music info must carry
                         // the quality being tried, otherwise the script keeps asking
                         // for the top quality and the fallbacks never happen.
                         val song = standardMusicInfo(track, "wy", requestedQuality)
+                        val actionBudget = (deadline - android.os.SystemClock.elapsedRealtime())
+                            .coerceAtLeast(MIN_ACTION_TIMEOUT_MS)
                         val response = runCatching {
                             runtime.callAction("musicUrl", song + mapOf(
                                 "source" to "wy",
                                 "type" to sourceQuality,
                                 "musicInfo" to song,
-                            ))
+                            ), actionBudget)
                         }.onFailure { Log.w(TAG, "LX Netease candidate failed quality=$sourceQuality detail=${it.safeLogMessage()}") }.getOrNull()
                         val url = when (response) {
                             is String -> response
@@ -355,16 +396,18 @@ class LxUserPlaybackResolver(
          */
         val LX_SOURCES = listOf("wy", "kg", "tx", "mg")
         /**
-         * Hard cap while nothing has been found yet. One source costs 1-2 s (the
-         * scripts also hit a per-song telemetry endpoint that occasionally times
-         * out at 3 s), so a short cap here silently throws away lossless links that
-         * a slower platform would have produced - measured as 13 failed resolutions
-         * out of 34 at a 4 s cap. This only applies when the official answer was
-         * rejected, and the user is served the official stream if we give up, so
-         * looking a little longer costs nothing but the fallback.
+         * Cap while the only alternative is the official trial clip. A source costs
+         * 1-4 s because the scripts call a telemetry endpoint before their real
+         * request, so this has to cover a couple of attempts. Giving up early here
+         * leaves the user on a 30 s clip, which is worth waiting to avoid.
          */
-        const val RESOLVE_BUDGET_MS = 8_000L
-        /** Shorter cap once a playable link exists and we are only chasing a better tier. */
+        const val RESOLVE_BUDGET_MS = 10_000L
+        /**
+         * Cap when the caller already holds a complete stream. Chasing a higher tier is
+         * then a bonus, and the user should not wait long for it.
+         */
+        const val RESOLVE_BUDGET_WITH_FALLBACK_MS = 3_000L
+        /** Shorter cap once a third-party link exists and we are only chasing a better tier. */
         const val FALLBACK_BUDGET_MS = 3_000L
         /**
          * Pause between actions. Each action fires two to three upstream requests of
@@ -378,6 +421,8 @@ class LxUserPlaybackResolver(
 
 /** Log tag shared by the resolver class and its file-level helpers. */
 private const val TAG = "MeloXThirdParty"
+/** Floor for one action so a nearly exhausted budget still lets a request finish. */
+private const val MIN_ACTION_TIMEOUT_MS = 1_500L
 /** [lxQualityRank] bucket for a lossless (16-bit) file. */
 private const val LOSSLESS_RANK = 3
 /** At most this many CDN probes per resolve; each one is a single ranged GET. */

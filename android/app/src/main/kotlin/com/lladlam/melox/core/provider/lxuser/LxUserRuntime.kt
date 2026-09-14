@@ -29,6 +29,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 private const val HTTP_TIMEOUT_MS = 13_000L
+/**
+ * Default ceiling for one action when the caller does not set one. Sources fire a
+ * telemetry request before the real one, so this has to cover two round trips.
+ */
+private const val ACTION_DRAIN_TIMEOUT_MS = 12_000L
 private const val JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 private const val TEXT_MEDIA_TYPE = "text/plain; charset=utf-8"
 
@@ -104,7 +109,11 @@ class LxUserRuntime(
     }
 
     /** Invokes a V5 action (musicUrl, lyric, or pic) and returns its raw result. */
-    fun callAction(action: String, args: Map<String, Any?>): Any? {
+    fun callAction(
+        action: String,
+        args: Map<String, Any?>,
+        timeoutMs: Long = ACTION_DRAIN_TIMEOUT_MS,
+    ): Any? {
         require(action == "musicUrl" || action == "lyric" || action == "pic") {
             "Unsupported LX action: $action"
         }
@@ -153,7 +162,7 @@ class LxUserRuntime(
             done.countDown()
         })
 
-        drainUntil(done)
+        drainUntil(done, timeoutMs)
         errorRef.get()?.let { throw it }
         val resolved = resultRef.get()
         if (action != "musicUrl") {
@@ -679,16 +688,26 @@ class LxUserRuntime(
         runCatching { then.call(resolve, reject) }.onFailure { onSuccess(value) }
     }
 
-    private fun drainUntil(done: CountDownLatch) {
-        repeat(400) {
-            if (done.count == 0L) return
+    /**
+     * Pumps JS timers and HTTP replies until the action settles or [timeoutMs] passes.
+     *
+     * The sources usually call a telemetry endpoint before their real request, and
+     * that first call alone can take two seconds. This used to stop after a fixed
+     * number of iterations - roughly two seconds - which discarded answers that
+     * arrived moments later and made songs fall back to the official trial clip.
+     */
+    private fun drainUntil(done: CountDownLatch, timeoutMs: Long) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (done.count != 0L && System.currentTimeMillis() < deadline) {
             dispatchTimers()
             processPendingHttpResponses()
             runCatching { context.evaluate("void 0") }
             if (done.count == 0L) return
             synchronized(drainSignal) {
                 if (done.count == 0L || pendingHttpResponses.isNotEmpty()) return@synchronized
-                drainSignal.wait(5)
+                // Wake early when a reply lands so a finished action does not wait
+                // out the rest of the slot.
+                drainSignal.wait(10)
             }
         }
     }

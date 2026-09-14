@@ -70,12 +70,13 @@ class NeteasePlaybackResolver(
     fun resolveSongUri(
         songId: Long,
         quality: MusicQuality = MusicQualityRuntime.selected,
-    ): Uri = resolveSongRequest(songId, quality, fallbackRequest = null).uri
+    ): Uri = resolveSongRequest(songId, quality, fallbackRequest = null, urgent = false).uri
 
     private fun resolveSongRequest(
         songId: Long,
         quality: MusicQuality,
         fallbackRequest: CrossProviderFallbackRequest?,
+        urgent: Boolean,
     ): ResolvedRequest {
         localSourceProvider(songId)?.let { return ResolvedRequest(it) }
         val cookieHeader = cookieProvider()
@@ -99,7 +100,7 @@ class NeteasePlaybackResolver(
                 // then CHKSZ, and only then the official Netease playback URL.
                 val thirdPartyTriedFirst = !thirdPartyOnlyForMembership()
                 val thirdParty = if (thirdPartyTriedFirst) {
-                    resolveThirdParty(songId, quality, fallbackRequest)
+                    resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
                 } else {
                     null
                 }
@@ -125,16 +126,24 @@ class NeteasePlaybackResolver(
                             "Official source insufficient songId=$songId preview=${source.isPreview} " +
                                 "actual=${actual?.apiLevel} requested=${quality.apiLevel}, trying third-party",
                         )
-                        var resolved = resolveThirdParty(songId, quality, fallbackRequest)
-                        // A 30 s clip is worthless, so anything complete beats it and the
-                        // extra wait is always justified. The public mirrors answer
-                        // `429 请求过于频繁` when several songs resolve at once, so one
-                        // retry after a pause recovers songs that would otherwise be
-                        // left on the trial clip.
+                        // A preview is worthless, so wait on it; a complete stream is a
+                        // perfectly good fallback and is only worth a brief look for
+                        // something better.
+                        val playableFallback = !source.isPreview
+                        var resolved = resolveThirdParty(
+                            songId,
+                            quality,
+                            fallbackRequest,
+                            hasPlayableFallback = playableFallback,
+                            urgent = urgent,
+                        )
+                        // The public mirrors answer `429 请求过于频繁` when several songs
+                        // resolve at once, so one retry after a pause recovers songs that
+                        // would otherwise be left on the trial clip.
                         if (resolved == null && source.isPreview) {
                             Thread.sleep(PREVIEW_RETRY_PAUSE_MS)
                             Log.i(TAG, "Official answer is a trial clip and third-party found nothing, retrying songId=$songId")
-                            resolved = resolveThirdParty(songId, quality, fallbackRequest)
+                            resolved = resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
                         }
                         resolved
                     } else {
@@ -162,7 +171,7 @@ class NeteasePlaybackResolver(
                         cacheIdentity = "${fallback.source.storageValue}:${fallback.resourceId}",
                     )
                 } else {
-                    resolveThirdParty(songId, quality, fallbackRequest) ?: throw error
+                    resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent) ?: throw error
                 }
             }
             if (!resolved.provisional) {
@@ -200,7 +209,7 @@ class NeteasePlaybackResolver(
         val fallbackRequest = fallbackRequest(uri, songId, requestedQuality)
         val key = resolveKey(songId, requestedQuality, currentCookieHeader, fallbackRequest)
 
-        val resolved = resolveSongRequest(songId, requestedQuality, fallbackRequest)
+        val resolved = resolveSongRequest(songId, requestedQuality, fallbackRequest, urgent = true)
         val cacheKey = playbackCacheKey(
             songId = songId,
             quality = requestedQuality,
@@ -238,7 +247,8 @@ class NeteasePlaybackResolver(
         val songId = uri.lastPathSegment?.toLongOrNull() ?: return
         val quality = MusicQuality.fromApiLevel(uri.getQueryParameter(QUALITY_QUERY))
             ?: MusicQualityRuntime.selected
-        resolveSongRequest(songId, quality, fallbackRequest(uri, songId, quality))
+        // Prefetching must not delay the track the user is actually waiting for.
+        resolveSongRequest(songId, quality, fallbackRequest(uri, songId, quality), urgent = false)
     }
 
     /**
@@ -250,6 +260,8 @@ class NeteasePlaybackResolver(
         songId: Long,
         quality: MusicQuality,
         fallbackRequest: CrossProviderFallbackRequest?,
+        hasPlayableFallback: Boolean = false,
+        urgent: Boolean = true,
     ): ResolvedRequest? {
         if (!thirdPartySourcesEnabled()) return null
         val lx = runCatching {
@@ -259,6 +271,8 @@ class NeteasePlaybackResolver(
                 artist = fallbackRequest?.artist.orEmpty(),
                 durationMs = fallbackRequest?.durationMs,
                 quality = quality.toCommonTier(),
+                hasPlayableFallback = hasPlayableFallback,
+                urgent = urgent,
             )
         }.onFailure { Log.w(TAG, "LX stage failed songId=$songId error=${it.javaClass.simpleName}") }
             .getOrNull()

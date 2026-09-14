@@ -2,9 +2,12 @@ package com.lladlam.melox.playback
 
 import com.lladlam.melox.core.provider.lxuser.LxUserRuntime
 import com.lladlam.melox.core.provider.lxuser.LxUserScript
-import java.util.concurrent.Callable
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Keeps one LX runtime alive across songs.
@@ -19,13 +22,36 @@ import java.util.concurrent.Executors
  * caller anyway, so this costs no parallelism; it just pins the context to a
  * stable thread. The caller's own wall-clock budget still bounds each song, and a
  * failed action discards the context so the next song starts clean.
+ *
+ * Work is queued by priority. The prefetcher resolves several upcoming tracks at
+ * once, and each of those takes seconds; without priority the track the user just
+ * tapped would sit behind them.
  */
 internal object LxUserRuntimeSession {
-    private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "lx-user-runtime").apply { isDaemon = true }
+    private class Task(
+        val urgent: Boolean,
+        val sequence: Long,
+        val body: () -> Unit,
+    ) : Runnable, Comparable<Task> {
+        override fun run() = body()
+
+        override fun compareTo(other: Task): Int = when {
+            urgent != other.urgent -> if (urgent) -1 else 1
+            else -> sequence.compareTo(other.sequence)
+        }
     }
 
-    // Only ever touched on [executor]'s thread, so no extra locking is needed.
+    private val sequence = AtomicLong()
+
+    private val executor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        PriorityBlockingQueue(),
+    ) { runnable -> Thread(runnable, "lx-user-runtime").apply { isDaemon = true } }
+
+    // Only ever touched on the executor's thread, so no extra locking is needed.
     private var runtime: LxUserRuntime? = null
     private var identity: String? = null
 
@@ -50,20 +76,38 @@ internal object LxUserRuntimeSession {
         if (waitMs > 0L) Thread.sleep(waitMs)
     }
 
-    fun <T> withRuntime(recordId: String, scriptSource: String, block: (LxUserRuntime) -> T): T {
-        val task = Callable {
-            block(runtimeFor(recordId, scriptSource))
-        }
+    /**
+     * Runs [block] against the shared runtime. Pass `urgent = false` for background
+     * work such as prefetching so a user-initiated resolve is served first.
+     */
+    fun <T> withRuntime(
+        recordId: String,
+        scriptSource: String,
+        urgent: Boolean = true,
+        block: (LxUserRuntime) -> T,
+    ): T {
+        val result = CompletableFuture<T>()
+        executor.execute(
+            Task(urgent, sequence.incrementAndGet()) {
+                try {
+                    result.complete(block(runtimeFor(recordId, scriptSource)))
+                } catch (error: Throwable) {
+                    result.completeExceptionally(error)
+                }
+            },
+        )
         return try {
-            executor.submit(task).get()
+            result.get()
         } catch (error: ExecutionException) {
             // An action that threw may have left the context mid-flight. Drop it on
             // the owning thread so the next song rebuilds from a known-good state.
-            executor.submit {
-                runCatching { runtime?.close() }
-                runtime = null
-                identity = null
-            }
+            executor.execute(
+                Task(true, sequence.incrementAndGet()) {
+                    runCatching { runtime?.close() }
+                    runtime = null
+                    identity = null
+                },
+            )
             throw error.cause ?: error
         }
     }
