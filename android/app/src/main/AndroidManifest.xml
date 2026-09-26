@@ -123,10 +123,12 @@
                 android:value="Live rendering of lyrics for Xiaomi Super Island" />
         </service>
 
-        <service
-            android:name=".platform.xiaomi.ShizukuKeepAliveService"
-            android:exported="true" />
-
+        <!-- Upstream 0.6.1 declares ShizukuKeepAliveService as a <service> here, but
+             the class extends Binder and is bound at runtime through
+             Shizuku.bindUserService — it is not an Android service. Lint rejects the
+             declaration in a release build (lintVitalRelease) because the class has no
+             no-arg constructor and does not extend android.app.Service. Upstream CI only
+             runs assembleDebug, so it never sees this. Keep the entry out. -->
         <meta-data android:name="lyricon_module" android:value="true" />
         <meta-data android:name="lyricon_module_author" android:value="lladlam" />
         <meta-data

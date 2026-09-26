@@ -173,14 +173,40 @@ class ProviderPlaybackResolver(
                     )
                     ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
                 }
-                is PlaybackResolution.Preview -> ResolvedRequest(Uri.parse(resolution.url), emptyMap())
+                is PlaybackResolution.Preview -> {
+                    // Same membership case as Netease: the provider hands out a clip
+                    // instead of failing, so the URL on its own is not an answer. When
+                    // the third-party sources were held back for members-only use,
+                    // spend them now; otherwise they already ran earlier in this call.
+                    val replacement = if (allowExternalResolver && thirdPartySourcesEnabled() && thirdPartyOnlyForMembership()) {
+                        Log.i(TAG, "Provider served a trial clip source=${source.storageValue}, trying third-party")
+                        resolveThirdParty(track, quality, source)
+                    } else {
+                        null
+                    }
+                    replacement ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap())
+                }
                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
-                PlaybackResolution.SubscriptionRequired -> throw IOException("${provider.displayName} 当前歌曲需要对应会员权益")
+                // Upstream 0.6.1 dropped the third-party fallback here; we keep it so a
+                // members-only provider failure still has the same escape hatch as the
+                // copyright/unavailable branches above. It is only worth spending when the
+                // sources were held back for membership use — otherwise they already ran
+                // earlier in this call and failed.
+                PlaybackResolution.SubscriptionRequired -> {
+                    if (allowExternalResolver && thirdPartySourcesEnabled()) {
+                        resolveThirdParty(track, quality, source)
+                            ?: throw IOException("${provider.displayName} 当前歌曲需要对应会员权益")
+                    } else {
+                        throw IOException("${provider.displayName} 当前歌曲需要对应会员权益")
+                    }
+                }
                 PlaybackResolution.RegionRestricted -> throw IOException("${provider.displayName} 当前地区不可播放")
-                PlaybackResolution.CopyrightRestricted -> throw IOException("${provider.displayName} 当前版权不可播放")
-                is PlaybackResolution.Unavailable -> throw IOException(
-                    resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
-                )
+                PlaybackResolution.CopyrightRestricted -> resolveThirdParty(track, quality, source)
+                    ?: throw IOException("${provider.displayName} 当前版权不可播放")
+                is PlaybackResolution.Unavailable -> resolveThirdParty(track, quality, source)
+                    ?: throw IOException(
+                        resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
+                    )
             }
             synchronized(cacheLock) { resolvedUris[key] = result }
             pending.complete(result)
@@ -198,6 +224,7 @@ class ProviderPlaybackResolver(
         quality: AudioQualityTier,
         source: MusicSource,
     ): ResolvedRequest? {
+        if (!thirdPartySourcesEnabled()) return null
         val lx = runCatching { lxUserPlayback?.resolve(track, quality) }
             .onFailure { Log.w(TAG, "LX membership fallback failed source=${source.storageValue}", it) }
             .getOrNull()

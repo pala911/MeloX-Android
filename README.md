@@ -131,13 +131,15 @@ Root 权限不是应用正常运行的必要条件；平台增强功能应尽量
 ### 第三方音乐源
 
 - 可在“音乐服务”中单独开启第三方音乐源设置并阅读专用协议；该功能完全由本地开关控制，不属于云控范围。
+- 支持导入 LX Music（移动端自定义音源 v2 接口：`lx.on('request')` / `lx.send('inited')` / `lx.request` / `lx.utils`）的 JavaScript 音乐源，在 QuickJS 运行时中解析播放地址。
 - YouTube Music 接入基于 [lladlam/Square](https://github.com/lladlam/Square) 的双后端架构；InnerTube 模块已 vendored 到 `android/innertube/`，其源自 [Metrolist](https://github.com/mostafaalagamy/Metrolist)，并保留 `com.metrolist.innertube` 包名。
 - Spotify 接入参考 [lladlam/Square](https://github.com/lladlam/Square) 的 Spotify backend 设计，播放引擎使用 `librespot-java`，目录和 OAuth 使用 Spotify Web API；Client ID 由用户在应用内自行填写。
 - Spotify、YouTube Music 与网易云等源共用同一套 provider-neutral 下载与离线播放链路（`MeloXProviderDownloadStore`）。
 - vivo 设备自动尝试接入 OriginOS 原子岛；不提供单独开关，不支持该能力的设备自动保留标准 Android 媒体通知。该适配使用阿里云文档所述的 `notification.superx.*` 本地通知扩展，不依赖 EMAS 远程推送。
-- 支持导入 LX Music 兼容的 JavaScript 音乐源，并在受限 QuickJS 运行时中解析播放地址。
 - 可配置 CHKSZ 个人 API Key，优先解析网易云、QQ音乐和酷狗歌曲；配置前需要前往 `api.chksz.com` 注册，目前仅支持 LinuxDo 用户注册。
-- 第三方解析失败时才回退到对应平台的原生播放；歌词仍由 MeloX 自己的歌词路线处理。
+- 开启第三方音乐源后，播放解析顺序为 **导入的 LX 音乐源 → CHKSZ → 平台原生**；三者都失败才会报不可播放。歌词仍由 MeloX 自己的歌词路线处理。
+- 官方接口对没有对应会员权益的歌曲会返回试听片段（response 里带 `freeTrialInfo`）。MeloX 会识别这种情况并改用第三方音源，不再只播试听片段；第三方也拿不到时才退回试听。
+- 若只想在会员/版权受限歌曲上使用第三方源，可打开“遇到会员歌曲时再调用”，此时恢复为平台原生优先，但官方只给试听片段时仍会尝试第三方。
 
 ## 平台范围
 

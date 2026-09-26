@@ -11,7 +11,7 @@ data class LxUserScriptMetadata(
     val raw: Map<String, String> = emptyMap(),
 ) {
     companion object {
-        private val field = Regex("^\\s*(?:[*#/]\\s*)?@([A-Za-z][\\w-]*)\\s+(.+?)\\s*$")
+        private val field = Regex("^\\s*[^\\w@]*@([A-Za-z][\\w-]*)\\s+(.+?)\\s*$")
 
         /** Reads @name-style fields from the leading comment block only. */
         fun parse(script: String): LxUserScriptMetadata {

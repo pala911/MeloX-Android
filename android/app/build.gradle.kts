@@ -71,11 +71,27 @@ android {
         }
     } else null
 
+    // AGP resolves the default debug keystore through an Android *user* home that
+    // varies between CI runners, so every build ends up with a different signer and
+    // `adb install -r` fails with a signature mismatch (wiping the app's data).
+    // Pinning it to a property-defined file lets CI cache one keystore and keep a
+    // stable signature across builds.
+    val debugKeystorePath = providers.gradleProperty("meloxDebugStoreFile").orNull
+    val meloxDebugSigning = if (debugKeystorePath != null) {
+        signingConfigs.create("meloxDebug") {
+            storeFile = file(debugKeystorePath)
+            storePassword = providers.gradleProperty("meloxDebugStorePassword").orNull ?: "android"
+            keyAlias = providers.gradleProperty("meloxDebugKeyAlias").orNull ?: "androiddebugkey"
+            keyPassword = providers.gradleProperty("meloxDebugKeyPassword").orNull ?: "android"
+        }
+    } else null
+
     buildTypes {
         getByName("debug") {
-            // The debug APK is signed with the debug key and must be able to sit
-            // beside the release build, which uses the project release key.
-            applicationIdSuffix = ".dev"
+            // Keep the upstream `.dev` suffix out: our debug build is signed with a
+            // pinned keystore so `adb install -r` upgrades in place, and a package
+            // rename would drop the imported LX scripts and the login state.
+            meloxDebugSigning?.let { signingConfig = it }
         }
         getByName("release") {
             meloxReleaseSigning?.let { signingConfig = it }
@@ -158,7 +174,13 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.3.0")
     // LX Music-compatible user source scripts run in an isolated QuickJS context.
-    implementation("wang.harlon.quickjs:wrapper-android:2.4.0")
+    // 3.2.0 is the first build with 16 KB page-size aligned native libraries;
+    // 2.4.0 ships a libquickjs-android-wrapper.so whose LOAD segments are only
+    // 4 KB aligned, which trips the compat warning on 16 KB devices.
+    implementation("wang.harlon.quickjs:wrapper-android:3.2.0")
+    // Force the newest graphics-path: older transitive versions ship a
+    // libandroidx.graphics.path.so that fails the 16 KB alignment check.
+    implementation("androidx.graphics:graphics-path:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.google.zxing:core:3.5.4")
 
