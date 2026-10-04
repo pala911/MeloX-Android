@@ -47,7 +47,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Slider
@@ -73,7 +72,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,23 +84,13 @@ import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationCompat
 import coil3.compose.AsyncImage
 import com.lladlam.melox.R
-import com.lladlam.melox.BuildConfig
 import com.lladlam.melox.core.account.NeteaseSessionStore
-import com.lladlam.melox.core.provider.bilibili.BilibiliPlaybackAssociationStore
-import com.lladlam.melox.core.music.provider.PlaybackAccountSlot
-import com.lladlam.melox.core.music.provider.PlaybackAccountStore
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicPlaylistSummary
 import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.provider.MeloXMusicProviders
 import com.lladlam.melox.core.music.provider.UserLibraryCapability
 import com.lladlam.melox.core.library.NeteaseLibraryClient
-import com.lladlam.melox.core.provider.qqmusic.QQMusicSessionStore
-import com.lladlam.melox.core.provider.kugou.KugouSessionStore
-import com.lladlam.melox.ui.account.QQMusicLoginScreen
-import com.lladlam.melox.ui.account.KugouLoginScreen
-import com.lladlam.melox.ui.account.NeteaseLoginScreen
-import com.lladlam.melox.playback.ProviderPlaybackQualityRuntime
 import com.lladlam.melox.playback.CrossProviderPlaybackPreferences
 import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.audio.MusicQualityPreferences
@@ -112,8 +100,6 @@ import com.lladlam.melox.core.network.MeloXPrivateMessage
 import com.lladlam.melox.core.network.NeteaseMusicOperationsClient
 import com.lladlam.melox.core.network.NeteaseSearchClient
 import com.lladlam.melox.core.network.MeloXHttpClient
-import com.lladlam.melox.core.network.MeloXGitHubRouting
-import com.lladlam.melox.core.network.MeloXGitHubSource
 import com.lladlam.melox.core.network.parseNeteaseListenTogetherInvitation
 import com.lladlam.melox.core.recommendation.LocalAnalysisStage
 import com.lladlam.melox.core.recommendation.LocalRecommendationEngine
@@ -122,7 +108,6 @@ import com.lladlam.melox.core.recognition.SongRecognitionClient
 import com.lladlam.melox.core.recognition.SongRecognitionResult
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.playback.MeloXAutoMixFadeCurve
-import com.lladlam.melox.playback.MeloXAutoMixDiagnostics
 import com.lladlam.melox.playback.MeloXAutoMixFallback
 import com.lladlam.melox.playback.MeloXAutoMixMode
 import com.lladlam.melox.playback.MeloXAutoMixSettings
@@ -156,16 +141,7 @@ import com.lladlam.melox.ui.glass.MeloXSymbolVariant
 import com.lladlam.melox.ui.glass.MeloXSystemColors
 import com.lladlam.melox.ui.glass.meloXContentSurface
 import com.lladlam.melox.ui.glass.meloXLiquidButton
-import com.lladlam.melox.ui.legal.MELOX_LEGAL_VERSION
-import com.lladlam.melox.ui.legal.MeloXLegalDocument
-import com.lladlam.melox.ui.legal.MeloXLegalDocumentDialog
 import com.lladlam.melox.ui.legal.MeloXLegalLinks
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigRuntime
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigSource
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigConsent
-import com.lladlam.melox.ui.legal.MeloXCloudControlConsentDialog
-import java.text.DateFormat
-import java.util.Date
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -188,11 +164,7 @@ private enum class SettingsRoute(val titleRes: Int) {
     Storage(R.string.settings_route_storage),
     TabLayout(R.string.settings_route_tabs),
     General(R.string.settings_route_general),
-    RemoteConfig(R.string.settings_route_remote_config),
-    Legal(R.string.settings_route_legal),
     Privacy(R.string.settings_route_privacy),
-    Developer(R.string.settings_route_developer),
-    Experimental(R.string.settings_route_experimental),
 }
 
 private data class SettingsItem(
@@ -222,12 +194,6 @@ private val SettingsSections = listOf(
         SettingsItem(SettingsRoute.SystemPlayback, R.string.settings_sub_system_playback, "▣", R.string.settings_kw_system_playback),
         SettingsItem(SettingsRoute.SkylineLyrics, R.string.settings_sub_skyline, "▱", R.string.settings_kw_skyline),
         SettingsItem(SettingsRoute.FloatingLyrics, R.string.settings_sub_floating, "▤", R.string.settings_kw_floating),
-    )),
-    SettingsSection(R.string.settings_section_about, listOf(
-        SettingsItem(SettingsRoute.RemoteConfig, R.string.settings_sub_remote_config, "⌁", R.string.settings_kw_remote_config),
-        SettingsItem(SettingsRoute.Legal, R.string.settings_sub_legal, "▤", R.string.settings_kw_legal),
-        SettingsItem(SettingsRoute.Developer, R.string.settings_sub_developer, "⌘", R.string.settings_kw_developer),
-        SettingsItem(SettingsRoute.Experimental, R.string.settings_sub_experimental, "✦", R.string.settings_kw_experimental),
     )),
 )
 
@@ -524,142 +490,10 @@ private fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, sess
                     SettingsRoute.Storage -> StorageSettings(context)
                     SettingsRoute.TabLayout -> TabLayoutSettings(context)
                     SettingsRoute.General -> GeneralSettings(context)
-                    SettingsRoute.RemoteConfig -> RemoteConfigSettings()
-                    SettingsRoute.Legal -> LegalSettings(context)
                     SettingsRoute.Privacy -> PrivacySettings(context)
-                    SettingsRoute.Developer -> DeveloperSettings()
-                    SettingsRoute.Experimental -> ExperimentalSettings(context, source, session)
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun LegalSettings(context: android.content.Context) {
-    var selectedDocument by remember { mutableStateOf<MeloXLegalDocument?>(null) }
-    var cloudControlEnabled by remember { mutableStateOf(MeloXRemoteConfigConsent.enabled(context)) }
-    var showCloudControlConsent by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val consentVersion = remember {
-        MeloXSettingsPreferences.string(context, "legal_consent_version")
-    }
-
-    SettingsGlassGroup {
-        Column(Modifier.padding(16.dp)) {
-            Text(stringResource(R.string.settings_legal_documents), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-            Text(
-                text = stringResource(R.string.settings_legal_version, MELOX_LEGAL_VERSION),
-                modifier = Modifier.padding(top = 7.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
-            )
-            Text(
-                text = if (consentVersion.isBlank()) {
-                    stringResource(R.string.settings_legal_no_consent)
-                } else {
-                    stringResource(R.string.settings_legal_consented, consentVersion)
-                },
-                modifier = Modifier.padding(top = 3.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f),
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-            )
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    MeloXIosGroupedList(surfaceColor = MaterialTheme.colorScheme.surface) {
-        MeloXIosListRow(
-            title = stringResource(R.string.legal_privacy),
-            leading = {
-                MeloXSymbolIcon(
-                    MeloXSymbol.Info,
-                    Modifier.size(24.dp),
-                    MeloXSystemColors.Blue,
-                )
-            },
-            onClick = { selectedDocument = MeloXLegalDocument.PrivacyPolicy },
-            showTopSeparator = false,
-        )
-        MeloXIosListRow(
-            title = stringResource(R.string.settings_legal_disclaimer),
-            leading = {
-                MeloXSymbolIcon(
-                    MeloXSymbol.Book,
-                    Modifier.size(24.dp),
-                    MeloXSystemColors.Blue,
-                )
-            },
-            onClick = { selectedDocument = MeloXLegalDocument.Disclaimer },
-            showTopSeparator = true,
-        )
-        MeloXIosListRow(
-            title = stringResource(R.string.legal_cloud),
-            leading = {
-                MeloXSymbolIcon(
-                    MeloXSymbol.Info,
-                    Modifier.size(24.dp),
-                    MeloXSystemColors.Blue,
-                )
-            },
-            onClick = { selectedDocument = MeloXLegalDocument.CloudControlPrivacy },
-            showTopSeparator = true,
-        )
-        MeloXIosListRow(
-            title = stringResource(R.string.settings_legal_third_party),
-            leading = {
-                MeloXSymbolIcon(
-                    MeloXSymbol.Book,
-                    Modifier.size(24.dp),
-                    MeloXSystemColors.Blue,
-                )
-            },
-            onClick = { selectedDocument = MeloXLegalDocument.ThirdPartyMusicSources },
-            showTopSeparator = true,
-        )
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsGlassGroup {
-        SettingsExternalToggleRow(
-            title = stringResource(R.string.settings_legal_remote_toggle),
-            value = cloudControlEnabled,
-            note = stringResource(R.string.settings_legal_remote_note),
-            grouped = true,
-        ) { requested ->
-            if (requested) {
-                showCloudControlConsent = true
-            } else {
-                MeloXRemoteConfigConsent.reject(context)
-                cloudControlEnabled = false
-                scope.launch { MeloXRemoteConfigRuntime.clearCache(context) }
-            }
-        }
-    }
-    Text(
-        stringResource(R.string.settings_legal_remote_footer),
-        modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp),
-        fontSize = 12.sp,
-        lineHeight = 17.sp,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
-    )
-
-    selectedDocument?.let { document ->
-        MeloXLegalDocumentDialog(
-            document = document,
-            onDismiss = { selectedDocument = null },
-        )
-    }
-    if (showCloudControlConsent) {
-        MeloXCloudControlConsentDialog(
-            onReject = { showCloudControlConsent = false },
-            onAccept = {
-                MeloXRemoteConfigConsent.accept(context)
-                MeloXRemoteConfigRuntime.initializeAndRefresh(context, BuildConfig.VERSION_CODE, force = true)
-                cloudControlEnabled = true
-                showCloudControlConsent = false
-            },
-        )
     }
 }
 
@@ -849,215 +683,6 @@ private fun SystemPlaybackSettings(context: android.content.Context) {
                 .setSilent(true)
                 .build(),
         )
-    }
-}
-
-@Composable
-private fun ExperimentalSettings(context: android.content.Context, source: MusicSource, session: NeteaseSessionStore) {
-    var playbackEnabled by remember { mutableStateOf(PlaybackAccountStore.isEnabled(context)) }
-    var showNeteaseLogin by remember { mutableStateOf(false) }
-    var showQQLogin by remember { mutableStateOf(false) }
-    var showKugouLogin by remember { mutableStateOf(false) }
-    var showClearPlaybackConfirmation by remember { mutableStateOf(false) }
-    var showClearLyricBindingsConfirmation by remember { mutableStateOf(false) }
-    var showClearBilibiliAssociationsConfirmation by remember { mutableStateOf(false) }
-    var bilibiliLyricAlignment by remember(source) {
-        mutableStateOf(MeloXSettingsPreferences.boolean(context, "bilibili_lyric_audio_alignment", false))
-    }
-    var refreshRevision by remember { mutableIntStateOf(0) }
-
-    if (source == MusicSource.Bilibili) {
-        SettingsGlassGroup {
-            SettingsExternalToggleRow(
-                title = stringResource(R.string.settings_bilibili_align),
-                value = bilibiliLyricAlignment,
-                grouped = true,
-            ) { enabled ->
-                bilibiliLyricAlignment = enabled
-                MeloXSettingsPreferences.setBoolean(context, "bilibili_lyric_audio_alignment", enabled)
-            }
-        }
-        SettingsInfoCard(stringResource(R.string.settings_bilibili_align_warning))
-        Spacer(Modifier.height(10.dp))
-        SettingsActionButton(stringResource(R.string.settings_bilibili_clear)) { showClearBilibiliAssociationsConfirmation = true }
-        Spacer(Modifier.height(10.dp))
-    }
-
-    if (showClearBilibiliAssociationsConfirmation) {
-        MeloXGlassDialog(visible = true, onDismiss = { showClearBilibiliAssociationsConfirmation = false }) {
-            Text(stringResource(R.string.settings_bilibili_clear_title), style = MaterialTheme.typography.titleLarge)
-            Text(stringResource(R.string.settings_bilibili_clear_body), Modifier.padding(top = 8.dp))
-            Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showClearBilibiliAssociationsConfirmation = false }
-                SettingsActionButton(stringResource(R.string.provider_clear), Modifier.weight(1f)) {
-                    BilibiliPlaybackAssociationStore.clear(context)
-                    showClearBilibiliAssociationsConfirmation = false
-                }
-            }
-        }
-    }
-
-    if (showNeteaseLogin) {
-        val session = remember { NeteaseSessionStore(context) }
-        Dialog(
-            onDismissRequest = { showNeteaseLogin = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            NeteaseLoginScreen(
-                session = session,
-                onDismiss = { showNeteaseLogin = false },
-                onLoggedIn = { showNeteaseLogin = false; refreshRevision++ },
-                targetSlot = PlaybackAccountSlot.Playback,
-            )
-        }
-    }
-    if (showQQLogin) {
-        Dialog(
-            onDismissRequest = { showQQLogin = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            QQMusicLoginScreen(
-                onDismiss = { showQQLogin = false },
-                onLoggedIn = { showQQLogin = false; refreshRevision++ },
-                targetSlot = PlaybackAccountSlot.Playback,
-            )
-        }
-    }
-    if (showKugouLogin) {
-        Dialog(
-            onDismissRequest = { showKugouLogin = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            KugouLoginScreen(
-                onDismiss = { showKugouLogin = false },
-                onLoggedIn = { showKugouLogin = false; refreshRevision++ },
-                targetSlot = PlaybackAccountSlot.Playback,
-            )
-        }
-    }
-
-    SettingsGlassGroup {
-        SettingsExternalToggleRow(
-            title = stringResource(R.string.settings_playback_second_account),
-            value = playbackEnabled,
-            grouped = true,
-        ) { enabled ->
-            playbackEnabled = enabled
-            PlaybackAccountStore.setEnabled(context, enabled)
-            if (!enabled) ProviderPlaybackQualityRuntime.clear()
-        }
-    }
-    if (playbackEnabled) {
-        Spacer(Modifier.height(10.dp))
-        SettingsGlassGroup {
-            SettingsInfoCard(stringResource(R.string.settings_playback_second_account_note))
-        }
-        Spacer(Modifier.height(10.dp))
-
-        val neteaseCookie = remember(refreshRevision) { NeteaseSessionStore.readPlaybackCookie(context) }
-        val qqLoggedIn = remember(refreshRevision) { QQMusicSessionStore.read(context, playback = true).isLoggedIn }
-        val kugouLoggedIn = remember(refreshRevision) { KugouSessionStore.read(context, playback = true).isLoggedIn }
-
-        SettingsGlassGroup {
-            MeloXIosListRow(
-                title = stringResource(R.string.account_netease),
-                subtitle = if (NeteaseSessionStore.containsMusicU(neteaseCookie)) stringResource(R.string.provider_logged_in) else stringResource(R.string.provider_not_signed_in),
-                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.primary) },
-                onClick = { showNeteaseLogin = true },
-                showTopSeparator = false,
-            )
-            MeloXIosListRow(
-                title = stringResource(R.string.settings_qq_music),
-                subtitle = if (qqLoggedIn) stringResource(R.string.provider_logged_in) else stringResource(R.string.provider_not_signed_in),
-                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.primary) },
-                onClick = { showQQLogin = true },
-            )
-            MeloXIosListRow(
-                title = stringResource(R.string.settings_kugou),
-                subtitle = if (kugouLoggedIn) stringResource(R.string.provider_logged_in) else stringResource(R.string.provider_not_signed_in),
-                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.primary) },
-                onClick = { showKugouLogin = true },
-            )
-            MeloXIosListRow(
-                title = stringResource(R.string.settings_apple_music),
-                subtitle = stringResource(R.string.settings_apple_second_account),
-                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)) },
-                onClick = null,
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-        SettingsDangerButton(stringResource(R.string.settings_clear_second_accounts)) { showClearPlaybackConfirmation = true }
-        MeloXGlassDialog(
-            visible = showClearPlaybackConfirmation,
-            onDismiss = { showClearPlaybackConfirmation = false },
-        ) {
-            Text(stringResource(R.string.settings_clear_second_accounts_title), style = MaterialTheme.typography.titleMedium)
-            Text(
-                stringResource(R.string.settings_clear_second_accounts_body),
-                modifier = Modifier.padding(top = 8.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showClearPlaybackConfirmation = false }
-                SettingsActionButton(stringResource(R.string.provider_clear), Modifier.weight(1f)) {
-                    PlaybackAccountStore.clear(context)
-                    ProviderPlaybackQualityRuntime.clear()
-                    refreshRevision++
-                    showClearPlaybackConfirmation = false
-                }
-            }
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    if (!MeloXSettingsRuntime.automaticLyricSelectionEnabled) {
-        SettingsInfoCard(stringResource(R.string.settings_auto_lyrics_required))
-        return
-    }
-    var enabled by remember {
-        mutableStateOf(MeloXSettingsPreferences.boolean(context, "experimental_lyric_strong_binding", false))
-    }
-    SettingsGlassGroup {
-        SettingsExternalToggleRow(
-            title = stringResource(R.string.settings_lyric_binding),
-            value = enabled,
-            grouped = true,
-        ) { value ->
-            enabled = value
-            MeloXSettingsPreferences.setBoolean(context, "experimental_lyric_strong_binding", value)
-            if (!value) com.lladlam.melox.core.lyrics.LyricBindingStore.clear(context)
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsDangerButton(stringResource(R.string.settings_clear_lyric_bindings)) {
-        showClearLyricBindingsConfirmation = true
-    }
-    MeloXGlassDialog(
-        visible = showClearLyricBindingsConfirmation,
-        onDismiss = { showClearLyricBindingsConfirmation = false },
-    ) {
-        Text(stringResource(R.string.settings_clear_lyric_bindings_title), style = MaterialTheme.typography.titleMedium)
-        Text(
-            stringResource(R.string.settings_clear_lyric_bindings_body),
-            modifier = Modifier.padding(top = 8.dp),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
-            fontSize = 13.sp,
-            lineHeight = 19.sp,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) {
-                showClearLyricBindingsConfirmation = false
-            }
-            SettingsDangerButton(stringResource(R.string.provider_clear), Modifier.weight(1f)) {
-                com.lladlam.melox.core.lyrics.LyricBindingStore.clear(context)
-                showClearLyricBindingsConfirmation = false
-            }
-        }
     }
 }
 
@@ -2836,131 +2461,6 @@ private fun RecognitionSettings(context: android.content.Context) {
             }
         }
     }
-}
-
-@Composable
-private fun RemoteConfigSettings() {
-    val context = LocalContext.current.applicationContext
-    val status by MeloXRemoteConfigRuntime.status.collectAsState()
-    val scope = rememberCoroutineScope()
-    val githubRouting = remember { MeloXGitHubRouting(context) }
-    val consentEnabled = MeloXRemoteConfigConsent.enabled(context)
-    val source = if (!consentEnabled) {
-        stringResource(R.string.settings_remote_declined)
-    } else when (status.source) {
-        MeloXRemoteConfigSource.BuiltIn -> stringResource(R.string.settings_remote_builtin)
-        MeloXRemoteConfigSource.VerifiedRemote -> stringResource(R.string.settings_remote_verified)
-        MeloXRemoteConfigSource.VersionInapplicable -> stringResource(R.string.settings_remote_inapplicable)
-    }
-    SettingsGlassGroup {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(source, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text(
-                stringResource(R.string.settings_remote_summary),
-                modifier = Modifier.padding(top = 7.dp),
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
-            )
-        }
-    }
-    Spacer(Modifier.height(12.dp))
-    SettingsGlassGroup {
-        RemoteConfigStatusLine(stringResource(R.string.settings_remote_version), status.config.configVersion.toString())
-        RemoteConfigStatusLine(
-            stringResource(R.string.settings_remote_access),
-            githubRouting.effectiveRoute()?.takeIf { githubRouting.selectedSource() == MeloXGitHubSource.Auto }
-                ?.let { stringResource(R.string.settings_remote_route, githubSourceLabel(it.source), it.latencyMs) }
-                ?: githubSourceLabel(githubRouting.selectedSource()),
-        )
-        RemoteConfigStatusLine(stringResource(R.string.settings_remote_key), status.keyId ?: stringResource(R.string.settings_remote_builtin_key))
-        RemoteConfigStatusLine(stringResource(R.string.settings_remote_last_check), formatRemoteConfigTime(context, status.lastCheckedAtEpochMs))
-        RemoteConfigStatusLine(stringResource(R.string.settings_remote_last_update), formatRemoteConfigTime(context, status.lastUpdatedAtEpochMs))
-        RemoteConfigStatusLine(
-            stringResource(R.string.settings_remote_breakers),
-            status.config.disabledCapabilities.takeIf(Set<String>::isNotEmpty)?.joinToString("、") ?: stringResource(R.string.settings_remote_none),
-        )
-        RemoteConfigStatusLine(stringResource(R.string.settings_remote_fallback_order), status.config.fallback.order.joinToString(" → "))
-        RemoteConfigStatusLine(stringResource(R.string.settings_remote_timeout), stringResource(R.string.settings_remote_timeout_value, status.config.fallback.timeoutMs))
-    }
-    status.error?.let { error ->
-        Spacer(Modifier.height(12.dp))
-        SettingsInfoCard(stringResource(R.string.settings_remote_check_failed, error))
-    }
-    Spacer(Modifier.height(12.dp))
-    SettingsActionButton(
-        when {
-            !consentEnabled -> stringResource(R.string.settings_remote_enable_first)
-            status.refreshing -> stringResource(R.string.settings_remote_checking)
-            else -> stringResource(R.string.settings_remote_check)
-        },
-    ) {
-        if (consentEnabled && !status.refreshing) {
-            scope.launch { MeloXRemoteConfigRuntime.refresh(force = true) }
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsDangerButton(stringResource(R.string.settings_remote_clear)) {
-        scope.launch { MeloXRemoteConfigRuntime.clearCache(context) }
-    }
-}
-
-@Composable
-private fun RemoteConfigStatusLine(title: String, value: String) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f))
-        Text(value, modifier = Modifier.weight(1.4f), textAlign = TextAlign.End, fontSize = 13.sp)
-    }
-}
-
-private fun formatRemoteConfigTime(context: android.content.Context, value: Long): String = if (value <= 0L) {
-    context.getString(R.string.settings_remote_not_yet)
-} else {
-    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(value))
-}
-
-@Composable
-private fun githubSourceLabel(source: MeloXGitHubSource): String = when (source) {
-    MeloXGitHubSource.Auto -> stringResource(R.string.settings_about_source_auto)
-    MeloXGitHubSource.GitHubDoh -> stringResource(R.string.settings_about_source_doh)
-    MeloXGitHubSource.GhFast -> stringResource(R.string.settings_about_source_ghfast)
-    MeloXGitHubSource.GhProxy -> stringResource(R.string.settings_about_source_ghproxy)
-    MeloXGitHubSource.GhProxyOrg -> stringResource(R.string.settings_about_source_ghproxy_org)
-}
-
-@Composable
-private fun DeveloperSettings() {
-    val context = LocalContext.current
-    var diagnosticsVisible by remember {
-        mutableStateOf(BuildConfig.DEBUG && MeloXSettingsPreferences.boolean(context, "developer_automix_diagnostics", false))
-    }
-    var diagnostics by remember { mutableStateOf(MeloXAutoMixDiagnostics.snapshot()) }
-    if (BuildConfig.DEBUG) {
-        SettingsToggleRow(
-            context = context,
-            title = stringResource(R.string.settings_dev_overlay),
-            key = "developer_performance_overlay",
-            default = false,
-            note = stringResource(R.string.settings_dev_overlay_note),
-        )
-        SettingsExternalToggleRow(
-            title = stringResource(R.string.settings_dev_automix),
-            value = diagnosticsVisible,
-            note = stringResource(R.string.settings_dev_automix_note),
-        ) {
-            diagnosticsVisible = it
-            MeloXSettingsPreferences.setBoolean(context, "developer_automix_diagnostics", it)
-        }
-        if (diagnosticsVisible) {
-            Spacer(Modifier.height(8.dp))
-            SettingsActionButton(stringResource(R.string.settings_dev_refresh)) { diagnostics = MeloXAutoMixDiagnostics.snapshot() }
-            Spacer(Modifier.height(10.dp))
-        }
-    }
-    Spacer(Modifier.height(10.dp))
 }
 
 private val LocalSettingsGroupedRows = staticCompositionLocalOf { false }
