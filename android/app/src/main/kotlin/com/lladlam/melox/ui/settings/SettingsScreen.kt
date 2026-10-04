@@ -88,8 +88,6 @@ import coil3.compose.AsyncImage
 import com.lladlam.melox.R
 import com.lladlam.melox.BuildConfig
 import com.lladlam.melox.core.account.NeteaseSessionStore
-import com.lladlam.melox.core.diagnostics.MeloXLogExporter
-import com.lladlam.melox.core.diagnostics.MeloXLogDeviceInfo
 import com.lladlam.melox.core.provider.bilibili.BilibiliPlaybackAssociationStore
 import com.lladlam.melox.core.music.provider.PlaybackAccountSlot
 import com.lladlam.melox.core.music.provider.PlaybackAccountStore
@@ -122,9 +120,6 @@ import com.lladlam.melox.core.recommendation.LocalRecommendationEngine
 import com.lladlam.melox.core.recommendation.LocalRecommendationStore
 import com.lladlam.melox.core.recognition.SongRecognitionClient
 import com.lladlam.melox.core.recognition.SongRecognitionResult
-import com.lladlam.melox.core.update.MeloXRelease
-import com.lladlam.melox.core.update.MeloXDevCommit
-import com.lladlam.melox.core.update.MeloXUpdateClient
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.playback.MeloXAutoMixFadeCurve
 import com.lladlam.melox.playback.MeloXAutoMixDiagnostics
@@ -194,7 +189,6 @@ private enum class SettingsRoute(val titleRes: Int) {
     TabLayout(R.string.settings_route_tabs),
     General(R.string.settings_route_general),
     RemoteConfig(R.string.settings_route_remote_config),
-    About(R.string.settings_route_about),
     Legal(R.string.settings_route_legal),
     Privacy(R.string.settings_route_privacy),
     Developer(R.string.settings_route_developer),
@@ -231,7 +225,6 @@ private val SettingsSections = listOf(
     )),
     SettingsSection(R.string.settings_section_about, listOf(
         SettingsItem(SettingsRoute.RemoteConfig, R.string.settings_sub_remote_config, "⌁", R.string.settings_kw_remote_config),
-        SettingsItem(SettingsRoute.About, R.string.settings_sub_about, "ⓘ", R.string.settings_kw_about),
         SettingsItem(SettingsRoute.Legal, R.string.settings_sub_legal, "▤", R.string.settings_kw_legal),
         SettingsItem(SettingsRoute.Developer, R.string.settings_sub_developer, "⌘", R.string.settings_kw_developer),
         SettingsItem(SettingsRoute.Experimental, R.string.settings_sub_experimental, "✦", R.string.settings_kw_experimental),
@@ -532,7 +525,6 @@ private fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, sess
                     SettingsRoute.TabLayout -> TabLayoutSettings(context)
                     SettingsRoute.General -> GeneralSettings(context)
                     SettingsRoute.RemoteConfig -> RemoteConfigSettings()
-                    SettingsRoute.About -> AboutSettings(context)
                     SettingsRoute.Legal -> LegalSettings(context)
                     SettingsRoute.Privacy -> PrivacySettings(context)
                     SettingsRoute.Developer -> DeveloperSettings()
@@ -2937,285 +2929,6 @@ private fun githubSourceLabel(source: MeloXGitHubSource): String = when (source)
     MeloXGitHubSource.GhFast -> stringResource(R.string.settings_about_source_ghfast)
     MeloXGitHubSource.GhProxy -> stringResource(R.string.settings_about_source_ghproxy)
     MeloXGitHubSource.GhProxyOrg -> stringResource(R.string.settings_about_source_ghproxy_org)
-}
-
-@Composable
-private fun AboutSettings(context: android.content.Context) {
-    val githubRouting = remember { MeloXGitHubRouting(context) }
-    val updateClient = remember { MeloXUpdateClient(context, routing = githubRouting) }
-    val scope = rememberCoroutineScope()
-    var checking by remember { mutableStateOf(false) }
-    var exportingLogs by remember { mutableStateOf(false) }
-    var showLogExportInfo by remember { mutableStateOf(false) }
-    var release by remember { mutableStateOf<MeloXRelease?>(null) }
-    var updateStatus by remember { mutableStateOf<String?>(null) }
-    var versionTapCount by remember { mutableIntStateOf(0) }
-    var lastVersionTapAt by remember { mutableStateOf(0L) }
-    var showCatEgg by remember { mutableStateOf(false) }
-    var downloadSource by remember { mutableStateOf(githubRouting.selectedSource()) }
-    val exportLogsLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/plain"),
-    ) { uri ->
-        if (uri == null) {
-            exportingLogs = false
-        } else {
-            scope.launch {
-                runCatching {
-                    MeloXLogExporter.exportRecentLogs(context, uri)
-                }.onSuccess { result ->
-                    updateStatus = context.getString(R.string.settings_about_exported, result.lineCount)
-                }.onFailure { error ->
-                    updateStatus = error.message ?: context.getString(R.string.settings_about_export_failed)
-                }
-                exportingLogs = false
-            }
-        }
-    }
-    Box(
-        modifier = Modifier.pointerInput(Unit) {
-            var distance = 0f
-            detectVerticalDragGestures(
-                onDragStart = { distance = 0f },
-                onVerticalDrag = { _, dragAmount ->
-                    distance += dragAmount
-                    if (distance > 180f) {
-                        showCatEgg = true
-                        distance = 0f
-                    }
-                },
-            )
-        },
-    ) {
-        SettingsGlassGroup {
-            Column(Modifier.padding(18.dp)) {
-            Text("MeloX Android", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text(
-                stringResource(R.string.settings_about_version, BuildConfig.VERSION_NAME),
-                modifier = Modifier
-                    .padding(top = 7.dp)
-                    .clickable {
-                        val now = System.currentTimeMillis()
-                        versionTapCount = if (now - lastVersionTapAt < 2_000L) versionTapCount + 1 else 1
-                        lastVersionTapAt = now
-                        if (versionTapCount >= 7) {
-                            showCatEgg = true
-                            versionTapCount = 0
-                        }
-                    },
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha=.62f),
-            )
-            Text(stringResource(R.string.settings_about_maintainer), modifier = Modifier.padding(top=14.dp), fontWeight=FontWeight.SemiBold)
-            Text(stringResource(R.string.settings_about_upstream), modifier = Modifier.padding(top=5.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha=.58f))
-            }
-        }
-    }
-    if (showCatEgg) {
-        MeloXGlassDialog(visible = true, onDismiss = { showCatEgg = false }) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                MeloXPinkCat()
-                Text(stringResource(R.string.settings_about_cat_title), style = MaterialTheme.typography.titleLarge)
-                Text(stringResource(R.string.settings_about_cat_body), modifier = Modifier.padding(top = 7.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f))
-                MeloXGlassButton(
-                    onClick = { showCatEgg = false },
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                    style = MeloXGlassButtonStyle.BorderedProminent,
-                ) { Text(stringResource(R.string.settings_about_cat_accept)) }
-            }
-        }
-    }
-    Spacer(Modifier.height(14.dp))
-    SettingsToggleRow(context, stringResource(R.string.settings_about_auto_update), "update_auto_check", true, stringResource(R.string.settings_about_auto_update_note))
-    Spacer(Modifier.height(10.dp))
-    MeloXSettingsDropdown(
-        title = stringResource(R.string.settings_about_github_source),
-        selected = downloadSource,
-        items = listOf(
-            MeloXGitHubSource.Auto to stringResource(R.string.settings_about_source_auto),
-            MeloXGitHubSource.GitHubDoh to stringResource(R.string.settings_about_source_doh),
-            MeloXGitHubSource.GhFast to stringResource(R.string.settings_about_source_ghfast),
-            MeloXGitHubSource.GhProxy to stringResource(R.string.settings_about_source_ghproxy),
-            MeloXGitHubSource.GhProxyOrg to stringResource(R.string.settings_about_source_ghproxy_org),
-        ),
-        onSelected = {
-            downloadSource = it
-            githubRouting.selectSource(it)
-        },
-    )
-    Text(
-        githubRouting.effectiveRoute()?.takeIf { downloadSource == MeloXGitHubSource.Auto }?.let {
-            stringResource(R.string.settings_about_source_selected, githubSourceLabel(it.source), it.latencyMs)
-        } ?: stringResource(R.string.settings_about_source_auto_note),
-        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
-        fontSize = 12.sp,
-        lineHeight = 17.sp,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
-    )
-    SettingsActionButton(if (checking) stringResource(R.string.settings_about_checking) else stringResource(R.string.settings_about_check_update)) {
-        if (!checking) scope.launch {
-            checking = true
-            runCatching { updateClient.latestStableRelease(forceSourceBenchmark = true) }
-                .onSuccess {
-                    release = it
-                    updateStatus = if (updateClient.isNewer(it.version, BuildConfig.VERSION_NAME)) {
-                        context.getString(R.string.settings_about_new_version, it.version, it.name)
-                    } else {
-                        context.getString(R.string.settings_about_up_to_date, BuildConfig.VERSION_NAME)
-                    }
-                }
-                .onFailure { updateStatus = it.message ?: context.getString(R.string.settings_about_update_failed) }
-            checking = false
-        }
-    }
-    val currentCommit = BuildConfig.GIT_SHA.take(7)
-    if (currentCommit.isNotBlank()) {
-        Spacer(Modifier.height(10.dp))
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = stringResource(R.string.settings_about_dev_commit, currentCommit),
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .42f),
-        )
-    }
-    var devCommit by remember { mutableStateOf<MeloXDevCommit?>(null) }
-    SettingsActionButton(stringResource(R.string.settings_about_check_dev)) {
-        if (!checking) scope.launch {
-            checking = true
-            runCatching { updateClient.latestDevCommit() }
-                .onSuccess { latest ->
-                    devCommit = latest
-                    updateStatus = if (latest.sha == BuildConfig.GIT_SHA) {
-                        context.getString(R.string.settings_about_dev_current, latest.sha.take(7))
-                    } else {
-                        context.getString(R.string.settings_about_dev_new, latest.sha.take(7), latest.message)
-                    }
-                }
-                .onFailure { updateStatus = it.message ?: context.getString(R.string.settings_about_dev_failed) }
-            checking = false
-        }
-    }
-    devCommit?.takeIf { it.sha != BuildConfig.GIT_SHA }?.let { latest ->
-        Spacer(Modifier.height(10.dp))
-        SettingsActionButton(stringResource(R.string.settings_about_download_dev)) {
-            scope.launch {
-                val target = runCatching { updateClient.devBuildUrl() }.getOrNull()
-                    ?: "https://github.com/lladlam/MeloX-Android/actions/workflows/build.yml"
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
-                    .onFailure { updateStatus = it.message ?: context.getString(R.string.settings_about_download_failed) }
-            }
-        }
-        Text(
-            text = stringResource(R.string.settings_about_dev_detail, latest.sha.take(7), latest.author, latest.message),
-            modifier = Modifier.padding(top = 8.dp),
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
-        )
-    }
-    updateStatus?.let { message ->
-        Spacer(Modifier.height(10.dp))
-        Text(message, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
-    }
-    release?.takeIf { updateClient.isNewer(it.version, BuildConfig.VERSION_NAME) }?.let { available ->
-        Spacer(Modifier.height(10.dp))
-        SettingsActionButton(if (available.apkUrl != null) stringResource(R.string.settings_about_download_apk, available.version) else stringResource(R.string.settings_about_open_release, available.version)) {
-            scope.launch {
-                val target = runCatching { updateClient.downloadUrl(available) }.getOrNull() ?: available.pageUrl
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
-                    .onFailure { updateStatus = it.message ?: context.getString(R.string.settings_about_open_link_failed) }
-            }
-        }
-        if (available.notes.isNotBlank()) {
-            Text(available.notes.take(700), modifier = Modifier.padding(top = 10.dp), fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
-        }
-    }
-    Spacer(Modifier.height(14.dp))
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_restore_player)) {
-        MeloXSettingsPreferences.resetRecommendedPlayerSettings(context)
-        updateStatus = context.getString(R.string.settings_about_restored)
-    }
-    Spacer(Modifier.height(14.dp))
-    SettingsGlassGroup {
-        Column(Modifier.padding(16.dp)) {
-            Text(stringResource(R.string.settings_about_licenses_title), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Text(
-                stringResource(R.string.settings_about_licenses_body),
-                modifier = Modifier.padding(top = 10.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
-            )
-        }
-    }
-    Spacer(Modifier.height(14.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_github)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lladlam/MeloX-Android"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_ios)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/youshen2/MeloX"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_upstream_licenses)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/youshen2/MeloX/blob/main/MeloX/Features/Legal/ProjectLicensesView.swift"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_qq_group)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/wbhFQxj7mo"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_sponsor)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ifdian.net/a/lladlam"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(if (exportingLogs) stringResource(R.string.settings_about_exporting) else stringResource(R.string.settings_about_export)) {
-        if (!exportingLogs) showLogExportInfo = true
-    }
-
-    if (showLogExportInfo) {
-        val deviceInfo: MeloXLogDeviceInfo = MeloXLogExporter.collectDeviceInfo(context)
-        MeloXGlassDialog(
-            visible = true,
-            onDismiss = { showLogExportInfo = false },
-        ) {
-            Text(stringResource(R.string.settings_about_export_title), style = MaterialTheme.typography.titleMedium)
-            Text(
-                stringResource(R.string.settings_about_export_body),
-                modifier = Modifier.padding(top = 8.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .64f),
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
-            )
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 14.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = .045f))
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(stringResource(R.string.settings_about_android_version, deviceInfo.androidVersion), fontSize = 13.sp)
-                Text(stringResource(R.string.settings_about_phone_model, deviceInfo.phoneModel), fontSize = 13.sp)
-                Text(stringResource(R.string.settings_about_system_version, deviceInfo.systemVersion), fontSize = 13.sp)
-                Text(
-                    stringResource(R.string.settings_about_signed_in, deviceInfo.loggedMusicSources.takeIf { it.isNotEmpty() }?.joinToString("、") ?: stringResource(R.string.settings_about_none)),
-                    fontSize = 13.sp,
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showLogExportInfo = false }
-                SettingsActionButton(stringResource(R.string.settings_about_choose_location), Modifier.weight(1f)) {
-                    showLogExportInfo = false
-                    exportingLogs = true
-                    exportLogsLauncher.launch("MeloX-logs-${System.currentTimeMillis()}.txt")
-                }
-            }
-        }
-    }
 }
 
 @Composable

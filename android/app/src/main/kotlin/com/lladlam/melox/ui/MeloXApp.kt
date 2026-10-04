@@ -124,15 +124,7 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.shapes.Capsule
 import com.lladlam.melox.ui.library.LibraryScreen
-import com.lladlam.melox.ui.legal.MELOX_LEGAL_VERSION
-import com.lladlam.melox.ui.legal.MeloXFirstLaunchLegalConsent
-import com.lladlam.melox.ui.legal.MeloXCloudControlConsentDialog
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigConsent
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigSource
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigRuntime
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteNotice
-import com.lladlam.melox.core.remoteconfig.MeloXRemoteNoticeStore
-import com.lladlam.melox.ui.legal.MeloXRemoteNoticeDialog
 import com.lladlam.melox.ui.messages.MessagesScreen
 import com.lladlam.melox.ui.podcast.MeloXPodcastScreen
 import com.lladlam.melox.ui.cloud.MeloXCloudMusicScreen
@@ -178,11 +170,8 @@ import com.lladlam.melox.ui.search.MeloXSearchLaunchBus
 import com.lladlam.melox.ui.settings.MeloXSettingsPreferences
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
 import com.lladlam.melox.core.network.MeloXSearchKind
-import com.lladlam.melox.core.network.NeteaseClipboardLink
 import com.lladlam.melox.core.network.NeteaseClipboardTarget
 import com.lladlam.melox.core.library.NeteaseLibraryClient
-import com.lladlam.melox.core.update.MeloXRelease
-import com.lladlam.melox.core.update.MeloXUpdateClient
 import com.lladlam.melox.playback.PlaybackCommands
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
@@ -243,21 +232,17 @@ fun MeloXApp(
         if (MeloXSettingsRuntime.disableAutomaticTabBarShrink) tabBarMinimized = false
     }
     var libraryModalVisible by remember { mutableStateOf(false) }
-    var onboardingPage by remember {
-        mutableStateOf(if (MeloXSettingsPreferences.boolean(context, "onboarding_completed", false)) -1 else 0)
-    }
-    var availableUpdate by remember { mutableStateOf<MeloXRelease?>(null) }
-    val remoteConfigStatus by MeloXRemoteConfigRuntime.status.collectAsState()
-    var pendingRemoteNotice by remember { mutableStateOf<MeloXRemoteNotice?>(null) }
+    // Startup dialogs are gone: legal consent, the NetEase sign-in invite, the
+    // cloud-control consent, the update prompt and the remote notice. The one
+    // time cloud-control choice is made silently (reject -> local config wins)
+    // so its consent dialog can never come back; Settings -> Remote config can
+    // still enable it later.
+    var onboardingPage by remember { mutableStateOf(-1) }
     var cloudControlChoicePending by remember {
-        mutableStateOf(!MeloXRemoteConfigConsent.choiceMade(context))
-    }
-    LaunchedEffect(remoteConfigStatus, cloudControlChoicePending) {
-        pendingRemoteNotice = remoteConfigStatus.config.notice?.takeIf {
-            !cloudControlChoicePending &&
-                MeloXRemoteConfigConsent.enabled(context) &&
-                remoteConfigStatus.source == MeloXRemoteConfigSource.VerifiedRemote &&
-                MeloXRemoteNoticeStore.shouldShow(context, it)
+        mutableStateOf(false).also {
+            if (!MeloXRemoteConfigConsent.choiceMade(context)) {
+                MeloXRemoteConfigConsent.reject(context)
+            }
         }
     }
     var heartModeLaunchAttempted by remember { mutableStateOf(false) }
@@ -279,12 +264,11 @@ fun MeloXApp(
     var playerArtworkPageUsesScale by remember { mutableStateOf(false) }
     val playerScope = rememberCoroutineScope()
     var playerTransitionJob by remember { mutableStateOf<Job?>(null) }
+    // Clipboard link prompt removed: the scan ran on every launch and put a
+    // dialog over the home screen. The scan result is now discarded, so this
+    // target stays null and the home/back handling above is unaffected.
     val clipboardTarget = remember(clipboardLinkRequest, selectedSource) {
-        if (selectedSource == MusicSource.Netease) {
-            clipboardLinkRequest?.let(NeteaseClipboardLink::parse)
-        } else {
-            null
-        }
+        null as NeteaseClipboardTarget?
     }
     val openPlayer: () -> Unit = {
         if (playbackState.hasMedia) {
@@ -314,20 +298,7 @@ fun MeloXApp(
     val pageBackdrop = rememberLayerBackdrop()
     val bottomChromeBackdrop = rememberLayerBackdrop()
 
-    LaunchedEffect(playbackConnectionEnabled) {
-        if (!playbackConnectionEnabled) return@LaunchedEffect
-        if (MeloXSettingsPreferences.boolean(context, "update_auto_check", true)) {
-            val now = System.currentTimeMillis()
-            val last = MeloXSettingsPreferences.string(context, "update_last_check_ms", "0").toLongOrNull() ?: 0L
-            if (now - last >= 24L * 60L * 60L * 1000L) {
-                val client = MeloXUpdateClient(context)
-                runCatching { client.latestStableRelease() }.getOrNull()?.let { release ->
-                    MeloXSettingsPreferences.setString(context, "update_last_check_ms", now.toString())
-                    if (client.isNewer(release.version, BuildConfig.VERSION_NAME)) availableUpdate = release
-                }
-            }
-        }
-    }
+
 
     val tabBarMinimizeConnection = remember {
         object : NestedScrollConnection {
@@ -495,7 +466,6 @@ fun MeloXApp(
                         onboardingPage < 0 &&
                         !showNeteaseLogin &&
                         cloudControlChoicePending.not() &&
-                        availableUpdate == null &&
                         clipboardTarget == null
                     val exitConfirmThresholdMs = 2_000L
                     var pendingExitAtMs by remember { mutableStateOf(0L) }
@@ -521,7 +491,6 @@ fun MeloXApp(
                                 messagesVisible -> messagesVisible = false
                                 showNeteaseLogin -> showNeteaseLogin = false
                                 cloudControlChoicePending -> cloudControlChoicePending = false
-                                availableUpdate != null -> availableUpdate = null
                                 clipboardTarget != null -> onClipboardLinkConsumed()
                                 else -> { /* no-op, let the system handle it */ }
                             }
@@ -769,150 +738,10 @@ fun MeloXApp(
                 },
             )
         }
-        clipboardTarget?.let { target ->
-            MeloXAppDialog(
-                title = stringResource(R.string.app_clipboard_title),
-                message = if (target is NeteaseClipboardTarget.Song) {
-                    stringResource(R.string.app_clipboard_song)
-                } else {
-                    stringResource(R.string.app_clipboard_playlist)
-                },
-                onDismiss = onClipboardLinkConsumed,
-                onConfirm = {
-                    onClipboardLinkConsumed()
-                    playerScope.launch {
-                        val client = NeteaseLibraryClient(cookieProvider = { NeteaseSessionStore.readCookie(context) })
-                        val songs = withContext(Dispatchers.IO) {
-                            runCatching {
-                                when (target) {
-                                    is NeteaseClipboardTarget.Song -> client.songDetailsBlocking(listOf(target.id))
-                                    is NeteaseClipboardTarget.Playlist -> client.playlistDetailBlocking(target.id).songs
-                                }
-                            }.getOrDefault(emptyList())
-                        }
-                        songs.firstOrNull()?.let { PlaybackCommands.playQueue(context, songs, it.id) }
-                    }
-                },
-            )
-        }
-        if (onboardingPage >= 0) {
-            if (onboardingPage == 0) {
-                MeloXFirstLaunchLegalConsent(
-                    onAgree = {
-                        MeloXSettingsPreferences.setString(context, "legal_consent_version", MELOX_LEGAL_VERSION)
-                        MeloXSettingsPreferences.setLong(context, "legal_consent_at", System.currentTimeMillis())
-                        onboardingPage = 1
-                    },
-                    onDecline = { (hostContext as? Activity)?.finish() },
-                    onOpenProject = {
-                        runCatching {
-                            hostContext.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lladlam/MeloX-Android")),
-                            )
-                        }
-                    },
-                )
-            } else {
-                MeloXAppDialog(
-                    title = stringResource(R.string.app_connect_title),
-                    message = stringResource(R.string.app_connect_body),
-                    dismissLabel = stringResource(R.string.app_later),
-                    confirmLabel = stringResource(R.string.app_login_netease),
-                    onDismiss = {
-                        MeloXSettingsPreferences.setBoolean(context, "onboarding_completed", true)
-                        onboardingPage = -1
-                    },
-                    onConfirm = {
-                        MeloXSettingsPreferences.setBoolean(context, "onboarding_completed", true)
-                        onboardingPage = -1
-                        loginReturnTab = AppTab.Settings
-                        showNeteaseLogin = true
-                    },
-                )
-            }
-        }
-        if (onboardingPage < 0 && cloudControlChoicePending) {
-            MeloXCloudControlConsentDialog(
-                onReject = {
-                    MeloXRemoteConfigConsent.reject(context)
-                    playerScope.launch { MeloXRemoteConfigRuntime.clearCache(context) }
-                    cloudControlChoicePending = false
-                },
-                onAccept = {
-                    MeloXRemoteConfigConsent.accept(context)
-                    MeloXRemoteConfigRuntime.initializeAndRefresh(context, BuildConfig.VERSION_CODE, force = true)
-                    cloudControlChoicePending = false
-                },
-            )
-        }
-        availableUpdate?.takeIf {
-            onboardingPage < 0 && !cloudControlChoicePending && pendingRemoteNotice == null
-        }?.let { release ->
-            MeloXAppDialog(
-                title = stringResource(R.string.app_update_found, release.version),
-                message = release.name + release.notes.takeIf(String::isNotBlank)?.let { "\n\n${it.take(500)}" }.orEmpty(),
-                dismissLabel = stringResource(R.string.app_update_later),
-                confirmLabel = if (release.apkUrl != null) stringResource(R.string.app_update_download) else stringResource(R.string.app_update_view),
-                onDismiss = { availableUpdate = null },
-                onConfirm = {
-                    availableUpdate = null
-                    playerScope.launch {
-                        val target = runCatching { MeloXUpdateClient(context).downloadUrl(release) }.getOrNull()
-                            ?: release.pageUrl
-                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
-                    }
-                },
-            )
-        }
-        pendingRemoteNotice?.takeIf {
-            onboardingPage < 0 && !cloudControlChoicePending
-        }?.let { notice ->
-            LaunchedEffect(notice.id, notice.frequency) {
-                MeloXRemoteNoticeStore.markShown(context, notice)
-            }
-            MeloXRemoteNoticeDialog(
-                notice = notice,
-                onAcknowledge = { pendingRemoteNotice = null },
-            )
-        }
         if (BuildConfig.DEBUG && MeloXSettingsRuntime.performanceOverlayEnabled) {
             MeloXPerformanceOverlay()
         }
       }
-    }
-}
-
-@Composable
-private fun MeloXAppDialog(
-    title: String,
-    message: String,
-    dismissLabel: String = stringResource(R.string.action_cancel),
-    confirmLabel: String = stringResource(R.string.app_confirm),
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    MeloXGlassDialog(visible = true, onDismiss = onDismiss) {
-        Text(title, style = MaterialTheme.typography.titleLarge)
-        Text(
-            message,
-            modifier = Modifier.padding(top = 8.dp),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            MeloXGlassButton(
-                onClick = onDismiss,
-                modifier = Modifier.weight(1f),
-                style = MeloXGlassButtonStyle.Plain,
-            ) { Text(dismissLabel) }
-            MeloXGlassButton(
-                onClick = onConfirm,
-                modifier = Modifier.weight(1f),
-                style = MeloXGlassButtonStyle.BorderedProminent,
-            ) { Text(confirmLabel) }
-        }
     }
 }
 
