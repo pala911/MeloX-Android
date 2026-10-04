@@ -111,15 +111,25 @@ class KugouPlaylistClient(
     }
 
     private fun parseTrack(item: JSONObject): MusicTrack? {
+        // flattenObjects() walks every object in the response, including the playlist
+        // header. That header carries the playlist's own title (and, on a self-created
+        // list, a cover-file hash), so reject it by its collection identity rather than
+        // by refusing the generic "name" title: the list-file song objects title
+        // themselves with plain "name", so dropping that fallback emptied the list.
+        if (item.has("global_collection_id") ||
+            item.has("parent_global_collection_id") ||
+            item.has("list_create_listid") ||
+            item.has("list_create_userid") ||
+            item.has("specialid")
+        ) {
+            return null
+        }
         val hash = kugouFirstString(item, "FileHash", "Hash", "hash", "filehash").uppercase()
         if (hash.isBlank()) return null
-        // flattenObjects() walks every object in the response, including the playlist
-        // header. A self-created playlist's detail response embeds that header, whose
-        // "name" is the playlist title and whose "hash" is a non-audio file hash; it
-        // used to pass this parser through the bare "name" fallback and show up as the
-        // first "track" of the playlist. Songs on the list-file endpoints always carry
-        // an explicit song-title key, so require one and drop the generic fallback.
-        val rawTitle = kugouFirstString(item, "SongName", "songname", "AudioName", "audio_name", "FileName", "filename")
+        val rawTitle = kugouFirstString(
+            item,
+            "SongName", "songname", "AudioName", "audio_name", "FileName", "filename", "name",
+        )
         if (rawTitle.isBlank()) return null
         val (title, singer) = recoverKugouTrackText(
             rawTitle,
@@ -127,6 +137,7 @@ class KugouPlaylistClient(
         )
         if (title.isBlank()) return null
         val albumName = kugouFirstString(item, "AlbumName", "album_name", "albumname")
+            .ifBlank { item.optJSONObject("albuminfo")?.optString("name").orEmpty() }
         val albumId = kugouFirstString(item, "AlbumID", "album_id", "albumid").takeIf(String::isNotBlank)
         val albumAudioId = kugouFirstLong(item, "album_audio_id", "MixSongID", "mixsongid", "AlbumAudioID", "Audioid", "audio_id")
             .takeIf { it > 0 }
@@ -149,7 +160,10 @@ class KugouPlaylistClient(
                 )
             },
             artworkUrl = artwork,
-            durationMs = kugouFirstLong(item, "Duration", "duration", "time_length").takeIf { it > 0 }?.let { if (it > 100_000L) it else it * 1_000L },
+            durationMs = kugouFirstLong(item, "timelen").takeIf { it > 0 }
+                ?: kugouFirstLong(item, "Duration", "duration", "time_length")
+                    .takeIf { it > 0 }
+                    ?.let { if (it > 100_000L) it else it * 1_000L },
             providerMetadata = ProviderTrackMetadata.Kugou(
                 hash = hash,
                 albumAudioId = albumAudioId,

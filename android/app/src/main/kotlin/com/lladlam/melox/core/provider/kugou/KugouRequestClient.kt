@@ -160,7 +160,7 @@ internal fun kugouSingerName(item: JSONObject, vararg keys: String): String {
         .firstOrNull(String::isNotBlank)
         ?.let { return it }
 
-    val arrays = listOf("Singers", "singers", "artists", "authors")
+    val arrays = listOf("Singers", "singers", "artists", "authors", "singerinfo")
     arrays.forEach { key ->
         val values = item.optJSONArray(key) ?: return@forEach
         val names = buildList {

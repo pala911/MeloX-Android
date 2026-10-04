@@ -57,7 +57,9 @@ class KugouRankingClient(
     }
 
     private fun parseTrack(item: JSONObject): MusicTrack? {
-        val hash = firstString(item, "FileHash", "Hash", "hash", "filehash").uppercase()
+        val hash = firstString(item, "FileHash", "Hash", "hash", "filehash")
+            .ifBlank { nestedAudioHash(item) }
+            .uppercase()
         if (hash.isBlank()) return null
         val (title, singer) = recoverKugouTrackText(
             firstString(item, "SongName", "songname", "AudioName", "audio_name", "FileName", "filename", "name"),
@@ -65,6 +67,7 @@ class KugouRankingClient(
         )
         if (title.isBlank()) return null
         val albumName = firstString(item, "AlbumName", "album_name", "albumname")
+            .ifBlank { nestedAlbumName(item) }
         val albumId = firstString(item, "AlbumID", "album_id", "albumid").takeIf(String::isNotBlank)
         val albumAudioId = firstLong(item, "album_audio_id", "MixSongID", "mixsongid", "AlbumAudioID", "Audioid", "audio_id")
             .takeIf { it > 0 }
@@ -87,13 +90,51 @@ class KugouRankingClient(
                 )
             },
             artworkUrl = artwork,
-            durationMs = firstLong(item, "Duration", "duration", "time_length").takeIf { it > 0 }?.times(1_000L),
+            durationMs = firstLong(item, "Duration", "duration", "time_length")
+                .takeIf { it > 0 }
+                ?.times(1_000L)
+                ?: nestedDurationMs(item),
             providerMetadata = ProviderTrackMetadata.Kugou(
                 hash = hash,
                 albumAudioId = albumAudioId,
                 albumId = albumId,
             ),
         )
+    }
+
+    /**
+     * Rank entries no longer carry a top-level `hash`: it moved into `audio_info`, with a
+     * copy kept under the legacy `deprecated` block (`audio_info.hash_128` and
+     * `deprecated.hash` are the same base file, which is what the playback endpoints take
+     * together with the `quality` parameter).
+     */
+    private fun nestedAudioHash(item: JSONObject): String {
+        item.optJSONObject("audio_info")?.let { info ->
+            for (key in listOf("hash_128", "hash_320", "hash_flac", "hash_high", "hash_super")) {
+                info.optString(key).takeIf(String::isNotBlank)?.let { return it }
+            }
+        }
+        return item.optJSONObject("deprecated")?.optString("hash").orEmpty()
+    }
+
+    /** Milliseconds already, so it must not go through the seconds x 1000 conversion. */
+    private fun nestedDurationMs(item: JSONObject): Long? {
+        item.optJSONObject("audio_info")?.let { info ->
+            for (key in listOf("duration_128", "duration_320", "duration_flac")) {
+                val value = info.optLong(key, -1L)
+                if (value > 0) return value
+            }
+        }
+        val legacy = item.optJSONObject("deprecated")?.optLong("duration", -1L) ?: -1L
+        return legacy.takeIf { it > 0 }
+    }
+
+    private fun nestedAlbumName(item: JSONObject): String {
+        val info = item.optJSONObject("album_info") ?: return ""
+        return listOf("album_name", "name")
+            .map(info::optString)
+            .firstOrNull(String::isNotBlank)
+            .orEmpty()
     }
 
     private fun flattenObjects(root: Any?): List<JSONObject> = buildList {
