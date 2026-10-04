@@ -12,6 +12,24 @@ import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Fields that every real Kugou list-file song carries and that the playlist header
+ * record never carries. Used to tell the header apart from a track when a self-created
+ * list's header lacks the collection identity keys.
+ */
+private val SONG_MARKERS = listOf(
+    "timelen",
+    "time_length",
+    "Duration",
+    "duration",
+    "singerinfo",
+    "albuminfo",
+    "bitrate",
+    "privilege",
+    "mixsongid",
+    "audio_id",
+)
+
 class KugouPlaylistClient(
     private val sessionProvider: () -> KugouSession,
     httpClient: OkHttpClient = com.lladlam.melox.core.network.MeloXHttpClient.shared,
@@ -68,7 +86,7 @@ class KugouPlaylistClient(
                 ),
             )
             val pageTracks = flattenObjects(songsResponse)
-                .mapNotNull(::parseTrack)
+                .mapNotNull { item -> parseTrack(item, playlist.title) }
                 .distinctBy { it.id.value }
             reportedTotal = maxOf(reportedTotal, findFirstLong(songsResponse, "total", "total_count", "count", "filesize"))
             val before = allTracks.size
@@ -110,7 +128,7 @@ class KugouPlaylistClient(
         )
     }
 
-    private fun parseTrack(item: JSONObject): MusicTrack? {
+    private fun parseTrack(item: JSONObject, playlistTitle: String): MusicTrack? {
         // flattenObjects() walks every object in the response, including the playlist
         // header. That header carries the playlist's own title (and, on a self-created
         // list, a cover-file hash), so reject it by its collection identity rather than
@@ -126,6 +144,11 @@ class KugouPlaylistClient(
         }
         val hash = kugouFirstString(item, "FileHash", "Hash", "hash", "filehash").uppercase()
         if (hash.isBlank()) return null
+        // A self-created list ships a header record that carries none of the collection
+        // identity keys above: it is the list's own title/cover entry, holding a cover-file
+        // hash and no playback metadata. Every real song object carries duration, artist,
+        // bitrate or billing fields, so require at least one before treating it as a track.
+        if (SONG_MARKERS.none(item::has)) return null
         val rawTitle = kugouFirstString(
             item,
             "SongName", "songname", "AudioName", "audio_name", "FileName", "filename", "name",
@@ -136,6 +159,14 @@ class KugouPlaylistClient(
             kugouSingerName(item, "SingerName", "singername", "author_name", "AuthorName"),
         )
         if (title.isBlank()) return null
+        // Narrow last resort: a header is titled exactly like its playlist and has no
+        // artist. A genuine song that merely shares the playlist's name still has one,
+        // so this only drops the header, never a real track.
+        if (playlistTitle.isNotBlank() && title == playlistTitle &&
+            (singer.isBlank() || singer == "未知歌手")
+        ) {
+            return null
+        }
         val albumName = kugouFirstString(item, "AlbumName", "album_name", "albumname")
             .ifBlank { item.optJSONObject("albuminfo")?.optString("name").orEmpty() }
         val albumId = kugouFirstString(item, "AlbumID", "album_id", "albumid").takeIf(String::isNotBlank)

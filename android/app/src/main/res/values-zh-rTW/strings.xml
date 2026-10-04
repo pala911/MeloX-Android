@@ -659,7 +659,7 @@
     <string name="search_shuffle">隨機</string>
     <string name="search_song_count">%1$d 首歌曲</string>
     <string name="search_content_description">搜尋</string>
-    <string name="app_exit_confirm">再按一次退出 MeloX</string>
+    <string name="app_exit_confirm">再按一次退出 YSYY</string>
     <string name="app_clipboard_title">開啟剪貼簿連結？</string>
     <string name="app_clipboard_song">偵測到網易雲歌曲，是否立即播放？</string>
     <string name="app_clipboard_playlist">偵測到網易雲歌單，是否立即開啟並播放？</string>
