@@ -1,0 +1,77 @@
+name: One-time Debug APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      # `packages` must be set explicitly: v3 otherwise tries to install the
+      # `tools` package, which Google removed, and sdkmanager exits 1.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-37.0" "build-tools;37.0.0" "platform-tools"
+
+      # A fresh debug keystore on every run means `adb install -r` fails with a
+      # signature mismatch, so each update would wipe the app's data. Cache the
+      # generated one so every build after the first shares a signature.
+      - name: Reuse a stable debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: melox-android-debug-keystore-v1
+
+      - name: Ensure debug keystore
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          ls -l ~/.android/debug.keystore
+          # Report where AGP would look on its own, so a future runner change is
+          # visible in the log instead of silently producing a new signer.
+          echo "HOME=$HOME ANDROID_USER_HOME=${ANDROID_USER_HOME:-unset} ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-unset}"
+
+      # A release build is what actually gets used: debug builds stay
+      # debuggable, so ART never AOT-compiles them and the UI visibly drops
+      # frames, and they skip minify/shrink so the APK is twice the size.
+      # Signing uses the keystore committed at android/melox-debug.keystore so
+      # every build shares one signature and `adb install -r` keeps working.
+      - name: Assemble Release APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          test -f melox-debug.keystore
+          ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --max-workers=2 --stacktrace \
+            -PmeloxReleaseStoreFile=../melox-debug.keystore \
+            -PmeloxReleaseStorePassword=android \
+            -PmeloxReleaseKeyAlias=androiddebugkey \
+            -PmeloxReleaseKeyPassword=android
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeloX-Android-release-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 1

@@ -1,5 +1,6 @@
 package com.lladlam.melox.core.provider.lxuser
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,5 +20,19 @@ class LxUserSourceStoreTest {
     @Test
     fun rejectsUnrelatedJavascript() {
         assertFalse(LxUserSourceStore.looksLikeLxMusicSource("console.log('hello')"))
+    }
+
+    @Test
+    fun parsesSlashSlashMetadataHeaders() {
+        val metadata = LxUserScriptMetadata.parse(
+            """
+            // @name 测试音源
+            // @version 2.1
+            // @author tester
+            """.trimIndent(),
+        )
+        assertEquals("测试音源", metadata.name)
+        assertEquals("2.1", metadata.version)
+        assertEquals("tester", metadata.author)
     }
 }

@@ -113,8 +113,16 @@ class KugouPlaylistClient(
     private fun parseTrack(item: JSONObject): MusicTrack? {
         val hash = kugouFirstString(item, "FileHash", "Hash", "hash", "filehash").uppercase()
         if (hash.isBlank()) return null
+        // flattenObjects() walks every object in the response, including the playlist
+        // header. A self-created playlist's detail response embeds that header, whose
+        // "name" is the playlist title and whose "hash" is a non-audio file hash; it
+        // used to pass this parser through the bare "name" fallback and show up as the
+        // first "track" of the playlist. Songs on the list-file endpoints always carry
+        // an explicit song-title key, so require one and drop the generic fallback.
+        val rawTitle = kugouFirstString(item, "SongName", "songname", "AudioName", "audio_name", "FileName", "filename")
+        if (rawTitle.isBlank()) return null
         val (title, singer) = recoverKugouTrackText(
-            kugouFirstString(item, "SongName", "songname", "AudioName", "audio_name", "FileName", "filename", "name"),
+            rawTitle,
             kugouSingerName(item, "SingerName", "singername", "author_name", "AuthorName"),
         )
         if (title.isBlank()) return null

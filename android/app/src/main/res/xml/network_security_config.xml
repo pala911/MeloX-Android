@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <!-- Upstream 0.6.0 sets cleartextTrafficPermitted="false" here, which breaks
+         every LX source: they hand back `http://` CDN links (m701.music.126.net
+         and friends) and ExoPlayer is then blocked by the platform before a
+         single sample is read. Third-party sources are the whole point of this
+         branch, so cleartext stays allowed for the audio CDNs they return. -->
+    <base-config cleartextTrafficPermitted="true" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">music.163.com</domain>
+        <domain includeSubdomains="true">music.126.net</domain>
+        <domain includeSubdomains="true">ar.i.kuwo.cn</domain>
+        <!-- One installed LX source still exposes its endpoint on this legacy HTTP host. -->
+        <domain includeSubdomains="false">97.64.37.235</domain>
+    </domain-config>
 </network-security-config>

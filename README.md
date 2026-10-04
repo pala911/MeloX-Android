@@ -129,14 +129,8 @@ The playable quality depends on the track, account entitlement, region, and the 
 
 ### Third-party music sources
 
-- Third-party sources can be enabled separately in Music Services after reading their agreement. The switch is local and is not cloud-controlled.
-- YouTube Music uses the dual-backend design from [lladlam/Square](https://github.com/lladlam/Square). The InnerTube module is vendored at `android/innertube/` from [Metrolist](https://github.com/mostafaalagamy/Metrolist) and keeps the `com.metrolist.innertube` package.
-- Spotify follows the Square Spotify backend. Playback uses `librespot-java`; catalog and OAuth use the Spotify Web API. The user enters a Client ID in the app.
-- Spotify, YouTube Music, NetEase, and the other sources share the provider-neutral download and offline path (`MeloXProviderDownloadStore`).
-- vivo devices automatically try OriginOS Atomic Island. There is no separate switch. Unsupported devices keep the standard Android media notification. The adapter uses the documented local `notification.superx.*` extras and does not depend on EMAS push.
-- LX Music compatible JavaScript sources can be imported and resolved in a restricted QuickJS runtime.
-- A personal CHKSZ API key can be configured to resolve NetEase, QQ Music, and Kugou tracks first. Register at `api.chksz.com`. Registration currently requires a LinuxDo account.
-- If third-party resolution fails, playback falls back to the platform's native player. Lyrics still use MeloX's own lyric path.
+- Supports importing JavaScript sources from LX Music (mobile custom-source v2 API: `lx.on('request')` / `lx.send('inited')` / `lx.request` / `lx.utils`), resolved in a QuickJS runtime. This fork keeps one warm runtime per script and resolves quality-first (imported LX source → CHKSZ → platform native).
+- Songs the official API only serves as a trial clip (`freeTrialInfo`) are resolved through the third-party sources instead; the UI shows the measured quality, not the requested one.
 
 ## Platform scope
 

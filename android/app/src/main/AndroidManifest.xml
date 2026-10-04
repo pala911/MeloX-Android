@@ -49,6 +49,9 @@
 
         <activity android:name=".ui.account.MeloXAccountActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
         <activity android:name=".ui.provider.MeloXProviderServicesActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
+        <!-- Upstream 0.6.2 removed SpotifyCallbackActivity (OAuth now completes
+             without a dedicated callback activity); its manifest entry goes too.
+        -->
         <activity android:name=".ui.collection.MeloXCollectionDetailActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
         <activity android:name=".ui.song.MeloXSongWikiActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
         <activity android:name=".ui.player.MeloXListenTogetherInviteActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
@@ -110,13 +113,12 @@
                 android:value="Live rendering of lyrics for Xiaomi Super Island" />
         </service>
 
-        <!-- Shizuku starts this binder in its own process. It is not an app Service,
-             so the empty-constructor and Service-subclass checks do not apply. -->
-        <service
-            android:name=".platform.xiaomi.ShizukuKeepAliveService"
-            android:exported="true"
-            tools:ignore="Instantiatable" />
-
+        <!-- Upstream 0.6.1 declares ShizukuKeepAliveService as a <service> here, but
+             the class extends Binder and is bound at runtime through
+             Shizuku.bindUserService — it is not an Android service. Lint rejects the
+             declaration in a release build (lintVitalRelease) because the class has no
+             no-arg constructor and does not extend android.app.Service. Upstream CI only
+             runs assembleDebug, so it never sees this. Keep the entry out. -->
         <meta-data android:name="lyricon_module" android:value="true" />
         <meta-data android:name="lyricon_module_author" android:value="lladlam" />
         <meta-data

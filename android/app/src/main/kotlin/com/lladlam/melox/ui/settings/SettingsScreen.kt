@@ -281,13 +281,20 @@ fun SettingsScreen(
     PredictiveBackHandler(enabled = route != null) {
         try {
             it.collect { event -> backProgress.snapTo(event.progress) }
-            backProgress.animateTo(1f, tween(160))
+            // Close first, then finish the slide: the exit transition starts from the
+            // gesture position while the remaining offset plays out. Resetting the
+            // progress after closing would snap the already off-screen page back to
+            // the center for one exit-animation pass - a visible "reappear" on
+            // gesture back (same fix as the search detail page).
             route = null
-            backProgress.snapTo(0f)
+            backProgress.animateTo(1f, tween(160))
         } catch (_: CancellationException) {
             backProgress.animateTo(0f)
         }
     }
+    // Gesture back leaves the offset at 1 (page fully off-screen). Reset it on the
+    // next open, otherwise the new detail page enters still shifted off-screen.
+    LaunchedEffect(route) { if (route != null) backProgress.snapTo(0f) }
 
     AnimatedVisibility(
         visible = route != null,

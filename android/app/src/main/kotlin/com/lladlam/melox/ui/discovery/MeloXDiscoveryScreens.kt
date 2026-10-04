@@ -544,12 +544,11 @@ private fun HomeOverlayPage(
         try {
             it.collect { event -> if (followPredictiveBack) progress.snapTo(event.progress) }
             if (followPredictiveBack) {
-                // 先把没有共享元素的页面滑出屏外再关闭。每日推荐、热歌榜、私人雷达
-                // 也走这里；如果先关闭，退出动画会把停在半路的页面留在首页上面。
-                // 关闭之后只把位移归零，给下一次进入用，不再补一段滑出。
-                progress.animateTo(1f, tween(160))
+                // 与搜索页详情返回一致：先关闭（退出过渡从手势落点启动），再让剩余
+                // 位移收尾。不能在关闭后 snapTo(0f)——那会把已滑出屏幕的页面瞬间
+                // 闪回屏幕正中再滑出去，手势返回会看到页面消失又重现一次。
                 onBack()
-                progress.snapTo(0f)
+                progress.animateTo(1f, tween(160))
             } else {
                 // 共享元素页面：不跟手，直接关；退出动画自己会滑出并把封面 morph 回卡片。
                 onBack()
@@ -1520,8 +1519,13 @@ private fun DiscoveryCollectionDetail(
             .onFailure { error = it.message ?: context.getString(R.string.home_content_failed) }
     }
 
+    // ProviderRanking is the only detail that does not delegate to
+    // MeloXUnifiedPlaylistDetailScreen (which paints an opaque background), and the
+    // overlay host is intentionally transparent so the gesture-back slide reveals
+    // the page underneath. Without a background here the chart content renders
+    // straight on top of the home/discovery page.
     LazyColumn(
-        modifier = Modifier.fillMaxSize().statusBarsPadding(),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding(),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 146.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
