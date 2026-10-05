@@ -144,20 +144,24 @@ class BilibiliProvider(
             .firstNotNullOfOrNull { preferredId -> candidates.firstOrNull { it.id == preferredId } }
             ?: candidates.firstOrNull()
             ?: return PlaybackResolution.Unavailable("Bilibili 没有返回 DASH 音频")
+        val cookie = sessionProvider().cookie
         android.util.Log.i(
             "MeloXBilibiliPlayback",
             "selected bvid=$physicalBvid cid=$physicalCid requested=$quality " +
-                "audioId=${selected.id} mime=${selected.mime} bandwidth=${selected.bandwidth}",
+                "audioId=${selected.id} mime=${selected.mime} bandwidth=${selected.bandwidth} " +
+                "anonymous=${cookie.isBlank()}",
         )
-        val cookie = sessionProvider().cookie
-        if (cookie.isBlank()) return PlaybackResolution.LoginRequired
+        // 公开视频的 playurl 与 CDN 拉流都不需要登录（PC 探针实测：无 cookie 时 playurl code=0
+        // 且返回 30232/30280/30216，Range 请求 206 + 合法 ftyp）。所以只在有 Cookie 时才带上，
+        // cookie 为空不再 return LoginRequired —— 那道门槛等于把 bilibili 这条兜底路完全掐死。
+        val requestHeaders = mutableMapOf(
+            "Referer" to "https://www.bilibili.com/video/$physicalBvid",
+            "User-Agent" to UserAgent,
+        )
+        if (cookie.isNotBlank()) requestHeaders["Cookie"] = cookie
         return PlaybackResolution.Playable(
             url = selected.url,
-            requestHeaders = mapOf(
-                "Referer" to "https://www.bilibili.com/video/$physicalBvid",
-                "User-Agent" to UserAgent,
-                "Cookie" to cookie,
-            ),
+            requestHeaders = requestHeaders,
             requestedQuality = quality,
             actualQuality = selected.id.bilibiliTier(),
             bitrate = selected.bandwidth,

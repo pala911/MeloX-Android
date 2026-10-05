@@ -38,10 +38,14 @@ class BilibiliApiCache private constructor(context: Context) {
         if (existing != null) return JSONObject(existing.get().toString())
         return try {
             val loaded = loader()
-            require(loaded.optInt("code", -1) == 0) { "Only successful Bilibili responses are cacheable" }
             val value = loaded.toString()
-            synchronized(lock) { memory[key] = Entry(value, now, now + policy.memoryTtlMs) }
-            policy.diskTtlMs?.let { writeDisk(key, value, now) }
+            // 失败响应（风控/签名校验的非 0 code）只透传给调用方、绝不进缓存。
+            // 原来这里是一句 require，把「不许缓存失败」的守卫抛成了
+            // IllegalArgumentException，bilibili 真实的 code/message 反而被吞掉。
+            if (loaded.optInt("code", -1) == 0) {
+                synchronized(lock) { memory[key] = Entry(value, now, now + policy.memoryTtlMs) }
+                policy.diskTtlMs?.let { writeDisk(key, value, now) }
+            }
             JSONObject(value).also { pending.complete(JSONObject(value)) }
         } catch (error: Throwable) {
             pending.completeExceptionally(error)

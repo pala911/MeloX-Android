@@ -150,7 +150,7 @@ class CrossProviderPlaybackFallbackResolver(
                                     outcome.isFailure -> {
                                         eventLogger(
                                             "search ${provider.source.storageValue} failed: " +
-                                                (outcome.exceptionOrNull()?.javaClass?.simpleName ?: "error"),
+                                                describeError(outcome.exceptionOrNull()),
                                         )
                                         emptyList<MusicTrack>()
                                     }
@@ -181,9 +181,10 @@ class CrossProviderPlaybackFallbackResolver(
                         val provider = providers.firstOrNull { it.source == match.candidate.id.source } ?: continue
                         if (provider.source in loginBlocked) continue
                         val playback = provider as PlaybackCapability
-                        val resolution = runCatching {
+                        val attempt = runCatching {
                             playback.resolvePlayback(match.candidate, request.quality)
-                        }.getOrNull()
+                        }
+                        val resolution = attempt.getOrNull()
                         attempts++
                         if (resolution is PlaybackResolution.Playable) {
                             eventLogger(
@@ -201,9 +202,13 @@ class CrossProviderPlaybackFallbackResolver(
                         }
                         // 要登录才能播是账号级问题，本轮起这个源的其余候选不再浪费请求。
                         if (resolution == PlaybackResolution.LoginRequired) loginBlocked += provider.source
+                        val reason = if (attempt.isSuccess) {
+                            describeResolution(resolution)
+                        } else {
+                            describeError(attempt.exceptionOrNull())
+                        }
                         eventLogger(
-                            "playback ${provider.source.storageValue} rejected: " +
-                                "${describeResolution(resolution)} score=${match.score}",
+                            "playback ${provider.source.storageValue} rejected: $reason score=${match.score}",
                         )
                     }
                     if (attempts >= MaxPlaybackAttempts) break
@@ -285,7 +290,13 @@ internal fun scoreCandidate(source: MusicTrack, candidate: MusicTrack): Int? {
     val candidateArtists = candidate.artists.map { normalizeScoreText(it.name) }.filter(String::isNotBlank)
     val artistHit = hasArtistRelation(sourceArtists, candidateArtists, candidateTitle)
     // 两边都有歌手信息却毫无关联（同名曲/串歌）直接丢弃：纯标题+时长分会把错误曲目顶上来。
-    if (sourceArtists.isNotEmpty() && candidateArtists.isNotEmpty() && !artistHit) return null
+    // 例外：bilibili 的 "artist" 是 UP 主名，本来就不是歌曲歌手，拿它做硬门等于把 bili 兜底
+    // 全部挡死（旧的 SpotifyTrackMatcher 正是这么挡的）—— bili 只靠标题+时长判定。
+    if (candidate.id.source != MusicSource.Bilibili &&
+        sourceArtists.isNotEmpty() && candidateArtists.isNotEmpty() && !artistHit
+    ) {
+        return null
+    }
 
     val compactSourceTitle = compactScoreText(sourceTitle)
     val titleScore = if (compactSourceTitle.length >= 2 && compactScoreText(candidateTitle).contains(compactSourceTitle)) {
@@ -362,4 +373,16 @@ private fun describeResolution(resolution: PlaybackResolution?): String = when (
     is PlaybackResolution.Playable -> "playable"
     is PlaybackResolution.Preview -> "preview"
     else -> "unknown"
+}
+
+// 抛出的异常才是根因所在（"酷狗音乐请求失败：HTTP 404"、bilibili 的 message），
+// 只打 simpleName 等于把线索扔了。
+private fun describeError(error: Throwable?): String {
+    if (error == null) return "error"
+    val message = error.message?.replace('\n', ' ')?.replace('\r', ' ')?.trim().orEmpty()
+    return if (message.isBlank()) {
+        error.javaClass.simpleName
+    } else {
+        "${error.javaClass.simpleName}: ${message.take(80)}"
+    }
 }
