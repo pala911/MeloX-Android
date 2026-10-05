@@ -55,6 +55,35 @@ object CrossProviderPlaybackRuntime {
     }
 }
 
+/**
+ * Which stage actually served the URL behind a media id, so the player quality
+ * chip can prefix the playing source (网易云 / LX / CHKSZ / 本地 / provider names).
+ * A cross-provider fallback of a NetEase song is tracked separately by
+ * [CrossProviderPlaybackRuntime] and wins over this map in the chip.
+ *
+ * Keys are [PlaybackTrackIdentity] media ids: a plain numeric string for
+ * NetEase songs and `melox:<source>:<id>` for provider media, so the resolvers
+ * that record and the chip that reads agree on the lookup key. Both the
+ * resolver caches and this map live in one process, so a cache hit always has
+ * a label recorded by the resolve that filled it.
+ */
+object PlaybackStageRuntime {
+    const val LabelNetease = "网易云"
+    const val LabelLx = "LX"
+    const val LabelChksz = "CHKSZ"
+    const val LabelLocal = "本地"
+
+    private const val MaxTracked = 512
+    private val stageByMediaId = ConcurrentHashMap<String, String>()
+
+    fun record(mediaId: String, stage: String) {
+        if (stageByMediaId.size >= MaxTracked) stageByMediaId.clear()
+        stageByMediaId[mediaId] = stage
+    }
+
+    fun stageFor(mediaId: String?): String? = mediaId?.let(stageByMediaId::get)
+}
+
 internal data class CrossProviderFallbackRequest(
     val songId: Long,
     val title: String,

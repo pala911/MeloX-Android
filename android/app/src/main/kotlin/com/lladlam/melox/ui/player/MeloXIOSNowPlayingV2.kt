@@ -82,6 +82,9 @@ import com.lladlam.melox.ui.settings.MeloXPlayerBackgroundMode
 import com.lladlam.melox.ui.animation.MeloXMotion
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.playback.CrossProviderPlaybackRuntime
+import com.lladlam.melox.playback.PlaybackStageRuntime
+import com.lladlam.melox.playback.PlaybackTrackIdentity
+import com.lladlam.melox.core.music.model.MusicSource
 import kotlinx.coroutines.delay
 import kotlin.math.roundToLong
 
@@ -550,6 +553,10 @@ private fun MeloXQualityChipV3(
     var fallbackSource by remember(state.mediaId) {
         mutableStateOf(CrossProviderPlaybackRuntime.sourceFor(state.mediaId?.toLongOrNull()))
     }
+    val identity = remember(state.mediaId) { state.mediaId?.let(PlaybackTrackIdentity::decode) }
+    var stageLabel by remember(state.mediaId) {
+        mutableStateOf(PlaybackStageRuntime.stageFor(state.mediaId))
+    }
     var availability by remember(state.mediaId) {
         mutableStateOf(SongAudioAvailability.Unknown)
     }
@@ -560,17 +567,32 @@ private fun MeloXQualityChipV3(
             .getOrDefault(SongAudioAvailability.Unknown)
     }
     LaunchedEffect(state.mediaId, selected) {
-        val songId = state.mediaId?.toLongOrNull() ?: return@LaunchedEffect
+        // Provider media ids are not numeric, so they skip the NetEase lookups
+        // but still poll the stage label like every other source.
         while (true) {
-            actual = MusicQualityRuntime.actualFor(songId)
-            fallbackSource = CrossProviderPlaybackRuntime.sourceFor(songId)
+            state.mediaId?.toLongOrNull()?.let { songId ->
+                actual = MusicQualityRuntime.actualFor(songId)
+                fallbackSource = CrossProviderPlaybackRuntime.sourceFor(songId)
+            }
+            stageLabel = PlaybackStageRuntime.stageFor(state.mediaId)
             delay(750L)
         }
     }
 
     val displayQuality = actual ?: selected
-    val displayTitle = fallbackSource?.let { "${it.displayName} · ${displayQuality.title}" }
-        ?: displayQuality.title
+    // Same precedence as SceneQualityChip: fallback source, then the stage that
+    // served the URL, then the media id's own source (blank for unknown ids).
+    val fallback = fallbackSource
+    val stage = stageLabel
+    val sourceLabel = when {
+        fallback != null -> fallback.displayName
+        stage != null -> stage
+        identity == null -> null
+        identity.source == MusicSource.Netease -> PlaybackStageRuntime.LabelNetease
+        identity.source == MusicSource.Local -> PlaybackStageRuntime.LabelLocal
+        else -> identity.source.displayName
+    }
+    val displayTitle = sourceLabel?.let { "$it · ${displayQuality.title}" } ?: displayQuality.title
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(

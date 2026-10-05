@@ -74,6 +74,7 @@ import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.playback.PlaybackTrackIdentity
 import com.lladlam.melox.playback.CrossProviderPlaybackRuntime
+import com.lladlam.melox.playback.PlaybackStageRuntime
 import com.lladlam.melox.playback.ProviderPlaybackQualityRuntime
 import com.lladlam.melox.ui.glass.meloXLiquidButton
 import com.lladlam.melox.ui.glass.MeloXSymbol
@@ -251,6 +252,9 @@ private fun SceneQualityChip(
     var fallbackSource by remember(state.mediaId) {
         mutableStateOf(CrossProviderPlaybackRuntime.sourceFor(neteaseSongId))
     }
+    var stageLabel by remember(state.mediaId) {
+        mutableStateOf(PlaybackStageRuntime.stageFor(state.mediaId))
+    }
 
     LaunchedEffect(state.mediaId) {
         while (true) {
@@ -262,6 +266,7 @@ private fun SceneQualityChip(
                 providerActual = ProviderPlaybackQualityRuntime.actualFor(identity)
                 fallbackSource = null
             }
+            stageLabel = PlaybackStageRuntime.stageFor(state.mediaId)
             // Quality changes are user-driven and infrequent; polling at frame-
             // like cadence needlessly recomposed the entire controls column.
             delay(750L)
@@ -274,7 +279,20 @@ private fun SceneQualityChip(
         providerActual != null -> providerActual!!.sceneTitle()
         else -> selected.title
     }
-    val displayTitle = fallbackSource?.let { "${it.displayName} · $qualityTitle" } ?: qualityTitle
+    // Where the audio comes from right now: a cross-provider fallback wins,
+    // then the stage that served the URL (LX/CHKSZ/本地), then the media id's
+    // own source. A plain NetEase id with no stage recorded is the official API.
+    val fallback = fallbackSource
+    val stage = stageLabel
+    val sourceLabel = when {
+        fallback != null -> fallback.displayName
+        stage != null -> stage
+        identity == null -> null
+        identity.source == MusicSource.Netease -> PlaybackStageRuntime.LabelNetease
+        identity.source == MusicSource.Local -> PlaybackStageRuntime.LabelLocal
+        else -> identity.source.displayName
+    }
+    val displayTitle = sourceLabel?.let { "$it · $qualityTitle" } ?: qualityTitle
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(

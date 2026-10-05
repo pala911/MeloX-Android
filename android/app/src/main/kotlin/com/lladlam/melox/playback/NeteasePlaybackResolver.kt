@@ -81,7 +81,10 @@ class NeteasePlaybackResolver(
         fallbackRequest: CrossProviderFallbackRequest?,
         urgent: Boolean,
     ): ResolvedRequest {
-        localSourceProvider(songId)?.let { return ResolvedRequest(it) }
+        localSourceProvider(songId)?.let {
+            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelLocal)
+            return ResolvedRequest(it)
+        }
         val cookieHeader = cookieProvider()
         val key = ResolveKey(
             songId = songId,
@@ -158,7 +161,11 @@ class NeteasePlaybackResolver(
                     } else {
                         null
                     }
-                    replacement ?: ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview)
+                    // A third-party replacement records its own label; only the
+                    // official answer overwrites a stale LX/CHKSZ label here.
+                    replacement ?: ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview).also {
+                        PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelNetease)
+                    }
                 }
             } catch (error: NeteasePlaybackUnavailableException) {
                 val fallback = fallbackRequest
@@ -173,6 +180,10 @@ class NeteasePlaybackResolver(
                     if (quality == MusicQualityRuntime.selected) {
                         CrossProviderPlaybackRuntime.record(songId, fallback.source)
                     }
+                    // Also unconditional: a resolution that runs for a non-selected
+                    // quality still plays from the fallback source someday, and the
+                    // chip must not keep a stale LX/CHKSZ label for it.
+                    PlaybackStageRuntime.record(songId.toString(), fallback.source.displayName)
                     ResolvedRequest(
                         uri = Uri.parse(fallback.url),
                         headers = fallback.requestHeaders,
@@ -210,6 +221,7 @@ class NeteasePlaybackResolver(
         val songId = uri.lastPathSegment?.toLongOrNull()
             ?: throw IOException("Invalid MeloX song URI: $uri")
         localSourceProvider(songId)?.let { local ->
+            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelLocal)
             return dataSpec.withUri(local)
         }
         val requestedQuality = MusicQuality.fromApiLevel(uri.getQueryParameter(QUALITY_QUERY))
@@ -287,6 +299,7 @@ class NeteasePlaybackResolver(
             .getOrNull()
         if (lx != null) {
             Log.i(TAG, "Resolve success stage=lx script=${lx.sourceId} quality=${lx.quality?.apiLevel}")
+            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelLx)
             // The official answer for a trial clip is Standard, and without this the
             // player chip would keep claiming "标准" while a measured lossless stream
             // from the LX source is what actually plays.
@@ -304,6 +317,7 @@ class NeteasePlaybackResolver(
             .getOrNull()
         return chksz?.let {
             Log.i(TAG, "Resolve success stage=chksz")
+            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelChksz)
             ResolvedRequest(
                 uri = Uri.parse(it.url),
                 cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",

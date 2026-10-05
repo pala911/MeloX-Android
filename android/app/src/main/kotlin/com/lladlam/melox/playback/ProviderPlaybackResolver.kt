@@ -121,6 +121,7 @@ class ProviderPlaybackResolver(
                 providerMetadata = providerMetadata(uri, id),
             )
             localSourceProvider(id)?.let { local ->
+                PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), PlaybackStageRuntime.LabelLocal)
                 val result = ResolvedRequest(local, emptyMap())
                 synchronized(cacheLock) { resolvedUris[key] = result }
                 pending.complete(result)
@@ -137,6 +138,7 @@ class ProviderPlaybackResolver(
             } else null
             if (lx != null) {
                 Log.i(TAG, "Resolve success source=${source.storageValue} stage=lx script=${lx.sourceId}")
+                PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), PlaybackStageRuntime.LabelLx)
                 val result = ResolvedRequest(Uri.parse(lx.url), lx.requestHeaders)
                 synchronized(cacheLock) { resolvedUris[key] = result }
                 pending.complete(result)
@@ -149,6 +151,7 @@ class ProviderPlaybackResolver(
             } else null
             if (thirdParty != null) {
                 Log.i(TAG, "Resolve success source=${source.storageValue} stage=chksz")
+                PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), PlaybackStageRuntime.LabelChksz)
                 val result = ResolvedRequest(Uri.parse(thirdParty.url), emptyMap())
                 synchronized(cacheLock) { resolvedUris[key] = result }
                 pending.complete(result)
@@ -171,6 +174,7 @@ class ProviderPlaybackResolver(
                         requested = quality,
                         actual = resolution.actualQuality ?: resolution.requestedQuality,
                     )
+                    PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
                     ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
                 }
                 is PlaybackResolution.Preview -> {
@@ -184,7 +188,11 @@ class ProviderPlaybackResolver(
                     } else {
                         null
                     }
-                    replacement ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap())
+                    // The replacement records LX/CHKSZ itself; the clip below still
+                    // belongs to the provider and must overwrite a stale stage label.
+                    replacement ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap()).also {
+                        PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
+                    }
                 }
                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
                 // Upstream 0.6.1 dropped the third-party fallback here; we keep it so a
@@ -225,14 +233,21 @@ class ProviderPlaybackResolver(
         source: MusicSource,
     ): ResolvedRequest? {
         if (!thirdPartySourcesEnabled()) return null
+        val stageKey = PlaybackTrackIdentity.encode(track.id)
         val lx = runCatching { lxUserPlayback?.resolve(track, quality) }
             .onFailure { Log.w(TAG, "LX membership fallback failed source=${source.storageValue}", it) }
             .getOrNull()
-        if (lx != null) return ResolvedRequest(Uri.parse(lx.url), lx.requestHeaders)
+        if (lx != null) {
+            PlaybackStageRuntime.record(stageKey, PlaybackStageRuntime.LabelLx)
+            return ResolvedRequest(Uri.parse(lx.url), lx.requestHeaders)
+        }
         val chksz = runCatching { chkszPlayback?.resolve(track, quality) }
             .onFailure { Log.w(TAG, "CHKSZ membership fallback failed source=${source.storageValue}", it) }
             .getOrNull()
-        return chksz?.let { ResolvedRequest(Uri.parse(it.url), emptyMap()) }
+        return chksz?.let {
+            PlaybackStageRuntime.record(stageKey, PlaybackStageRuntime.LabelChksz)
+            ResolvedRequest(Uri.parse(it.url), emptyMap())
+        }
     }
 
     private fun cached(key: ResolveKey): ResolvedRequest? = synchronized(cacheLock) {
