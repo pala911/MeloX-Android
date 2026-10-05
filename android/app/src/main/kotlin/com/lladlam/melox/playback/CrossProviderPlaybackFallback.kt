@@ -139,6 +139,13 @@ class CrossProviderPlaybackFallbackResolver(
             eventLogger("skipped song=${request.songId}: remotely disabled")
             return null
         }
+        // 项1 量化：源曲时长缺失会让 durationSimilarityScore 归 0（少至多 30 分，
+        // 70 分门槛更难过）且跳过服务端 duration 桶筛 —— 先统计缺失率，
+        // 再决定要不要做 Neri 式 maybeUpdateSongDuration 时长回写。
+        val durationLabel = request.durationMs?.toString() ?: "null"
+        eventLogger(
+            "resolve song=${request.songId} durationMs=$durationLabel quality=${request.quality}",
+        )
         val order = fallbackConfig.order.withIndex().associate { (index, source) -> source to index }
         val providers = registryProvider()?.providers.orEmpty()
             .filter(::isEligibleFallbackProvider)
@@ -245,7 +252,7 @@ class CrossProviderPlaybackFallbackResolver(
                                             provider.searchSongs(
                                                 query,
                                                 page = 1,
-                                                pageSize = SearchPageSize,
+                                                pageSize = BiliSearchPageSize,
                                                 durationMs = request.durationMs,
                                             )
                                         } else {
@@ -410,6 +417,12 @@ private const val MaxPlaybackAttempts = 12
 // 另一候选源一轮都轮不到（总预算 12，且整体还有 timeoutMs 墙钟限制）。
 private const val LeadPhaseAttemptCap = 3
 private const val SearchPageSize = 10
+// 项2：bili 单独放宽 —— 候选库主力就是它（EligibleSources={Netease,Bilibili}），
+// 第 1 页 10 条常被 70 分门槛整批淘汰。一页拿 25 条不增加调用次数、不增加时延，
+// 只多一点带宽；B 站 search API page_size 上限 42，BilibiliProvider.searchAll
+// 已按 coerceIn(1,50) 处理过同一量级。其余源仍走 SearchPageSize —— 不动共享常数，
+// 避免波及网易云/酷狗/酷我/QQ 的调用量（历史教训：候选搜索 14 次全 405 限频）。
+private const val BiliSearchPageSize = 25
 private const val SearchTimeoutMs = 2_500L
 // 任务①b：初排取 top3 分P 展开（并行 view），单候选展开预算 1.5s，超时/失败维持原候选。
 private const val ExpandedCandidateLimit = 3

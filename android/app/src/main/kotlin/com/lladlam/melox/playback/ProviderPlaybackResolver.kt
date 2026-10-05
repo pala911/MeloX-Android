@@ -170,15 +170,29 @@ class ProviderPlaybackResolver(
                                 "actual=${actual.name} requested=${quality.name}, trying third-party",
                         )
                         val chosen = externalCandidate(track, quality, source, hasPlayableFallback = true, urgent = urgent)
-                        if (chosen == null) {
+                        // 官方给的是完整流且实际档已知（本分支已排除试听片段）时，候选必须
+                        // 不比官方差才换源 —— 同网易云链的收口。bilibili 在跨源内部豁免音质门
+                        // （Hi-Res 请求下它最高只能给 Lossless），三方关掉时会无竞争地把更好的
+                        // 官方流换掉，这一段把它挡住。
+                        val candidateQuality = chosen?.actualQuality
+                        val officialStillBetter = chosen != null &&
+                            candidateQuality != null && candidateQuality.ordinal < actual.ordinal
+                        if (officialStillBetter) {
+                            Log.i(
+                                TAG,
+                                "Keep official over fallback source=${source.storageValue} " +
+                                    "official=${actual.name} candidate=${candidateQuality?.name}",
+                            )
+                        }
+                        if (chosen != null && !officialStillBetter) {
+                            // 三方在 resolveThirdParty 里自记；跨源只有真正胜出才记。
+                            chosen.fallbackSource?.let { applyFallbackRecords(track, quality, chosen) }
+                            chosen.request
+                        } else {
                             playable.also {
                                 ProviderPlaybackQualityRuntime.recordActual(id = id, requested = quality, actual = actual)
                                 PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
                             }
-                        } else {
-                            // 三方在 resolveThirdParty 里自记；跨源只有真正胜出才记。
-                            chosen.fallbackSource?.let { applyFallbackRecords(track, quality, chosen) }
-                            chosen.request
                         }
                     }
                 }

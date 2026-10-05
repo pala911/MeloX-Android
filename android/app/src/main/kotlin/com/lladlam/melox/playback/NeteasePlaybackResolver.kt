@@ -159,17 +159,31 @@ class NeteasePlaybackResolver(
                         null
                     }
                     val chosen = selectCandidate(quality, thirdParty, fallback)
-                    if (chosen == null) {
-                        // Nothing better exists: keep the official answer - a complete
-                        // stream below the bar, or the trial clip as the last resort.
-                        ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview).also {
-                            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelNetease)
-                        }
-                    } else {
+                    // 官方给的是完整流、且它的实际档已知时，候选必须不比官方差才换源 ——
+                    // 否则「官方优先」名不副实：bilibili 在跨源内部豁免音质门（Hi-Res 请求
+                    // 下它最高只能给 Lossless），三方关掉时会无竞争地把更好的官方流换掉。
+                    // 官方是试听片段、或官方档未知时不做这个比较（片段本来就不可用）。
+                    val candidateQuality = chosen?.actualQuality
+                    val officialStillBetter = chosen != null && !source.isPreview && actual != null &&
+                        candidateQuality != null && candidateQuality.ordinal < actual.ordinal
+                    if (officialStillBetter) {
+                        Log.i(
+                            TAG,
+                            "Keep official over fallback songId=$songId " +
+                                "official=${actual?.name} candidate=${candidateQuality?.name}",
+                        )
+                    }
+                    if (chosen != null && !officialStillBetter) {
                         // The third-party side records itself inside resolveThirdParty;
                         // a cross-provider pick only records once it actually wins.
                         chosen.fallbackSource?.let { applyFallbackRecords(songId, quality, chosen) }
                         chosen.request
+                    } else {
+                        // Nothing better than the official answer: keep it - a complete
+                        // stream below the bar, or the trial clip as the last resort.
+                        ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview).also {
+                            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelNetease)
+                        }
                     }
                 }
             } catch (error: NeteasePlaybackUnavailableException) {
