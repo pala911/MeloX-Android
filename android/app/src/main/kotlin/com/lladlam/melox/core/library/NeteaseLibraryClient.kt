@@ -9,12 +9,17 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+
+// 网易云「热歌榜」固定 id：/api/toplist 偶发 200+空列表（限频软空窗）时用它兜底，
+// 免得首页顶部「全站热门-热歌榜」拉不到列表（真机复现过，该 id 多年稳定）。
+private const val HotChartPlaylistId = 3778678L
 
 /** Authenticated library routes mirrored from MeloX NeteaseAPI.swift. */
 class NeteaseLibraryClient(
@@ -207,10 +212,22 @@ class NeteaseLibraryClient(
     }
 
     suspend fun hotSongs(): List<SearchSong> = withContext(Dispatchers.IO) {
+        // /api/toplist 偶发 200+空列表（限频软空窗，真机表现为「网易云没有返回排行榜」，
+        // 而下面排行榜卡片走 serverBlocks 主源不受影响）：空窗稍等重试一次；
+        // 两次都拿不到榜单列表就用内置热歌榜 id 直接拉详情，detail 失败才原样抛错。
+        val first = runCatching { hotChartSongs() }.getOrNull()
+        if (!first.isNullOrEmpty()) return@withContext first
+        delay(1_500)
+        val second = runCatching { hotChartSongs() }.getOrNull()
+        if (!second.isNullOrEmpty()) return@withContext second
+        playlistDetailBlocking(HotChartPlaylistId).songs
+    }
+
+    private suspend fun hotChartSongs(): List<SearchSong> {
         val charts = explorePlaylists("排行榜", 80)
         val hot = charts.firstOrNull { it.name.contains("热歌") } ?: charts.firstOrNull()
-            ?: throw IOException("网易云没有返回排行榜")
-        playlistDetailBlocking(hot.id).songs
+            ?: return emptyList()
+        return playlistDetailBlocking(hot.id).songs
     }
 
     fun similarSongsBlocking(songId: Long, limit: Int = 50): List<SearchSong> {
