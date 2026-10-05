@@ -39,7 +39,7 @@ import kotlin.coroutines.resume
  * changes at all -- the notification is published directly.
  */
 internal object ShizukuXmsfNetworkHelper {
-    private const val TAG = "MeloXShizukuIsland"
+    private const val TAG = "YSYYShizukuIsland"
     private const val XMSF_PACKAGE = "com.xiaomi.xmsf"
     private const val OEM_DENY_CHAIN = 9
     private const val RULE_DEFAULT = 0

@@ -22,7 +22,7 @@ class MeloXEqualizerController(private val context: Context) {
         release()
         sessionId = newSessionId
         effect = runCatching { Equalizer(0, newSessionId) }
-            .onFailure { Log.w("MeloXPlayback", "Equalizer unavailable", it) }
+            .onFailure { Log.w("YSYYPlayback", "Equalizer unavailable", it) }
             .getOrNull()
         applySettings(force = true)
     }
@@ -56,7 +56,7 @@ class MeloXEqualizerController(private val context: Context) {
             equalizer.enabled = enabled
             appliedSettings = settings
         }.onFailure {
-            Log.w("MeloXPlayback", "Equalizer update failed; releasing effect", it)
+            Log.w("YSYYPlayback", "Equalizer update failed; releasing effect", it)
             release()
         }
     }

@@ -84,19 +84,19 @@ internal suspend fun shareLyricImage(
     val subtitle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(180, 255, 255, 255); textSize = 31f }
     canvas.drawText(state.title.ifBlank { "正在播放" }.take(24), 340f, 155f, title)
     canvas.drawText(state.artist.take(34), 340f, 215f, subtitle)
-    canvas.drawText("MeloX Lyrics", 340f, 270f, subtitle)
+    canvas.drawText("YSYY Lyrics", 340f, 270f, subtitle)
 
     val lyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 40f; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
     lines.forEachIndexed { index, line ->
         canvas.drawText(line.text.take(36), 78f, headerHeight + index * lineHeight + 55f, lyricPaint)
     }
 
-        val fileName = "MeloX-Lyrics-${System.currentTimeMillis()}.png"
+        val fileName = "YSYY-Lyrics-${System.currentTimeMillis()}.png"
         val sharedUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/MeloX")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/YSYY")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
             val value = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
@@ -133,7 +133,7 @@ internal suspend fun shareLyricImage(
             setDataAndType(uri, "image/*")
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_TEXT, "${state.title} - ${state.artist}")
-            clipData = ClipData.newUri(context.contentResolver, "MeloX lyric image", uri)
+            clipData = ClipData.newUri(context.contentResolver, "YSYY lyric image", uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
         }
         context.packageManager.queryIntentActivities(intent, 0).forEach { target ->

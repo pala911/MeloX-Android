@@ -9,7 +9,7 @@ import com.lladlam.melox.BuildConfig
  * what OAuth uses here, so a plain preference is the right shape.
  */
 object SpotifyClientConfig {
-    private const val PreferencesName = "melox_spotify_client_config"
+    private const val PreferencesName = "ysyy_spotify_client_config"
     private const val KeyClientId = "client_id"
 
     fun effective(context: Context): String =

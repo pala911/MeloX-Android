@@ -189,7 +189,7 @@ class NeteaseUniversalSearchClient(
                 else -> "audio/mpeg"
             }
         val stem = displayName.substringBeforeLast('.').filterNot(Char::isWhitespace).replace('.', '_').ifBlank { "music" }
-        val temporary = java.io.File.createTempFile("melox-cloud-", ".$extension", context.cacheDir)
+        val temporary = java.io.File.createTempFile("ysyy-cloud-", ".$extension", context.cacheDir)
         try {
             resolver.openInputStream(uri)?.use { input ->
                 temporary.outputStream().use { output -> input.copyTo(output) }

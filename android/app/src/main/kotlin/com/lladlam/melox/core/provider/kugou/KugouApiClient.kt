@@ -367,7 +367,7 @@ class KugouApiClient(
             .joinToString("") { byte -> "%02x".format(byte) }
 
     private companion object {
-        const val TAG = "MeloXKugou"
+        const val TAG = "YSYYKugou"
     }
 }
 

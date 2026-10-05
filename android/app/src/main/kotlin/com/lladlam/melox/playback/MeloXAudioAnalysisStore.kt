@@ -7,7 +7,7 @@ import java.io.File
 import java.security.MessageDigest
 
 object MeloXAudioAnalysisPreferences {
-    private const val NAME = "melox_audio_analysis"
+    private const val NAME = "ysyy_audio_analysis"
     private const val PERSISTENT = "persistent_cache"
     private const val INDEPENDENT = "independent_line"
 

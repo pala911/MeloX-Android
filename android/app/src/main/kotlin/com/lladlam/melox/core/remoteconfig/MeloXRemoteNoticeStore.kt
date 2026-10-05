@@ -4,7 +4,7 @@ import android.content.Context
 import java.time.LocalDate
 
 object MeloXRemoteNoticeStore {
-    private const val PreferencesName = "melox_remote_notices"
+    private const val PreferencesName = "ysyy_remote_notices"
 
     fun shouldShow(
         context: Context,

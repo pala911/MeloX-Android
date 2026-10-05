@@ -10,7 +10,7 @@ import com.lladlam.melox.core.music.model.MusicSource
  * never silently fans a request out to every installed provider.
  */
 object MusicProviderSelectionStore {
-    private const val PreferencesName = "melox_music_providers"
+    private const val PreferencesName = "ysyy_music_providers"
     private const val KeySelectedSource = "selected_source"
     private const val KeyUnifiedEnabled = "unified_enabled"
     private const val KeyAutomaticFallback = "automatic_source_fallback"

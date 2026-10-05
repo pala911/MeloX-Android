@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 object CrossProviderPlaybackPreferences {
-    private const val PreferencesName = "melox_playback"
+    private const val PreferencesName = "ysyy_playback"
     private const val EnabledKey = "cross_provider_unavailable_fallback"
 
     fun enabled(context: Context): Boolean = context.applicationContext

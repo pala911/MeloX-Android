@@ -19,7 +19,7 @@ object MeloXPlaybackModeRuntime {
 }
 
 object MeloXPlaybackModePreferences {
-    private const val NAME = "melox_playback_modes"
+    private const val NAME = "ysyy_playback_modes"
     private const val KEY_SHUFFLE = "shuffle"
     private const val KEY_AUTOPLAY = "autoplay"
     private const val KEY_AUTOMIX = "auto_mix"

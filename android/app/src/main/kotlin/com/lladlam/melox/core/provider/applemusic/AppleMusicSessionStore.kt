@@ -22,7 +22,7 @@ data class AppleMusicSession(
 }
 
 object AppleMusicSessionStore {
-    private const val PreferencesName = "melox_apple_music"
+    private const val PreferencesName = "ysyy_apple_music"
     private const val DeveloperTokenKey = "developer_token"
     private const val MusicUserTokenKey = "music_user_token"
     private const val StorefrontKey = "storefront"

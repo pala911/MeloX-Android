@@ -16,7 +16,7 @@ data class BilibiliPlaybackAssociation(
 
 object BilibiliPlaybackAssociationStore {
     const val AlgorithmVersion = 2
-    private const val PreferencesName = "melox_bilibili_playback_associations"
+    private const val PreferencesName = "ysyy_bilibili_playback_associations"
     private const val RevisionKey = "__revision"
 
     fun read(context: Context, bvid: String, cid: Long): BilibiliPlaybackAssociation? {

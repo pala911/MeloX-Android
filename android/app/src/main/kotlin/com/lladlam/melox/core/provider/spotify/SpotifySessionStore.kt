@@ -25,7 +25,7 @@ data class SpotifyAuthorizationTransaction(
 )
 
 object SpotifySessionStore {
-    private const val PreferencesName = "melox_spotify_session"
+    private const val PreferencesName = "ysyy_spotify_session"
     private const val AccessToken = "access_token"
     private const val RefreshToken = "refresh_token"
     private const val ExpiresAt = "expires_at"

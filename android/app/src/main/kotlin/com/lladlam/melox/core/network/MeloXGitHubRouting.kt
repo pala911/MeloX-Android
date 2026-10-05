@@ -143,8 +143,8 @@ class MeloXGitHubRouting(
         const val RemoteConfigUrl =
             "https://raw.githubusercontent.com/lladlam/MeloX-Remote-Config-Public/main/v1/latest.json"
 
-        private const val PreferencesName = "melox_github_routing"
-        private const val LegacyPreferencesName = "melox_app_settings"
+        private const val PreferencesName = "ysyy_github_routing"
+        private const val LegacyPreferencesName = "ysyy_app_settings"
         private const val SelectedSourceKey = "selected_source"
         private const val AutoSourceKey = "auto_source"
         private const val AutoLatencyKey = "auto_latency_ms"

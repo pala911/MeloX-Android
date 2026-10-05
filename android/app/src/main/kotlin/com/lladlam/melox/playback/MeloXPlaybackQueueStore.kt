@@ -15,7 +15,7 @@ internal data class MeloXPersistedQueue(
 )
 
 internal object MeloXPlaybackQueueStore {
-    private const val PREFS = "melox_playback_queue"
+    private const val PREFS = "ysyy_playback_queue"
     private const val QUEUE = "queue"
     private const val INDEX = "index"
     private const val POSITION = "position"

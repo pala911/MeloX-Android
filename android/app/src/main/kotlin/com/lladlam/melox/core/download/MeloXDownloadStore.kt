@@ -93,7 +93,7 @@ data class MeloXActiveDownload(
  */
 class MeloXDownloadStore private constructor(private val context: Context) {
     private val app = context.applicationContext
-    private val directory = File(app.filesDir, "melox_downloads").apply { mkdirs() }
+    private val directory = File(app.filesDir, "ysyy_downloads").apply { mkdirs() }
     private val indexFile = File(directory, "index.json")
     private val http = com.lladlam.melox.core.network.MeloXHttpClient.shared
     private val qualityClient = NeteaseQualityClient(
@@ -164,7 +164,7 @@ class MeloXDownloadStore private constructor(private val context: Context) {
         if (!MeloXSettingsPreferences.boolean(app, "downloads_auto_cache", false)) return
         val songId = item.mediaId.toLongOrNull()?.takeIf { it > 0L } ?: return
         if (contains(songId) || isDownloading(songId)) return
-        val counts = app.getSharedPreferences("melox_auto_cache_counts", Context.MODE_PRIVATE)
+        val counts = app.getSharedPreferences("ysyy_auto_cache_counts", Context.MODE_PRIVATE)
         val key = songId.toString()
         val count = counts.getInt(key, 0) + 1
         counts.edit().putInt(key, count).apply()
@@ -186,7 +186,7 @@ class MeloXDownloadStore private constructor(private val context: Context) {
     }
 
     fun resetAutomaticCacheHistory() {
-        app.getSharedPreferences("melox_auto_cache_counts", Context.MODE_PRIVATE).edit().clear().apply()
+        app.getSharedPreferences("ysyy_auto_cache_counts", Context.MODE_PRIVATE).edit().clear().apply()
     }
 
     fun downloadedSongsForPlaylist(playlistId: Long): List<SearchSong> =
@@ -361,7 +361,7 @@ class MeloXDownloadStore private constructor(private val context: Context) {
             put(MediaStore.Audio.Media.ALBUM, record.song.album)
             put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Audio.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MUSIC}/MeloX")
+                put(MediaStore.Audio.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MUSIC}/YSYY")
                 put(MediaStore.Audio.Media.IS_PENDING, 1)
             }
         }

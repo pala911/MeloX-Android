@@ -146,7 +146,7 @@ class BilibiliProvider(
             ?: return PlaybackResolution.Unavailable("Bilibili 没有返回 DASH 音频")
         val cookie = sessionProvider().cookie
         android.util.Log.i(
-            "MeloXBilibiliPlayback",
+            "YSYYBilibiliPlayback",
             "selected bvid=$physicalBvid cid=$physicalCid requested=$quality " +
                 "audioId=${selected.id} mime=${selected.mime} bandwidth=${selected.bandwidth} " +
                 "anonymous=${cookie.isBlank()}",

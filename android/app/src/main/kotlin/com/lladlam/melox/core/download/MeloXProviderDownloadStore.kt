@@ -40,7 +40,7 @@ data class MeloXProviderDownloadedSong(
 /** Persistent download store for provider-native IDs. Legacy NetEase downloads stay untouched. */
 class MeloXProviderDownloadStore private constructor(context: Context) {
     private val app = context.applicationContext
-    private val directory = File(app.filesDir, "melox_provider_downloads").apply { mkdirs() }
+    private val directory = File(app.filesDir, "ysyy_provider_downloads").apply { mkdirs() }
     private val indexFile = File(directory, "index.json")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val jobs = ConcurrentHashMap<String, Job>()

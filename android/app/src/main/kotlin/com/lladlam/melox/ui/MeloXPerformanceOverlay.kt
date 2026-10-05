@@ -80,7 +80,7 @@ fun MeloXPerformanceOverlay(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(Unit) {
-        val logFile = File(context.getExternalFilesDir(null), "melox_perf.log").apply {
+        val logFile = File(context.getExternalFilesDir(null), "ysyy_perf.log").apply {
             parentFile?.mkdirs()
             if (exists()) delete()
         }

@@ -10,7 +10,7 @@ import com.lladlam.melox.core.provider.qqmusic.QQMusicSession
 import com.lladlam.melox.core.provider.qqmusic.QQMusicSessionStore
 
 object PlaybackAccountStore {
-    private const val PreferencesName = "melox_playback_account"
+    private const val PreferencesName = "ysyy_playback_account"
     private const val Enabled = "enabled"
 
     fun isEnabled(context: Context): Boolean = context.applicationContext

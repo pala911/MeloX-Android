@@ -628,7 +628,7 @@ private data class MeloXLastPlayback(
 )
 
 private object MeloXLastPlaybackStore {
-    private const val PREFS = "melox_last_playback"
+    private const val PREFS = "ysyy_last_playback"
 
     fun save(context: Context, item: MediaItem, metadata: MediaMetadata, extras: android.os.Bundle?) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()

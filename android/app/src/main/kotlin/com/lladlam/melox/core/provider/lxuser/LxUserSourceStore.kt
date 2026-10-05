@@ -7,7 +7,7 @@ import org.json.JSONObject
 
 /** Stores LX user-source metadata separately from the executable script body. */
 object LxUserSourceStore {
-    private const val PreferencesName = "melox_lx_user_sources"
+    private const val PreferencesName = "ysyy_lx_user_sources"
     private const val KeyList = "list"
     private const val MaxSources = 20
     private const val MaxScriptBytes = 9_000_000L

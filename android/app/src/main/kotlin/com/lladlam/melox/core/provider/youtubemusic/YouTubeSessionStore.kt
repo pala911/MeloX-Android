@@ -19,7 +19,7 @@ data class YouTubeSession(
 }
 
 object YouTubeSessionStore {
-    private const val PreferencesName = "melox_youtube_music_session"
+    private const val PreferencesName = "ysyy_youtube_music_session"
     private const val Cookie = "cookie"
     private const val VisitorData = "visitor_data"
     private const val DataSyncId = "data_sync_id"

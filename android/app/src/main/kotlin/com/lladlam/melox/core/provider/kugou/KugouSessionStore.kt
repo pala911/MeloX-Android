@@ -42,8 +42,8 @@ data class KugouSession(
  * account therefore does not silently turn the phone into a new Kugou device.
  */
 object KugouSessionStore {
-    private const val PreferencesName = "melox_kugou_session"
-    private const val PlaybackPreferencesName = "melox_kugou_playback_session"
+    private const val PreferencesName = "ysyy_kugou_session"
+    private const val PlaybackPreferencesName = "ysyy_kugou_playback_session"
     private const val Token = "token"
     private const val UserId = "userid"
     private const val VipToken = "vip_token"

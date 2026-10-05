@@ -24,7 +24,7 @@ object MeloXHttpClient {
         if (client.cache != null) return
         synchronized(this) {
             if (client.cache != null) return
-            val directory = File(context.applicationContext.cacheDir, "melox_http")
+            val directory = File(context.applicationContext.cacheDir, "ysyy_http")
             client = base.newBuilder()
                 .cache(Cache(directory, HTTP_CACHE_BYTES))
                 .build()

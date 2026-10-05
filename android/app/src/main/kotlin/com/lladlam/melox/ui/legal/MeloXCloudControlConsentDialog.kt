@@ -24,7 +24,7 @@ import com.lladlam.melox.ui.glass.MeloXGlassDialog
 import com.lladlam.melox.ui.glass.MeloXSystemColors
 
 const val MELOX_CLOUD_CONTROL_MESSAGE =
-    "我希望你能了解最新的功能：云控。关于云控，你可以在“云控隐私协议”里面查看详细内容。云控只用于控制音乐源及其下属兼容功能，不用于其他目的。启用后，MeloX 会在每次应用进入前台时检查一次签名配置，并在应用保持前台运行期间每两小时检查一次。你可以选择拒绝或确定；确定代表你同意云控隐私协议，拒绝不会影响未依赖云控的功能，之后也可以随时在设置中修改选择。"
+    "我希望你能了解最新的功能：云控。关于云控，你可以在“云控隐私协议”里面查看详细内容。云控只用于控制音乐源及其下属兼容功能，不用于其他目的。启用后，YSYY 会在每次应用进入前台时检查一次签名配置，并在应用保持前台运行期间每两小时检查一次。你可以选择拒绝或确定；确定代表你同意云控隐私协议，拒绝不会影响未依赖云控的功能，之后也可以随时在设置中修改选择。"
 
 @Composable
 fun MeloXCloudControlConsentDialog(
@@ -33,7 +33,7 @@ fun MeloXCloudControlConsentDialog(
 ) {
     var showPolicy by remember { mutableStateOf(false) }
     MeloXGlassDialog(visible = true, onDismiss = {}) {
-        Text("欢迎使用MeloX！", style = MaterialTheme.typography.titleLarge)
+        Text("欢迎使用YSYY！", style = MaterialTheme.typography.titleLarge)
         Text(
             MELOX_CLOUD_CONTROL_MESSAGE,
             modifier = Modifier.padding(top = 9.dp),

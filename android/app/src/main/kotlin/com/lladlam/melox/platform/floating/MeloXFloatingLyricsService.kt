@@ -331,7 +331,7 @@ class MeloXFloatingLyricsService : Service() {
     }
 
     companion object {
-        const val CHANNEL_ID = "melox_floating_lyrics"
+        const val CHANNEL_ID = "ysyy_floating_lyrics"
         const val NOTIFICATION_ID = 1800
         const val ACTION_STOP = "com.lladlam.melox.action.STOP_FLOATING_LYRICS"
     }

@@ -20,8 +20,8 @@ data class KuwoSession(
 
 /** 酷我音乐本地登录态存储。 */
 object KuwoSessionStore {
-    private const val PreferencesName = "melox_kuwo_session"
-    private const val PlaybackPreferencesName = "melox_kuwo_playback_session"
+    private const val PreferencesName = "ysyy_kuwo_session"
+    private const val PlaybackPreferencesName = "ysyy_kuwo_playback_session"
     private const val KeyToken = "token"
     private const val KeyUserId = "user_id"
     private const val KeyNickname = "nickname"

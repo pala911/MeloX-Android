@@ -19,7 +19,7 @@ data class LyricBinding(
 }
 
 object LyricBindingStore {
-    private const val PreferencesName = "melox_lyric_bindings"
+    private const val PreferencesName = "ysyy_lyric_bindings"
 
     fun read(context: Context, playbackId: MusicResourceId): LyricBinding? {
         val raw = preferences(context).getString(playbackId.key(), null) ?: return null

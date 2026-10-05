@@ -635,7 +635,7 @@ private fun MeloXLibraryDownloadsPage(downloads: MeloXDownloadStore) {
             MeloXLocalBrowseMode.Songs -> emptyMap()
             MeloXLocalBrowseMode.Artists -> completed.groupBy { it.song.artists.ifBlank { context.getString(R.string.library_unknown_artist) } }
             MeloXLocalBrowseMode.Albums -> completed.groupBy { it.song.album.ifBlank { context.getString(R.string.library_unknown_album) } }
-            MeloXLocalBrowseMode.Folders -> mapOf("Music/MeloX" to completed)
+            MeloXLocalBrowseMode.Folders -> mapOf("Music/YSYY" to completed)
         }.toSortedMap()
     }
     val visibleCompleted = remember(completed, browseMode, browseGroup, browseGroups) {

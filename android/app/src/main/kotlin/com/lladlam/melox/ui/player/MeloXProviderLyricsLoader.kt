@@ -192,7 +192,7 @@ internal object MeloXProviderLyricsLoader {
             synchronized(lock) {
                 if (inFlight[cacheKey] === deferred) inFlight.remove(cacheKey)
             }
-            Log.w("MeloXLyricsAuto", "Lyrics load timed out for $cacheKey")
+            Log.w("YSYYLyricsAuto", "Lyrics load timed out for $cacheKey")
             throw java.io.IOException("歌词加载超时")
         }
         return scripted(document)
@@ -234,7 +234,7 @@ internal object MeloXProviderLyricsLoader {
         if (snapshot.durationMs <= 0L) return@coroutineScope LyricsDocument(emptyList())
         val titleCandidates = BilibiliLyricAlignment.extractTitleCandidates(snapshot.title, snapshot.artist)
         Log.i(
-            "MeloXBilibiliLyrics",
+            "YSYYBilibiliLyrics",
             "start id=${snapshot.resourceId.value} duration=${snapshot.durationMs} " +
                 "candidates=${titleCandidates.joinToString(" | ") { candidate ->
                     candidate.title + candidate.artist?.let { " / $it" }.orEmpty()
@@ -256,7 +256,7 @@ internal object MeloXProviderLyricsLoader {
         val qqResult = async {
             val track = findBilibiliLyricCatalogTrack(qqSearch, focusedCandidates) ?: return@async null
             runCatching { qqLyrics.lyrics(track) }
-                .onFailure { Log.w("MeloXBilibiliLyrics", "QQ primary lyric request failed: ${it.message}") }
+                .onFailure { Log.w("YSYYBilibiliLyrics", "QQ primary lyric request failed: ${it.message}") }
                 .getOrNull()?.takeIf { it.lines.isNotEmpty() }
                 ?.let { BilibiliLyricSourceResult("qq", it, track) }
         }
@@ -267,7 +267,7 @@ internal object MeloXProviderLyricsLoader {
             val track = neteaseTrackResult.await() ?: return@async null
             val id = track.id.value.toLongOrNull() ?: return@async null
             runCatching { AmlldbLyricsClient().lyrics(id, requestedLyricScript()) }
-                .onFailure { Log.w("MeloXBilibiliLyrics", "AMLL primary lyric failed: ${it.message}") }
+                .onFailure { Log.w("YSYYBilibiliLyrics", "AMLL primary lyric failed: ${it.message}") }
                 .getOrNull()?.takeIf { it.lines.isNotEmpty() }
                 ?.let { BilibiliLyricSourceResult("amll", it, track) }
         }
@@ -279,7 +279,7 @@ internal object MeloXProviderLyricsLoader {
         )
         val primary = primaryResults.firstOrNull { it.document === primaryDocument || it.document == primaryDocument }
         Log.i(
-            "MeloXBilibiliLyrics",
+            "YSYYBilibiliLyrics",
             "primary=${primary?.source ?: "none"} lines=${primary?.document?.lines?.size ?: 0}",
         )
         if (primary == null || primary.document.lines.size <= 1) {
@@ -289,7 +289,7 @@ internal object MeloXProviderLyricsLoader {
         val primaryMismatch = primaryDuration != null &&
             BilibiliLyricAlignment.audioClearlyMismatches(snapshot.durationMs, primaryDuration.durationMs)
         Log.i(
-            "MeloXBilibiliLyrics",
+            "YSYYBilibiliLyrics",
             "primaryDuration=${primaryDuration?.durationMs} confidence=${primaryDuration?.confidence} " +
                 "audio=${snapshot.durationMs} mismatch=$primaryMismatch",
         )
@@ -312,7 +312,7 @@ internal object MeloXProviderLyricsLoader {
         val neteaseResult = async {
             val track = neteaseTrack ?: return@async null
             runCatching { neteaseLyrics.lyrics(track) }
-                .onFailure { Log.w("MeloXBilibiliLyrics", "NetEase verification lyric failed: ${it.message}") }
+                .onFailure { Log.w("YSYYBilibiliLyrics", "NetEase verification lyric failed: ${it.message}") }
                 .getOrNull()?.takeIf { it.lines.isNotEmpty() }
                 ?.let { BilibiliLyricSourceResult("netease", it, track) }
         }
@@ -320,7 +320,7 @@ internal object MeloXProviderLyricsLoader {
             val track = neteaseTrack ?: return@async null
             val id = track.id.value.toLongOrNull() ?: return@async null
             runCatching { AmlldbLyricsClient().lyrics(id, requestedLyricScript()) }
-                .onFailure { Log.w("MeloXBilibiliLyrics", "AMLL verification lyric failed: ${it.message}") }
+                .onFailure { Log.w("YSYYBilibiliLyrics", "AMLL verification lyric failed: ${it.message}") }
                 .getOrNull()?.takeIf { it.lines.isNotEmpty() }
                 ?.let { BilibiliLyricSourceResult("amll", it, track) }
         }
@@ -337,7 +337,7 @@ internal object MeloXProviderLyricsLoader {
         ) ?: LyricsDocument(emptyList())
         val consensusDuration = BilibiliLyricAlignment.consensus(results)
         Log.i(
-            "MeloXBilibiliLyrics",
+            "YSYYBilibiliLyrics",
             "verification=${results.joinToString { result ->
                 val duration = BilibiliLyricAlignment.effectiveDuration(result.document)
                 "${result.source}:${duration?.durationMs ?: "none"}:${duration?.confidence ?: "none"}"
@@ -380,7 +380,7 @@ internal object MeloXProviderLyricsLoader {
                         )
                         if (changed) {
                             Log.i(
-                                "MeloXBilibiliLyrics",
+                                "YSYYBilibiliLyrics",
                                 "Saved replacement association for ${snapshot.resourceId.value}; it will apply on the next source open",
                             )
                         }
@@ -399,13 +399,13 @@ internal object MeloXProviderLyricsLoader {
             val query = listOf(candidate.title, candidate.artist).filterNotNull().filter(String::isNotBlank).joinToString(" ")
             val rawMatches = runCatching { search.searchSongs(query, 1, 12).items }
                 .onFailure {
-                    Log.w("MeloXBilibiliLyrics", "catalog search failed query=$query error=${it.message}")
+                    Log.w("YSYYBilibiliLyrics", "catalog search failed query=$query error=${it.message}")
                 }
                 .getOrDefault(emptyList())
             val matches = rawMatches
                 .filter { BilibiliLyricAlignment.isSafeCatalogMatch(it, candidate) }
             Log.i(
-                "MeloXBilibiliLyrics",
+                "YSYYBilibiliLyrics",
                 "catalog query=$query raw=${rawMatches.size} safe=${matches.size} " +
                     "top=${rawMatches.take(3).joinToString(" | ") { it.title }}",
             )
@@ -437,7 +437,7 @@ internal object MeloXProviderLyricsLoader {
                     loadMatchedSource(appContext, snapshot, source)
                 } ?: ResolvedLyrics(LyricsDocument(emptyList()), null)
                 Log.d(
-                    "MeloXLyricsAuto",
+                    "YSYYLyricsAuto",
                     "source=$source elapsed=${SystemClock.elapsedRealtime() - startedAt}ms " +
                         "lines=${resolved.document.lines.size} " +
                         "wordLines=${resolved.document.lines.count { it.syllables.isNotEmpty() }} " +
@@ -448,7 +448,7 @@ internal object MeloXProviderLyricsLoader {
         }.awaitAll()
         val selected = selectAutomaticLyricCandidate(candidates)
         Log.d(
-            "MeloXLyricsAuto",
+            "YSYYLyricsAuto",
             "selectedPriority=${selected?.priority} lines=${selected?.document?.lines?.size ?: 0} " +
                 "wordLines=${selected?.document?.lines?.count { it.syllables.isNotEmpty() } ?: 0}",
         )

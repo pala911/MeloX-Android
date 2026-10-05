@@ -434,7 +434,7 @@ class LxUserPlaybackResolver(
 }
 
 /** Log tag shared by the resolver class and its file-level helpers. */
-private const val TAG = "MeloXThirdParty"
+private const val TAG = "YSYYThirdParty"
 /** Floor for one action so a nearly exhausted budget still lets a request finish. */
 private const val MIN_ACTION_TIMEOUT_MS = 1_500L
 /** [lxQualityRank] bucket for a lossless (16-bit) file. */

@@ -608,7 +608,7 @@ object MeloXSettingsRuntime {
 }
 
 object MeloXSettingsPreferences {
-    private const val NAME = "melox_app_settings"
+    private const val NAME = "ysyy_app_settings"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)

@@ -672,10 +672,10 @@ private fun SystemPlaybackSettings(context: android.content.Context) {
     )
     SettingsActionButton(stringResource(R.string.settings_notify_test)) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("melox_lyrics", context.getString(R.string.settings_notify_channel_lyrics), NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel("ysyy_lyrics", context.getString(R.string.settings_notify_channel_lyrics), NotificationManager.IMPORTANCE_LOW))
         manager.notify(
             10_043,
-            NotificationCompat.Builder(context, "melox_lyrics")
+            NotificationCompat.Builder(context, "ysyy_lyrics")
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle(context.getString(R.string.settings_notify_test_title))
                 .setContentText(context.getString(R.string.settings_notify_test_text))
@@ -1972,9 +1972,9 @@ private fun StorageSettings(context: android.content.Context) {
             val stats = StatFs(context.filesDir.path)
             MeloXStorageUsage(
                 downloads = downloads.totalByteCount,
-                networkCache = listOf("melox_http", "image_cache", "coil3_disk_cache")
+                networkCache = listOf("ysyy_http", "image_cache", "coil3_disk_cache")
                     .sumOf { context.cacheDir.resolve(it).treeByteCount() },
-                playbackCache = context.cacheDir.resolve("melox_media").treeByteCount(),
+                playbackCache = context.cacheDir.resolve("ysyy_media").treeByteCount(),
                 temporary = context.cacheDir.resolve("automix_analysis").treeByteCount(),
                 localData = listOf(
                     context.filesDir.resolve("automix_analysis_index.json"),

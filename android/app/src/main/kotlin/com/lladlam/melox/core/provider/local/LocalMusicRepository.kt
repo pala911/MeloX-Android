@@ -13,7 +13,7 @@ import org.json.JSONObject
 /** Small process-safe JSON index until the app adopts a database dependency. */
 class LocalMusicRepository(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(
-        "melox_local_music",
+        "ysyy_local_music",
         Context.MODE_PRIVATE,
     )
 

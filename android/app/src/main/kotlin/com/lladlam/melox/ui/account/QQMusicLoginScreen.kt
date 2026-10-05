@@ -543,12 +543,12 @@ private fun saveQrImageToGallery(
 ): String {
     val extension = if (session.imageMimeType == "image/jpeg") "jpg" else "png"
     val methodName = if (session.method == QQMusicQrLoginMethod.WeChat) "WeChat" else "QQ"
-    val fileName = "MeloX-QQMusic-$methodName-${System.currentTimeMillis()}.$extension"
+    val fileName = "YSYY-QQMusic-$methodName-${System.currentTimeMillis()}.$extension"
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, session.imageMimeType)
-            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/MeloX")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/YSYY")
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
         val resolver = context.contentResolver
@@ -571,7 +571,7 @@ private fun saveQrImageToGallery(
         @Suppress("DEPRECATION")
         val directory = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-            "MeloX",
+            "YSYY",
         )
         check(directory.exists() || directory.mkdirs()) { context.getString(R.string.account_folder_create_failed) }
         val target = File(directory, fileName)
@@ -583,5 +583,5 @@ private fun saveQrImageToGallery(
             null,
         )
     }
-    return "Pictures/MeloX"
+    return "Pictures/YSYY"
 }

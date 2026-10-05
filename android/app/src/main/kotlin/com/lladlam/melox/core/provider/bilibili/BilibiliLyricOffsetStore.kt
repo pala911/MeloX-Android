@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap
 object BilibiliLyricOffsetStore {
     const val MinOffsetMs = -5_000
     const val MaxOffsetMs = 5_000
-    private const val PreferencesName = "melox_bilibili_lyric_offsets"
+    private const val PreferencesName = "ysyy_bilibili_lyric_offsets"
     private val states = ConcurrentHashMap<String, androidx.compose.runtime.MutableIntState>()
 
     fun normalizeOffset(offsetMs: Int): Int = offsetMs.coerceIn(MinOffsetMs, MaxOffsetMs)

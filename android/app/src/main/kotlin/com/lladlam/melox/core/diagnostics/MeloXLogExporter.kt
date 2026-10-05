@@ -43,8 +43,8 @@ object MeloXLogExporter {
         val persistedCrash = MeloXCrashStore.read(context)
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         val content = buildString {
-            appendLine("MeloX Android 日志")
-            appendLine("日志范围：当前 MeloX 进程的 Verbose/Debug/Info/Warn/Error，以及上次崩溃记录")
+            appendLine("YSYY Android 日志")
+            appendLine("日志范围：当前 YSYY 进程的 Verbose/Debug/Info/Warn/Error，以及上次崩溃记录")
             appendLine("导出时间：${System.currentTimeMillis()}")
             appendLine("进程：${android.os.Process.myPid()}")
             appendLine("应用包名：${context.packageName}")
@@ -64,11 +64,11 @@ object MeloXLogExporter {
             appendLine("上次未捕获崩溃：")
             appendLine(persistedCrash ?: "（没有已保存的崩溃）")
             appendLine()
-            appendLine("系统崩溃缓冲（包含已退出的 MeloX 进程）：")
+            appendLine("系统崩溃缓冲（包含已退出的 YSYY 进程）：")
             appendLine()
             append(tombstone.ifBlank { "（系统崩溃缓冲为空或当前系统不允许读取）\n" })
             appendLine()
-            appendLine("以下为当前 MeloX 进程日志，包含 Debug，不包含其他应用进程日志：")
+            appendLine("以下为当前 YSYY 进程日志，包含 Debug，不包含其他应用进程日志：")
             appendLine()
             append(logcat.text.ifBlank { "（当前没有可读取的应用日志）\n" })
         }
@@ -129,7 +129,7 @@ object MeloXLogExporter {
             return@runCatching ""
         }
         output.lineSequence()
-            .filter { line -> line.contains("melox", ignoreCase = true) || line.contains("AndroidRuntime") }
+            .filter { line -> line.contains("melox", ignoreCase = true) || line.contains("ysyy", ignoreCase = true) || line.contains("AndroidRuntime") }
             .joinToString("\n")
             .let { if (it.isBlank()) "" else "$it\n" }
     }.getOrDefault("")

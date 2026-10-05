@@ -3,7 +3,7 @@ package com.lladlam.melox.core.provider.lxuser
 import android.content.Context
 
 object ChkszApiKeyStore {
-    private const val PreferencesName = "melox_chksz_api"
+    private const val PreferencesName = "ysyy_chksz_api"
     private const val KeyApiKey = "apikey"
 
     fun read(context: Context): String = context.applicationContext

@@ -856,7 +856,7 @@ class LxUserRuntime(
         }
 
         val httpPool = Executors.newFixedThreadPool(4) { runnable ->
-            Thread(runnable, "melox-lx-http").apply { isDaemon = true }
+            Thread(runnable, "ysyy-lx-http").apply { isDaemon = true }
         }
         val QUALITY_ORDER = listOf("128k", "320k", "flac", "flac24bit")
         fun createContext(): QuickJSContext {
@@ -866,7 +866,7 @@ class LxUserRuntime(
     }
 }
 
-private const val TAG = "MeloXLxRuntime"
+private const val TAG = "YSYYLxRuntime"
 
 private fun String.toSafeEndpoint(): String = runCatching {
     val uri = android.net.Uri.parse(this)

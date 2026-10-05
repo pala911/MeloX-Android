@@ -500,7 +500,7 @@ object MeloXListenTogetherCoordinator {
         }
     }
 
-    private const val TAG = "MeloXTogether"
+    private const val TAG = "YSYYTogether"
     private const val SYNC_INTERVAL_MS = 1_000L
     private const val IDLE_POLL_MS = 60_000L
     private const val STATUS_EVERY_TICKS = 5

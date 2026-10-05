@@ -1755,7 +1755,7 @@ class MeloXPlaybackService : MediaSessionService() {
         const val ACTION_ANALYZE_PLAYLIST = "com.lladlam.melox.action.ANALYZE_PLAYLIST"
         const val EXTRA_ANALYSIS_SOURCE = "analysis_source"
         const val EXTRA_ANALYSIS_PLAYLIST_ID = "analysis_playlist_id"
-        const val TAG = "MeloXPlayback"
+        const val TAG = "YSYYPlayback"
         const val AUTOPLAY_PRELOAD_MS = 60_000L
         const val AUTOPLAY_RETRY_MS = 15_000L
         const val PREFETCH_TRACK_COUNT = 3
@@ -1773,9 +1773,9 @@ class MeloXPlaybackService : MediaSessionService() {
         const val SLEEP_TIMER_END_KEY = "playback_sleep_timer_end_epoch_ms"
         const val SYSTEM_ORIGINAL_TITLE_KEY = "melox.system.original_title"
         const val SYSTEM_ORIGINAL_ARTIST_KEY = "melox.system.original_artist"
-        const val LYRICS_NOTIFICATION_CHANNEL = "melox_lyrics"
+        const val LYRICS_NOTIFICATION_CHANNEL = "ysyy_lyrics"
         const val LYRICS_NOTIFICATION_ID = 1702
-        const val ANALYSIS_NOTIFICATION_CHANNEL = "melox_analysis"
+        const val ANALYSIS_NOTIFICATION_CHANNEL = "ysyy_analysis"
         const val ANALYSIS_NOTIFICATION_ID = 1004
     }
 }

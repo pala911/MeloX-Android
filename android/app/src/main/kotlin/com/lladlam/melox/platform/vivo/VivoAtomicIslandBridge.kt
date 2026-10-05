@@ -19,7 +19,7 @@ import java.util.Locale
  * vendor notification path and keeps the normal Android notification as the fallback.
  */
 object VivoAtomicIslandBridge {
-    private const val CHANNEL_ID = "melox_vivo_atomic_island"
+    private const val CHANNEL_ID = "ysyy_vivo_atomic_island"
     private const val NOTIFICATION_ID = 1704
     private const val MIN_UPDATE_INTERVAL_MS = 10_000L
     private const val MAX_DURATION_MS = 8 * 60 * 60 * 1_000L
@@ -108,7 +108,7 @@ object VivoAtomicIslandBridge {
         clickIntent: PendingIntent?,
     ) {
         ensureChannel(context)
-        val title = songTitle.trim().ifBlank { "MeloX" }
+        val title = songTitle.trim().ifBlank { "YSYY" }
         val content = artist.trim().ifBlank { line.trim().ifBlank { "♪" } }
         val progress = if (durationMs > 0L) {
             ((positionMs.coerceIn(0L, durationMs) * 100L) / durationMs).toInt().coerceIn(0, 100)

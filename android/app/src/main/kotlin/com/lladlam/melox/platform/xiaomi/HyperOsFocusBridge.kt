@@ -22,7 +22,7 @@ import com.xzakota.hyper.notification.island.model.TextInfo
  */
 object HyperOsFocusBridge {
     private const val FOCUS_PROTOCOL_SETTING = "notification_focus_protocol"
-    private const val SUPER_ISLAND_CHANNEL = "melox_super_island_lyrics_v1"
+    private const val SUPER_ISLAND_CHANNEL = "ysyy_super_island_lyrics_v1"
 
     @Volatile
     private var lastPublishedKey: String? = null
@@ -211,5 +211,5 @@ object HyperOsFocusBridge {
         listOf(songTitle.trim(), artist.trim())
             .filter(String::isNotBlank)
             .joinToString(" · ")
-            .ifBlank { "MeloX" }
+            .ifBlank { "YSYY" }
 }

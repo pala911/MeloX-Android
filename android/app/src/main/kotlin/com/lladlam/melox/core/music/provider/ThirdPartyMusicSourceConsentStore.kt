@@ -4,7 +4,7 @@ import android.content.Context
 
 /** Local consent gate for user-configured music sources. It is never remote-controlled. */
 object ThirdPartyMusicSourceConsentStore {
-    private const val PreferencesName = "melox_third_party_music_sources"
+    private const val PreferencesName = "ysyy_third_party_music_sources"
     private const val KeyEnabled = "enabled"
     private const val KeyAgreementVersion = "agreement_version"
     private const val KeyMembershipFallbackOnly = "membership_fallback_only"

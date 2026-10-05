@@ -160,7 +160,7 @@ class NeteaseQualityClient(
     }
 
     internal companion object {
-        const val TAG = "MeloXQuality"
+        const val TAG = "YSYYQuality"
 
         /**
          * Netease attaches `freeTrialInfo` to a source when the account is only
@@ -180,7 +180,7 @@ class NeteaseQualityClient(
             lastError: Throwable?,
         ): IOException? = when {
             serverReportedUnavailable -> NeteasePlaybackUnavailableException(
-                "网易云未返回可播放的 ${requestedQuality.title} 音源，且 MeloX 降级链路也没有可用资源",
+                "网易云未返回可播放的 ${requestedQuality.title} 音源，且 YSYY 降级链路也没有可用资源",
                 lastError,
             )
             loggedIn -> IOException("网易云音频接口请求失败", lastError)

@@ -88,14 +88,14 @@ class ProviderPlaybackResolver(
 
     private fun resolveProviderRequest(uri: Uri): ResolvedRequest {
         val source = parseSource(uri)
-            ?: throw IOException("Invalid MeloX provider source: $uri")
+            ?: throw IOException("Invalid YSYY provider source: $uri")
         if (!providerPlaybackEnabled(source)) {
             throw IOException("${source.displayName} 播放接口已由远程兼容性配置临时关闭")
         }
         val resourceValue = uri.pathSegments.getOrNull(1)
             ?.let(Uri::decode)
             ?.takeIf(String::isNotBlank)
-            ?: throw IOException("Invalid MeloX provider track ID: $uri")
+            ?: throw IOException("Invalid YSYY provider track ID: $uri")
         val quality = currentQuality(uri)
         val key = ResolveKey(uri.toString(), authKeyProvider(source), quality)
         cached(key)?.let { return it }
@@ -390,7 +390,7 @@ class ProviderPlaybackResolver(
         private const val TrackTitleQuery = "trackTitle"
         private const val TrackArtistsQuery = "trackArtists"
         private const val TrackDurationQuery = "trackDurationMs"
-        private const val TAG = "MeloXThirdParty"
+        private const val TAG = "YSYYThirdParty"
         private const val MAX_RESOLVED_URIS = 96
 
         fun isProviderTrackUri(uri: Uri): Boolean =

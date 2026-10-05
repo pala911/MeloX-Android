@@ -12,7 +12,7 @@ import org.json.JSONObject
 
 /** Stores the single Jellyfin session encrypted with an Android Keystore key. */
 object JellyfinSessionStore {
-    private const val PreferencesName = "melox_jellyfin_session"
+    private const val PreferencesName = "ysyy_jellyfin_session"
     private const val SessionKey = "encrypted_session"
     private const val KeyAlias = "melox_jellyfin_session_key"
 

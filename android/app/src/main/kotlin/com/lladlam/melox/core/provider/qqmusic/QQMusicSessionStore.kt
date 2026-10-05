@@ -14,8 +14,8 @@ data class QQMusicSession(
 
 /** QQ Music login state is stored only in the app's local preferences. */
 object QQMusicSessionStore {
-    private const val PreferencesName = "melox_qq_music_session"
-    private const val PlaybackPreferencesName = "melox_qq_music_playback_session"
+    private const val PreferencesName = "ysyy_qq_music_session"
+    private const val PlaybackPreferencesName = "ysyy_qq_music_playback_session"
     private const val KeyCookie = "cookie"
 
     private val LoginCookieDomains = listOf(

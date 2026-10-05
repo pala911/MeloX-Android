@@ -15,7 +15,7 @@ data class BilibiliSession(
 }
 
 object BilibiliSessionStore {
-    private const val PreferencesName = "melox_bilibili_session"
+    private const val PreferencesName = "ysyy_bilibili_session"
     private const val KeyCookie = "cookie"
     private const val KeyRevision = "revision"
     private val RequiredNames = setOf("SESSDATA", "bili_jct", "DedeUserID")

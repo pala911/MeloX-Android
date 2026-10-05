@@ -212,7 +212,7 @@ class NeteasePlaybackResolver(
         val uri = dataSpec.uri
         if (ProviderPlaybackResolver.isProviderTrackUri(uri)) {
             val delegate = providerDelegate()
-                ?: throw IOException("MeloX provider playback runtime is not initialized")
+                ?: throw IOException("YSYY provider playback runtime is not initialized")
             return delegate.resolveDataSpec(dataSpec)
         }
         if (uri.scheme != MELOX_SCHEME || uri.host != SONG_HOST) {
@@ -220,7 +220,7 @@ class NeteasePlaybackResolver(
         }
 
         val songId = uri.lastPathSegment?.toLongOrNull()
-            ?: throw IOException("Invalid MeloX song URI: $uri")
+            ?: throw IOException("Invalid YSYY song URI: $uri")
         localSourceProvider(songId)?.let { local ->
             PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelLocal)
             return dataSpec.withUri(local)
@@ -429,7 +429,7 @@ class NeteasePlaybackResolver(
     }
 }
 
-private const val TAG = "MeloXNeteaseResolve"
+private const val TAG = "YSYYNeteaseResolve"
 
 private fun Long?.orZero(): Long = this ?: 0L
 

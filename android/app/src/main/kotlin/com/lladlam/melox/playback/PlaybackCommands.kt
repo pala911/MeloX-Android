@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 object PlaybackCommands {
-    private const val TAG = "MeloXPlayback"
+    private const val TAG = "YSYYPlayback"
     const val QUEUE_ORIGIN_KEY = "melox.queue.origin"
     const val QUEUE_ORIGIN_BASE = "base"
     const val QUEUE_ORIGIN_MANUAL = "manual"

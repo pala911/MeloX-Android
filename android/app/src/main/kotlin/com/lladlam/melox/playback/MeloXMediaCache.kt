@@ -16,7 +16,7 @@ object MeloXMediaCache {
 
     fun get(context: Context): SimpleCache = cache ?: synchronized(this) {
         cache ?: SimpleCache(
-            File(context.applicationContext.cacheDir, "melox_media"),
+            File(context.applicationContext.cacheDir, "ysyy_media"),
             LeastRecentlyUsedCacheEvictor(MEDIA_CACHE_BYTES),
             StandaloneDatabaseProvider(context.applicationContext),
         ).also { cache = it }

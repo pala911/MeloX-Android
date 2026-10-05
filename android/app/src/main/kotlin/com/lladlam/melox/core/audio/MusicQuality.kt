@@ -82,7 +82,7 @@ data class SongAudioAvailability(
 }
 
 object MusicQualityPreferences {
-    private const val PREFERENCES_NAME = "melox_playback"
+    private const val PREFERENCES_NAME = "ysyy_playback"
     private const val KEY_QUALITY = "music_quality"
 
     fun read(context: Context): MusicQuality {

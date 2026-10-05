@@ -33,7 +33,7 @@ internal class MeloXRemoteConfigClient(
             result.exceptionOrNull()?.let { error ->
                 val description = error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName
                 errors += "${source.label}: $description"
-                Log.w("MeloXRemoteConfig", "Remote config failed through ${source.label}", error)
+                Log.w("YSYYRemoteConfig", "Remote config failed through ${source.label}", error)
             }
         }
         val failed = current.copy(lastCheckedAtEpochMs = timestamp)
