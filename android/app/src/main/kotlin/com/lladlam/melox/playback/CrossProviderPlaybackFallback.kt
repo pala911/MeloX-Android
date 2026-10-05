@@ -16,6 +16,7 @@ import com.lladlam.melox.core.music.provider.SearchCapability
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigDefaults
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteFallbackConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -90,6 +91,8 @@ internal data class CrossProviderFallbackRequest(
     val artist: String,
     val durationMs: Long?,
     val quality: AudioQualityTier,
+    /** 曲目自己的来源：回落候选里要把主源自身排除掉（QQ 主源失败后不再搜 QQ）。 */
+    val excludeSource: MusicSource? = null,
 )
 
 internal data class CrossProviderFallbackResult(
@@ -137,7 +140,15 @@ class CrossProviderPlaybackFallbackResolver(
         val providers = registryProvider()?.providers.orEmpty()
             .filter(::isEligibleFallbackProvider)
             .filterNot { it.source.storageValue in fallbackConfig.disabledProviders }
-            .sortedBy { order[it.source.storageValue] ?: Int.MAX_VALUE }
+            .filterNot { it.source == request.excludeSource }
+            // 需求②：bilibili 固定最先兜底（「其它平台都排到后面」）——远程配置的 order
+            // 只决定其余源的先后；禁用 bilibili 仍走 disabledProviders，远程可关。
+            .sortedWith(
+                compareBy<MusicProvider>(
+                    { if (it.source == MusicSource.Bilibili) 0 else 1 },
+                    { order[it.source.storageValue] ?: Int.MAX_VALUE },
+                ),
+            )
         if (providers.isEmpty()) {
             eventLogger("skipped song=${request.songId}: no eligible providers")
             return null
@@ -164,15 +175,72 @@ class CrossProviderPlaybackFallbackResolver(
                 val attempted = mutableSetOf<MusicResourceId>()
                 val loginBlocked = mutableSetOf<MusicSource>()
                 var attempts = 0
+                // 逐候选尝试：Playable 且音质达标才接受（需求③；bilibili 兜底豁免，音质未知放行）。
+                fun attemptCandidates(ranked: List<FallbackCandidateScore>): CrossProviderFallbackResult? {
+                    for (match in ranked) {
+                        if (attempts >= MaxPlaybackAttempts) break
+                        val provider = providers.firstOrNull { it.source == match.candidate.id.source } ?: continue
+                        if (provider.source in loginBlocked) continue
+                        val playback = provider as PlaybackCapability
+                        val attempt = runCatching {
+                            playback.resolvePlayback(match.candidate, request.quality)
+                        }
+                        val resolution = attempt.getOrNull()
+                        attempts++
+                        if (resolution is PlaybackResolution.Playable) {
+                            val actualQuality = resolution.actualQuality ?: resolution.requestedQuality
+                            if (provider.source == MusicSource.Bilibili ||
+                                actualQuality.ordinal >= request.quality.ordinal
+                            ) {
+                                eventLogger(
+                                    "resolved song=${request.songId} via ${provider.source.storageValue} " +
+                                        "score=${match.score} quality=${actualQuality.name}",
+                                )
+                                return CrossProviderFallbackResult(
+                                    source = provider.source,
+                                    resourceId = match.candidate.id.value,
+                                    url = resolution.url,
+                                    requestHeaders = resolution.requestHeaders,
+                                    actualQuality = actualQuality,
+                                    expiresAtEpochMs = resolution.expiresAtEpochMs,
+                                )
+                            }
+                            // 低于请求音质不接受，换下一个候选（需求③；bilibili 不在此列）。
+                            eventLogger(
+                                "playback ${provider.source.storageValue} rejected: quality " +
+                                    "${actualQuality.name} below requested ${request.quality.name} " +
+                                    "score=${match.score}",
+                            )
+                            continue
+                        }
+                        // 要登录才能播是账号级问题，本轮起这个源的其余候选不再浪费请求。
+                        if (resolution == PlaybackResolution.LoginRequired) loginBlocked += provider.source
+                        val reason = if (attempt.isSuccess) {
+                            describeResolution(resolution)
+                        } else {
+                            describeError(attempt.exceptionOrNull())
+                        }
+                        eventLogger(
+                            "playback ${provider.source.storageValue} rejected: $reason score=${match.score}",
+                        )
+                    }
+                    return null
+                }
                 for ((round, query) in queries.withIndex()) {
-                    val candidates = coroutineScope {
-                        providers.map { provider ->
-                            async {
+                    // 需求②：全源并行搜索，但只先等排序第一的源（当前 pin 为 bilibili）——
+                    // 不让 qq/kugou 的 2.5s 搜索超时和慢解析拖慢兜底；其余源后台继续搜再收结果。
+                    val phaseResult = coroutineScope {
+                        val searches = providers.map { provider ->
+                            provider to async {
                                 val search = provider as SearchCapability
                                 val outcome = runCatching {
                                     withTimeoutOrNull(SearchTimeoutMs) {
                                         search.searchSongs(query, page = 1, pageSize = SearchPageSize)
                                     }
+                                }
+                                // 优先源已成功返回或整体超时都会取消在跑的搜索：不算失败，不记日志。
+                                if (outcome.exceptionOrNull() is CancellationException) {
+                                    return@async emptyList<MusicTrack>()
                                 }
                                 val page = outcome.getOrNull()
                                 when {
@@ -195,51 +263,33 @@ class CrossProviderPlaybackFallbackResolver(
                                     }
                                 }
                             }
-                        }.awaitAll().flatten()
-                    }
-                    val ranked = rankCandidates(sourceTrack, candidates, providerPriority)
-                        .filterNot { it.candidate.id in attempted }
-                    attempted += ranked.map { it.candidate.id }
-                    val top = ranked.firstOrNull()
-                    val topLabel = top?.let { "${it.candidate.id.source.storageValue}:${it.score}" } ?: "-"
-                    eventLogger(
-                        "scored matches song=${request.songId} query=${round + 1}: ${ranked.size} top=$topLabel",
-                    )
-                    for (match in ranked) {
-                        if (attempts >= MaxPlaybackAttempts) break
-                        val provider = providers.firstOrNull { it.source == match.candidate.id.source } ?: continue
-                        if (provider.source in loginBlocked) continue
-                        val playback = provider as PlaybackCapability
-                        val attempt = runCatching {
-                            playback.resolvePlayback(match.candidate, request.quality)
                         }
-                        val resolution = attempt.getOrNull()
-                        attempts++
-                        if (resolution is PlaybackResolution.Playable) {
-                            eventLogger(
-                                "resolved song=${request.songId} via ${provider.source.storageValue} " +
-                                    "score=${match.score}",
-                            )
-                            return@withTimeoutOrNull CrossProviderFallbackResult(
-                                source = provider.source,
-                                resourceId = match.candidate.id.value,
-                                url = resolution.url,
-                                requestHeaders = resolution.requestHeaders,
-                                actualQuality = resolution.actualQuality ?: resolution.requestedQuality,
-                                expiresAtEpochMs = resolution.expiresAtEpochMs,
-                            )
-                        }
-                        // 要登录才能播是账号级问题，本轮起这个源的其余候选不再浪费请求。
-                        if (resolution == PlaybackResolution.LoginRequired) loginBlocked += provider.source
-                        val reason = if (attempt.isSuccess) {
-                            describeResolution(resolution)
-                        } else {
-                            describeError(attempt.exceptionOrNull())
-                        }
+                        val (leadProvider, leadDeferred) = searches.first()
+                        val leadRanked = rankCandidates(sourceTrack, leadDeferred.await(), providerPriority)
+                            .filterNot { it.candidate.id in attempted }
+                        attempted += leadRanked.map { it.candidate.id }
+                        val leadTop = leadRanked.firstOrNull()
+                            ?.let { "${it.candidate.id.source.storageValue}:${it.score}" } ?: "-"
                         eventLogger(
-                            "playback ${provider.source.storageValue} rejected: $reason score=${match.score}",
+                            "scored matches song=${request.songId} query=${round + 1} " +
+                                "phase=lead source=${leadProvider.source.storageValue}: " +
+                                "${leadRanked.size} top=$leadTop",
                         )
+                        val leadResult = attemptCandidates(leadRanked.take(LeadPhaseAttemptCap))
+                        if (leadResult != null) return@coroutineScope leadResult
+                        val restCandidates = searches.drop(1).map { it.second }.awaitAll().flatten()
+                        val restRanked = rankCandidates(sourceTrack, restCandidates, providerPriority)
+                            .filterNot { it.candidate.id in attempted }
+                        attempted += restRanked.map { it.candidate.id }
+                        val restTop = restRanked.firstOrNull()
+                            ?.let { "${it.candidate.id.source.storageValue}:${it.score}" } ?: "-"
+                        eventLogger(
+                            "scored matches song=${request.songId} query=${round + 1} " +
+                                "phase=rest: ${restRanked.size} top=$restTop",
+                        )
+                        attemptCandidates(restRanked)
                     }
+                    if (phaseResult != null) return@withTimeoutOrNull phaseResult
                     if (attempts >= MaxPlaybackAttempts) break
                     if (loginBlocked.isNotEmpty() && loginBlocked.containsAll(providers.map { it.source })) break
                 }
@@ -255,6 +305,9 @@ class CrossProviderPlaybackFallbackResolver(
 
     companion object {
         val EligibleSources = setOf(
+            // 任意主源都能走同一套回落（需求：不管用哪个音乐服务都生效）；对网易云主源
+            // 由 excludeSource 自我排除，行为与之前一致。
+            MusicSource.Netease,
             MusicSource.QQMusic,
             MusicSource.Kugou,
             MusicSource.Kuwo,
@@ -273,6 +326,9 @@ class CrossProviderPlaybackFallbackResolver(
 // 时长差 <=8s +30、<=20s +22、<=45s +12、超过两倍 -15；70 分才接受。
 private const val MinAcceptScore = 70
 private const val MaxPlaybackAttempts = 12
+// 需求②：优先源（pin 的 bilibili）每轮最多试 3 个候选，防止它全挂时把预算烧光、
+// 其它平台一轮都轮不到（总预算 12，且整体还有 timeoutMs 墙钟限制）。
+private const val LeadPhaseAttemptCap = 3
 private const val SearchPageSize = 10
 private const val SearchTimeoutMs = 2_500L
 

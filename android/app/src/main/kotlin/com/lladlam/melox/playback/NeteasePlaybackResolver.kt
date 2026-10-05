@@ -12,6 +12,7 @@ import com.lladlam.melox.core.audio.NeteaseQualityClient
 import com.lladlam.melox.core.audio.NeteasePlaybackUnavailableException
 import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicResourceId
+import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.network.NeteaseSearchClient
 import com.lladlam.melox.core.music.provider.PlaybackAccountStore
 import java.io.IOException
@@ -353,6 +354,9 @@ class NeteasePlaybackResolver(
             artist = artist,
             durationMs = uri.getQueryParameter(DURATION_QUERY)?.toLongOrNull()?.takeIf { it > 0L },
             quality = quality.toCommonTier(),
+            // 网易云是主源：回落候选里排除自己（EligibleSources 现已包含 Netease，
+            // 供其它主源把网易云当候选，但这里不能自我搜索）。
+            excludeSource = MusicSource.Netease,
         )
     }
 
@@ -379,6 +383,7 @@ class NeteasePlaybackResolver(
                 lxUserPlayback = lxUserPlayback,
                 thirdPartySourcesEnabled = thirdPartySourcesEnabled,
                 thirdPartyOnlyForMembership = thirdPartyOnlyForMembership,
+                crossProviderFallback = crossProviderFallback,
             ).also { providerDelegate = it }
         }
     }

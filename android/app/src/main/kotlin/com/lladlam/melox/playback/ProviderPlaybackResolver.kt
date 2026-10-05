@@ -39,6 +39,7 @@ class ProviderPlaybackResolver(
     private val lxUserPlayback: LxUserPlaybackResolver? = null,
     private val thirdPartySourcesEnabled: () -> Boolean = { true },
     private val thirdPartyOnlyForMembership: () -> Boolean = { false },
+    private val crossProviderFallback: CrossProviderPlaybackFallbackResolver? = null,
 ) : ResolvingDataSource.Resolver {
     private data class ResolveKey(
         val requestUri: String,
@@ -109,6 +110,7 @@ class ProviderPlaybackResolver(
             }
         }
 
+        var trackOrNull: MusicTrack? = null
         return try {
             val id = MusicResourceId(source, resourceValue)
             val track = MusicTrack(
@@ -120,6 +122,7 @@ class ProviderPlaybackResolver(
                 durationMs = uri.getQueryParameter(TrackDurationQuery)?.toLongOrNull(),
                 providerMetadata = providerMetadata(uri, id),
             )
+            trackOrNull = track
             localSourceProvider(id)?.let { local ->
                 PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), PlaybackStageRuntime.LabelLocal)
                 val result = ResolvedRequest(local, emptyMap())
@@ -190,9 +193,12 @@ class ProviderPlaybackResolver(
                     }
                     // The replacement records LX/CHKSZ itself; the clip below still
                     // belongs to the provider and must overwrite a stale stage label.
-                    replacement ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap()).also {
-                        PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
-                    }
+                    // 三方和跨源回落都拿不到时才接受试听片段（避免拿 5 秒片段当正片播）。
+                    replacement
+                        ?: crossProviderFallbackFor(track, quality, source)
+                        ?: ResolvedRequest(Uri.parse(resolution.url), emptyMap()).also {
+                            PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
+                        }
                 }
                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
                 // Upstream 0.6.1 dropped the third-party fallback here; we keep it so a
@@ -220,6 +226,16 @@ class ProviderPlaybackResolver(
             pending.complete(result)
             result
         } catch (error: Throwable) {
+            // 需求④：任意主源播放失败（VIP/地区/版权/登录/异常）都走同一套跨源回落；
+            // 回落成功就用它的结果，失败则原样抛出原始错误。
+            val fallback = trackOrNull?.let { fallbackTrack ->
+                crossProviderFallbackFor(fallbackTrack, quality, source)
+            }
+            if (fallback != null) {
+                synchronized(cacheLock) { resolvedUris[key] = fallback }
+                pending.complete(fallback)
+                return fallback
+            }
             pending.completeExceptionally(error)
             throw error
         } finally {
@@ -248,6 +264,46 @@ class ProviderPlaybackResolver(
             PlaybackStageRuntime.record(stageKey, PlaybackStageRuntime.LabelChksz)
             ResolvedRequest(Uri.parse(it.url), emptyMap())
         }
+    }
+
+    /**
+     * 需求④：任意主源都复用同一套跨源回落（bilibili 固定优先、带回音质门槛，
+     * 见 [CrossProviderPlaybackFallbackResolver]）。返回 null 表示回落没接住，
+     * 调用方应维持原有行为（抛原始错误 / 接受试听片段）。
+     */
+    private fun crossProviderFallbackFor(
+        track: MusicTrack,
+        quality: AudioQualityTier,
+        source: MusicSource,
+    ): ResolvedRequest? {
+        val resolver = crossProviderFallback ?: return null
+        if (track.title.isBlank() || track.artistText.isBlank()) return null
+        val result = runCatching {
+            resolver.resolve(
+                CrossProviderFallbackRequest(
+                    songId = track.id.value.toLongOrNull() ?: 0L,
+                    title = track.title,
+                    artist = track.artistText,
+                    durationMs = track.durationMs,
+                    quality = quality,
+                    excludeSource = source,
+                ),
+            )
+        }.onFailure {
+            Log.w(TAG, "Cross-provider fallback failed source=${source.storageValue}", it)
+        }.getOrNull() ?: return null
+        PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(track.id), result.source.displayName)
+        ProviderPlaybackQualityRuntime.recordActual(
+            id = track.id,
+            requested = quality,
+            actual = result.actualQuality,
+        )
+        Log.i(
+            TAG,
+            "Resolve success source=${source.storageValue} stage=cross-provider " +
+                "via=${result.source.storageValue} quality=${result.actualQuality.name}",
+        )
+        return ResolvedRequest(Uri.parse(result.url), result.requestHeaders, result.expiresAtEpochMs)
     }
 
     private fun cached(key: ResolveKey): ResolvedRequest? = synchronized(cacheLock) {
