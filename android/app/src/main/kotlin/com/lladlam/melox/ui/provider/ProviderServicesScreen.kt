@@ -108,7 +108,6 @@ fun ProviderServicesScreen(
     var unifiedEnabled by remember { mutableStateOf(MusicProviderSelectionStore.unifiedEnabled(context)) }
     var unifiedSources by remember { mutableStateOf(MusicProviderSelectionStore.unifiedSources(context)) }
     var thirdPartySourcesEnabled by remember { mutableStateOf(ThirdPartyMusicSourceConsentStore.enabled(context)) }
-    var membershipFallbackOnly by remember { mutableStateOf(ThirdPartyMusicSourceConsentStore.membershipFallbackOnly(context)) }
     var showThirdPartySourceConsent by remember { mutableStateOf(false) }
     var showThirdPartySourceAgreement by remember { mutableStateOf(false) }
     var lxSources by remember { mutableStateOf(LxUserSourceStore.list(context)) }
@@ -423,21 +422,6 @@ fun ProviderServicesScreen(
                 showTopSeparator = true,
             )
             if (thirdPartySourcesEnabled) {
-                MeloXIosListRow(
-                    title = "遇到会员歌曲时再调用",
-                    subtitle = "优先使用官方音源，仅在会员/版权受限或官方只给试听片段时尝试第三方解析",
-                    leading = { Spacer(Modifier.width(25.dp)) },
-                    trailing = {
-                        MeloXGlassToggle(
-                            checked = membershipFallbackOnly,
-                            onCheckedChange = {
-                                membershipFallbackOnly = it
-                                ThirdPartyMusicSourceConsentStore.setMembershipFallbackOnly(context, it)
-                            },
-                        )
-                    },
-                    showTopSeparator = false,
-                )
                 MeloXIosListRow(
                     title = stringResource(R.string.provider_chksz),
                     subtitle = if (chkszApiKey.isBlank()) stringResource(R.string.provider_chksz_missing) else stringResource(R.string.provider_chksz_configured),

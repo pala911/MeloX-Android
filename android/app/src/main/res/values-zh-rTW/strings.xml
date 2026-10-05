@@ -317,8 +317,6 @@
     <string name="provider_jellyfin_connect_hint">連線自建 Jellyfin 音樂伺服器</string>
     <string name="provider_enable_third_party">開啟第三方音樂源設定</string>
     <string name="provider_third_party_consent_hint">需要先同意第三方音樂源使用協議；不受雲控管理</string>
-    <string name="provider_membership_fallback">遇到會員歌曲時再呼叫</string>
-    <string name="provider_membership_fallback_subtitle">優先使用官方音源，僅在會員/版權受限時嘗試第三方解析</string>
     <string name="provider_chksz">CHKSZ解析源</string>
     <string name="provider_chksz_missing">未配置 API Key · 點選配置</string>
     <string name="provider_chksz_configured">CHKSZ API Key 已配置</string>

@@ -22,29 +22,32 @@ import org.junit.Test
 class CrossProviderPlaybackFallbackResolverTest {
     @Test
     fun resolvesOnlyStrictFullPlaybackMatch() {
-        val wrong = track(MusicSource.QQMusic, artist = "Other Artist")
-        val exact = track(MusicSource.Kugou)
+        // 候选库只剩网易云/bilibili：网易云（pin 先行）搜到的错歌手候选被硬门丢掉，
+        // 正确候选由 bilibili 兜底接住。
+        val wrong = track(MusicSource.Netease, artist = "Other Artist")
+        val exact = track(MusicSource.Bilibili)
         val resolver = resolver(
-            FakeProvider(MusicSource.QQMusic, listOf(wrong), playable = true),
-            FakeProvider(MusicSource.Kugou, listOf(exact), playable = true),
+            FakeProvider(MusicSource.Netease, listOf(wrong), playable = true),
+            FakeProvider(MusicSource.Bilibili, listOf(exact), playable = true),
         )
 
         val result = resolver.resolve(request())
 
-        assertEquals(MusicSource.Kugou, result?.source)
+        assertEquals(MusicSource.Bilibili, result?.source)
         assertEquals(exact.id.value, result?.resourceId)
         assertEquals("https://audio.example/${exact.id.value}", result?.url)
     }
 
     @Test
     fun doesNotUsePreviewOrWrongArtist() {
+        // 错歌手在网易云侧被硬门丢弃；bilibili 侧只有试听片段——两边都接不住，必须 null。
         val resolver = resolver(
-            FakeProvider(MusicSource.QQMusic, listOf(track(MusicSource.QQMusic)), playable = false),
             FakeProvider(
-                MusicSource.Kugou,
-                listOf(track(MusicSource.Kugou, artist = "Other Artist")),
+                MusicSource.Netease,
+                listOf(track(MusicSource.Netease, artist = "Other Artist")),
                 playable = true,
             ),
+            FakeProvider(MusicSource.Bilibili, listOf(track(MusicSource.Bilibili)), playable = false),
         )
 
         assertNull(resolver.resolve(request()))
@@ -53,18 +56,18 @@ class CrossProviderPlaybackFallbackResolverTest {
     @Test
     fun unknownDurationUsesExactTitleAndCompleteArtistMatch() {
         // 时长未知时，完整歌手名单必须排到部分名单前面（+10 完整分）。
-        // 两候选放同一源内验证：两阶段搜索下 lead 源（bili 恒第一）可播即收，
+        // 两候选放同一源内验证：两阶段搜索下 lead 源（pin 网易云恒第一）可播即收，
         // 跨源"更优分胜出"已不是保证，名单对比只在同源候选间仍有意义。
         val partialArtists = track(
-            source = MusicSource.QQMusic,
+            source = MusicSource.Netease,
             artist = "Primary Artist",
         )
         val exact = track(
-            source = MusicSource.QQMusic,
+            source = MusicSource.Netease,
             artists = listOf("Primary Artist", "Guest"),
         )
         val resolver = resolver(
-            FakeProvider(MusicSource.QQMusic, listOf(partialArtists, exact), playable = true),
+            FakeProvider(MusicSource.Netease, listOf(partialArtists, exact), playable = true),
         )
 
         val result = resolver.resolve(
@@ -74,7 +77,7 @@ class CrossProviderPlaybackFallbackResolverTest {
             ),
         )
 
-        assertEquals(MusicSource.QQMusic, result?.source)
+        assertEquals(MusicSource.Netease, result?.source)
         assertEquals(exact.id.value, result?.resourceId)
     }
 
@@ -92,29 +95,30 @@ class CrossProviderPlaybackFallbackResolverTest {
 
     @Test
     fun remotePolicyExcludesDisabledProviderAndControlsOrder() {
-        val qq = track(MusicSource.QQMusic)
-        val kugou = track(MusicSource.Kugou)
+        // 远程 disabledProviders 把网易云关掉后，候选库里只剩 bilibili。
+        val netease = track(MusicSource.Netease)
+        val bili = track(MusicSource.Bilibili)
         val resolver = CrossProviderPlaybackFallbackResolver(
             enabledProvider = { true },
             registryProvider = {
                 MusicProviderRegistry(
                     listOf(
-                        FakeProvider(MusicSource.QQMusic, listOf(qq), playable = true),
-                        FakeProvider(MusicSource.Kugou, listOf(kugou), playable = true),
+                        FakeProvider(MusicSource.Netease, listOf(netease), playable = true),
+                        FakeProvider(MusicSource.Bilibili, listOf(bili), playable = true),
                     ),
                 )
             },
             fallbackConfigProvider = {
                 MeloXRemoteConfigDefaults.Config.fallback.copy(
-                    order = listOf("kugou", "qq_music", "bilibili"),
-                    disabledProviders = setOf("qq_music"),
+                    order = listOf("bilibili", "netease"),
+                    disabledProviders = setOf("netease"),
                 )
             },
         )
 
         val result = resolver.resolve(request())
 
-        assertEquals(MusicSource.Kugou, result?.source)
+        assertEquals(MusicSource.Bilibili, result?.source)
     }
 
     @Test
@@ -127,31 +131,30 @@ class CrossProviderPlaybackFallbackResolverTest {
 
     @Test
     fun qualityGateRejectsLowerQualityCandidateAndUsesNextSource() {
-        // qq 排前（lead）且能播，但只给 Standard（低于请求的 HiResolution）→ 不许吃差音质，
-        // 换下一家按请求音质回报的 kugou。（没有门槛时旧逻辑会取 qq。）
-        val qq = track(MusicSource.QQMusic)
-        val kugou = track(MusicSource.Kugou)
+        // 网易云排前（lead）且能播，但只给 Standard（低于请求的 HiResolution）→ 不许吃差音质，
+        // 换下一家按请求音质回报的 bilibili。（没有门槛时旧逻辑会取网易云。）
+        val netease = track(MusicSource.Netease)
+        val bili = track(MusicSource.Bilibili)
         val resolver = resolver(
             FakeProvider(
-                MusicSource.QQMusic,
-                listOf(qq),
+                MusicSource.Netease,
+                listOf(netease),
                 playable = true,
                 reportQuality = AudioQualityTier.Standard,
             ),
-            FakeProvider(MusicSource.Kugou, listOf(kugou), playable = true),
+            FakeProvider(MusicSource.Bilibili, listOf(bili), playable = true),
         )
 
         val result = resolver.resolve(request())
 
-        assertEquals(MusicSource.Kugou, result?.source)
-        assertEquals(kugou.id.value, result?.resourceId)
+        assertEquals(MusicSource.Bilibili, result?.source)
+        assertEquals(bili.id.value, result?.resourceId)
     }
 
     @Test
     fun bilibiliFallbackExemptsQualityGate() {
-        // bilibili 固定最先兜底且豁免音质：即使它报 Standard 也直接收，不轮到 kugou。
+        // bilibili 豁免音质门槛：即使它报 Standard（低于请求的 HiResolution）也直接收。
         val bili = track(MusicSource.Bilibili)
-        val kugou = track(MusicSource.Kugou)
         val resolver = resolver(
             FakeProvider(
                 MusicSource.Bilibili,
@@ -159,7 +162,6 @@ class CrossProviderPlaybackFallbackResolverTest {
                 playable = true,
                 reportQuality = AudioQualityTier.Standard,
             ),
-            FakeProvider(MusicSource.Kugou, listOf(kugou), playable = true),
         )
 
         val result = resolver.resolve(request())

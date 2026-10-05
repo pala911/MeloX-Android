@@ -38,7 +38,6 @@ class ProviderPlaybackResolver(
     private val chkszPlayback: ChkszPlaybackResolver? = null,
     private val lxUserPlayback: LxUserPlaybackResolver? = null,
     private val thirdPartySourcesEnabled: () -> Boolean = { true },
-    private val thirdPartyOnlyForMembership: () -> Boolean = { false },
     private val crossProviderFallback: CrossProviderPlaybackFallbackResolver? = null,
 ) : ResolvingDataSource.Resolver {
     private data class ResolveKey(
@@ -134,35 +133,11 @@ class ProviderPlaybackResolver(
                 "artists=${track.artistText.take(60)} durationMs=${track.durationMs} metadata=${track.providerMetadata.javaClass.simpleName}")
             Log.i(TAG, "Resolve start source=${source.storageValue} quality=${quality.name} thirdParty=${thirdPartySourcesEnabled()}")
             val allowExternalResolver = source != MusicSource.Jellyfin
-            val lx = if (allowExternalResolver && thirdPartySourcesEnabled() && !thirdPartyOnlyForMembership()) {
-                runCatching { lxUserPlayback?.resolve(track, quality) }
-                    .onFailure { Log.w(TAG, "LX stage failed source=${source.storageValue} error=${it.javaClass.simpleName}") }
-                    .getOrNull()
-            } else null
-            if (lx != null) {
-                Log.i(TAG, "Resolve success source=${source.storageValue} stage=lx script=${lx.sourceId}")
-                PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), PlaybackStageRuntime.LabelLx)
-                val result = ResolvedRequest(Uri.parse(lx.url), lx.requestHeaders)
-                synchronized(cacheLock) { resolvedUris[key] = result }
-                pending.complete(result)
-                return result
-            }
-            val thirdParty = if (allowExternalResolver && thirdPartySourcesEnabled() && !thirdPartyOnlyForMembership()) {
-                runCatching { chkszPlayback?.resolve(track, quality) }
-                    .onFailure { Log.w(TAG, "CHKSZ stage failed source=${source.storageValue} error=${it.javaClass.simpleName}") }
-                    .getOrNull()
-            } else null
-            if (thirdParty != null) {
-                Log.i(TAG, "Resolve success source=${source.storageValue} stage=chksz")
-                PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), PlaybackStageRuntime.LabelChksz)
-                val result = ResolvedRequest(Uri.parse(thirdParty.url), emptyMap())
-                synchronized(cacheLock) { resolvedUris[key] = result }
-                pending.complete(result)
-                return result
-            }
+            // 官方（主源）先行：LX/CHKSZ 只在官方给试听片段、会员/版权受限或
+            // 音质不达标时才花——与网易云链路同样是官方优先（需求：先找网易云）。
             Log.i(
                 TAG,
-                "Resolve fallback source=${source.storageValue} stage=provider chksz=${chkszPlayback?.cacheIdentity() ?: "unavailable"}",
+                "Resolve official source=${source.storageValue} stage=provider chksz=${chkszPlayback?.cacheIdentity() ?: "unavailable"}",
             )
             val provider = providers.require(source)
             val playback = provider as? PlaybackCapability
@@ -172,20 +147,33 @@ class ProviderPlaybackResolver(
             }
             val result = when (resolution) {
                 is PlaybackResolution.Playable -> {
-                    ProviderPlaybackQualityRuntime.recordActual(
-                        id = id,
-                        requested = quality,
-                        actual = resolution.actualQuality ?: resolution.requestedQuality,
-                    )
-                    PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
-                    ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
+                    val actual = resolution.actualQuality ?: resolution.requestedQuality
+                    val playable = ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
+                    if (actual.ordinal >= quality.ordinal) {
+                        ProviderPlaybackQualityRuntime.recordActual(id = id, requested = quality, actual = actual)
+                        PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
+                        playable
+                    } else {
+                        // 音质优先：官方流低于设置音质时，再要三方与跨源回落；拿到就换，
+                        // 都没有才接受这份额外打折的官方流（如实记录其真实音质）。
+                        val thirdParty = if (allowExternalResolver && thirdPartySourcesEnabled()) {
+                            resolveThirdParty(track, quality, source)
+                        } else {
+                            null
+                        }
+                        thirdParty
+                            ?: crossProviderFallbackFor(track, quality, source)
+                            ?: playable.also {
+                                ProviderPlaybackQualityRuntime.recordActual(id = id, requested = quality, actual = actual)
+                                PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
+                            }
+                    }
                 }
                 is PlaybackResolution.Preview -> {
-                    // Same membership case as Netease: the provider hands out a clip
-                    // instead of failing, so the URL on its own is not an answer. When
-                    // the third-party sources were held back for members-only use,
-                    // spend them now; otherwise they already ran earlier in this call.
-                    val replacement = if (allowExternalResolver && thirdPartySourcesEnabled() && thirdPartyOnlyForMembership()) {
+                    // Same case as Netease: the provider hands out a clip instead of
+                    // failing, so the URL on its own is not an answer - spend the
+                    // third-party sources and the cross-provider pool before accepting it.
+                    val replacement = if (allowExternalResolver && thirdPartySourcesEnabled()) {
                         Log.i(TAG, "Provider served a trial clip source=${source.storageValue}, trying third-party")
                         resolveThirdParty(track, quality, source)
                     } else {
@@ -203,9 +191,7 @@ class ProviderPlaybackResolver(
                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
                 // Upstream 0.6.1 dropped the third-party fallback here; we keep it so a
                 // members-only provider failure still has the same escape hatch as the
-                // copyright/unavailable branches above. It is only worth spending when the
-                // sources were held back for membership use — otherwise they already ran
-                // earlier in this call and failed.
+                // copyright/unavailable branches above.
                 PlaybackResolution.SubscriptionRequired -> {
                     if (allowExternalResolver && thirdPartySourcesEnabled()) {
                         resolveThirdParty(track, quality, source)

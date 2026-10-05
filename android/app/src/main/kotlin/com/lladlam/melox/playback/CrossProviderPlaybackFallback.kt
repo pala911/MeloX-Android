@@ -141,11 +141,11 @@ class CrossProviderPlaybackFallbackResolver(
             .filter(::isEligibleFallbackProvider)
             .filterNot { it.source.storageValue in fallbackConfig.disabledProviders }
             .filterNot { it.source == request.excludeSource }
-            // 需求②：bilibili 固定最先兜底（「其它平台都排到后面」）——远程配置的 order
-            // 只决定其余源的先后；禁用 bilibili 仍走 disabledProviders，远程可关。
+            // 需求：先找网易云，bilibili 殿后兜底——远程配置的 order 只作同级参考；
+            // 禁用任一源仍走 disabledProviders，远程可关。
             .sortedWith(
                 compareBy<MusicProvider>(
-                    { if (it.source == MusicSource.Bilibili) 0 else 1 },
+                    { if (it.source == MusicSource.Netease) 0 else 1 },
                     { order[it.source.storageValue] ?: Int.MAX_VALUE },
                 ),
             )
@@ -228,8 +228,8 @@ class CrossProviderPlaybackFallbackResolver(
                     return null
                 }
                 for ((round, query) in queries.withIndex()) {
-                    // 需求②：全源并行搜索，但只先等排序第一的源（当前 pin 为 bilibili）——
-                    // 不让 qq/kugou 的 2.5s 搜索超时和慢解析拖慢兜底；其余源后台继续搜再收结果。
+                    // 全源并行搜索，但只先等排序第一的源（当前 pin 为网易云）——
+                    // 不让另一源的 2.5s 搜索超时和慢解析拖慢兜底；其余源后台继续搜再收结果。
                     val phaseResult = coroutineScope {
                         val searches = providers.map { provider ->
                             provider to async {
@@ -306,12 +306,9 @@ class CrossProviderPlaybackFallbackResolver(
 
     companion object {
         val EligibleSources = setOf(
-            // 任意主源都能走同一套回落（需求：不管用哪个音乐服务都生效）；对网易云主源
-            // 由 excludeSource 自我排除，行为与之前一致。
+            // 候选库只有网易云与 bilibili（需求：其它的平台都不放到音源候选库里）。
+            // 任意主源都走同一套回落，网易云主源由 excludeSource 自我排除。
             MusicSource.Netease,
-            MusicSource.QQMusic,
-            MusicSource.Kugou,
-            MusicSource.Kuwo,
             MusicSource.Bilibili,
         )
 
@@ -327,8 +324,8 @@ class CrossProviderPlaybackFallbackResolver(
 // 时长差 <=8s +30、<=20s +22、<=45s +12、超过两倍 -15；70 分才接受。
 private const val MinAcceptScore = 70
 private const val MaxPlaybackAttempts = 12
-// 需求②：优先源（pin 的 bilibili）每轮最多试 3 个候选，防止它全挂时把预算烧光、
-// 其它平台一轮都轮不到（总预算 12，且整体还有 timeoutMs 墙钟限制）。
+// 优先源（pin 的网易云）每轮最多试 3 个候选，防止它全挂时把预算烧光、
+// 另一候选源一轮都轮不到（总预算 12，且整体还有 timeoutMs 墙钟限制）。
 private const val LeadPhaseAttemptCap = 3
 private const val SearchPageSize = 10
 private const val SearchTimeoutMs = 2_500L

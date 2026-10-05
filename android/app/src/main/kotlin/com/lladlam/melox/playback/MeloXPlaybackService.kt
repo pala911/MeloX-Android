@@ -452,7 +452,6 @@ class MeloXPlaybackService : MediaSessionService() {
                 MeloXRemoteConfigPolicy.providerPlaybackEnabled(this@MeloXPlaybackService, source)
             },
             thirdPartySourcesEnabled = { ThirdPartyMusicSourceConsentStore.enabled(this@MeloXPlaybackService) },
-            thirdPartyOnlyForMembership = { ThirdPartyMusicSourceConsentStore.membershipFallbackOnly(this@MeloXPlaybackService) },
         )
         autoMixAnalyzer = MeloXAutoMixAudioAnalyzer(this)
         val upstream = DefaultDataSource.Factory(this, httpFactory)

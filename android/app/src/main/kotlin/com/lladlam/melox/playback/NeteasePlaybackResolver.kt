@@ -33,7 +33,6 @@ class NeteasePlaybackResolver(
     private val lxUserPlayback: LxUserPlaybackResolver? = null,
     private val providerPlaybackEnabled: (com.lladlam.melox.core.music.model.MusicSource) -> Boolean = { true },
     private val thirdPartySourcesEnabled: () -> Boolean = { true },
-    private val thirdPartyOnlyForMembership: () -> Boolean = { false },
 ) : ResolvingDataSource.Resolver {
     private data class ResolveKey(
         val songId: Long,
@@ -53,6 +52,18 @@ class NeteasePlaybackResolver(
          * one transient failure stick for the rest of the session.
          */
         val provisional: Boolean = false,
+    )
+
+    /**
+     * One playable answer plus the quality it actually sounds at. `null` quality
+     * means unknown and counts as "meets the requested bar" - the same convention
+     * the cross-provider gate uses.
+     */
+    private data class QualityCandidate(
+        val request: ResolvedRequest,
+        val actualQuality: MusicQuality?,
+        /** Set only for cross-provider picks; their records apply once they win. */
+        val fallbackSource: MusicSource? = null,
     )
 
     private val cacheLock = Any()
@@ -109,91 +120,82 @@ class NeteasePlaybackResolver(
         }
         return try {
             val resolved = try {
-                // Third-party sources come first: LX scripts imported by the user,
-                // then CHKSZ, and only then the official Netease playback URL.
-                val thirdPartyTriedFirst = !thirdPartyOnlyForMembership()
-                val thirdParty = if (thirdPartyTriedFirst) {
-                    resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
-                } else {
-                    null
+                // Official first, quality first: the Netease URL wins when it is a
+                // complete stream at (or above) the quality the user picked. Otherwise
+                // the third-party sources (LX then CHKSZ) and the cross-provider pool
+                // (bilibili) get a chance - a candidate meeting the bar wins with the
+                // third-party side preferred, and when neither meets it the higher
+                // actual quality is compared.
+                val source = qualityClient.playbackSourceBlocking(
+                    songId = songId,
+                    requestedQuality = quality,
+                )
+                if (quality == MusicQualityRuntime.selected) {
+                    CrossProviderPlaybackRuntime.clear(songId)
                 }
-                thirdParty ?: run {
-                    val source = qualityClient.playbackSourceBlocking(
-                        songId = songId,
-                        requestedQuality = quality,
-                    )
-                    if (quality == MusicQualityRuntime.selected) {
-                        CrossProviderPlaybackRuntime.clear(songId)
+                val actual = source.quality
+                val belowRequested = actual == null || actual.ordinal < quality.ordinal
+                if (!source.isPreview && !belowRequested) {
+                    ResolvedRequest(Uri.parse(source.url)).also {
+                        PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelNetease)
                     }
-                    // Two reasons to spend the third-party sources that were held
-                    // back: the official answer is only a short clip, or it is a
-                    // complete track below the quality the user picked (a non-VIP
-                    // account asking for master quality is served 128k). Retrying
-                    // them in the default order would only double the latency of a
-                    // stage that already failed.
-                    val actual = source.quality
-                    val belowRequested = actual == null || actual.ordinal < quality.ordinal
-                    val replacement = if (!thirdPartyTriedFirst && (source.isPreview || belowRequested)) {
-                        Log.i(
-                            TAG,
-                            "Official source insufficient songId=$songId preview=${source.isPreview} " +
-                                "actual=${actual?.apiLevel} requested=${quality.apiLevel}, trying third-party",
-                        )
-                        // A preview is worthless, so wait on it; a complete stream is a
-                        // perfectly good fallback and is only worth a brief look for
-                        // something better.
-                        val playableFallback = !source.isPreview
-                        var resolved = resolveThirdParty(
-                            songId,
-                            quality,
-                            fallbackRequest,
-                            hasPlayableFallback = playableFallback,
-                            urgent = urgent,
-                        )
-                        // The public mirrors answer `429 请求过于频繁` when several songs
-                        // resolve at once, so one retry after a pause recovers songs that
-                        // would otherwise be left on the trial clip.
-                        if (resolved == null && source.isPreview) {
-                            Thread.sleep(PREVIEW_RETRY_PAUSE_MS)
-                            Log.i(TAG, "Official answer is a trial clip and third-party found nothing, retrying songId=$songId")
-                            resolved = resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
-                        }
-                        resolved
+                } else {
+                    Log.i(
+                        TAG,
+                        "Official source insufficient songId=$songId preview=${source.isPreview} " +
+                            "actual=${actual?.apiLevel} requested=${quality.apiLevel}, trying third-party",
+                    )
+                    // A preview is worthless, so wait on it; a complete stream below
+                    // the bar is only worth a brief look for something better.
+                    val playableFallback = !source.isPreview
+                    var thirdParty = resolveThirdParty(
+                        songId,
+                        quality,
+                        fallbackRequest,
+                        hasPlayableFallback = playableFallback,
+                        urgent = urgent,
+                    )
+                    // The public mirrors answer `429 请求过于频繁` when several songs
+                    // resolve at once, so one retry after a pause recovers songs that
+                    // would otherwise be left on the trial clip.
+                    if (thirdParty == null && source.isPreview) {
+                        Thread.sleep(PREVIEW_RETRY_PAUSE_MS)
+                        Log.i(TAG, "Official answer is a trial clip and third-party found nothing, retrying songId=$songId")
+                        thirdParty = resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
+                    }
+                    // bilibili only matters while the third-party side cannot satisfy
+                    // the bar; a qualifying third-party result wins outright.
+                    val fallback = if (thirdParty == null || !thirdParty.meetsRequested(quality)) {
+                        crossProviderCandidate(songId, quality, fallbackRequest)
                     } else {
                         null
                     }
-                    // A third-party replacement records its own label; only the
-                    // official answer overwrites a stale LX/CHKSZ label here.
-                    replacement ?: ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview).also {
-                        PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelNetease)
+                    val chosen = selectCandidate(quality, thirdParty, fallback)
+                    if (chosen == null) {
+                        // Nothing better exists: keep the official answer - a complete
+                        // stream below the bar, or the trial clip as the last resort.
+                        ResolvedRequest(Uri.parse(source.url), provisional = source.isPreview).also {
+                            PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelNetease)
+                        }
+                    } else {
+                        // The third-party side records itself inside resolveThirdParty;
+                        // a cross-provider pick only records once it actually wins.
+                        chosen.fallbackSource?.let { applyFallbackRecords(songId, quality, chosen) }
+                        chosen.request
                     }
                 }
             } catch (error: NeteasePlaybackUnavailableException) {
-                val fallback = fallbackRequest
-                    ?.copy(quality = quality.toCommonTier())
-                    ?.let { crossProviderFallback?.resolve(it) }
-                if (fallback != null) {
-                    MusicQualityRuntime.recordActual(
-                        songId = songId,
-                        requested = quality,
-                        actual = fallback.actualQuality.toMusicQuality(quality),
-                    )
-                    if (quality == MusicQualityRuntime.selected) {
-                        CrossProviderPlaybackRuntime.record(songId, fallback.source)
-                    }
-                    // Also unconditional: a resolution that runs for a non-selected
-                    // quality still plays from the fallback source someday, and the
-                    // chip must not keep a stale LX/CHKSZ label for it.
-                    PlaybackStageRuntime.record(songId.toString(), fallback.source.displayName)
-                    ResolvedRequest(
-                        uri = Uri.parse(fallback.url),
-                        headers = fallback.requestHeaders,
-                        expiresAtEpochMs = fallback.expiresAtEpochMs,
-                        cacheIdentity = "${fallback.source.storageValue}:${fallback.resourceId}",
-                    )
+                // The official API has nothing: third-party first, then bilibili, with
+                // the same quality-first comparison; give up only when both are empty.
+                val thirdParty = resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent)
+                val fallback = if (thirdParty == null || !thirdParty.meetsRequested(quality)) {
+                    crossProviderCandidate(songId, quality, fallbackRequest)
                 } else {
-                    resolveThirdParty(songId, quality, fallbackRequest, urgent = urgent) ?: throw error
+                    null
                 }
+                val chosen = selectCandidate(quality, thirdParty, fallback) ?: throw error
+                chosen.fallbackSource?.let { applyFallbackRecords(songId, quality, chosen) }
+                chosen.request
             }
             if (!resolved.provisional) {
                 synchronized(cacheLock) { resolvedUris[key] = resolved }
@@ -275,8 +277,9 @@ class NeteasePlaybackResolver(
 
     /**
      * Resolves through the user's third-party sources: LX Music scripts first, then
-     * CHKSZ. Returns null when third-party sources are off or both stages failed so
-     * the caller can fall back to the Netease native API.
+     * CHKSZ. Returns null when third-party sources are off or both stages failed; the
+     * LX measured quality rides along so the caller can compare it against bilibili
+     * when neither side meets the requested quality.
      */
     private fun resolveThirdParty(
         songId: Long,
@@ -284,7 +287,7 @@ class NeteasePlaybackResolver(
         fallbackRequest: CrossProviderFallbackRequest?,
         hasPlayableFallback: Boolean = false,
         urgent: Boolean = true,
-    ): ResolvedRequest? {
+    ): QualityCandidate? {
         if (!thirdPartySourcesEnabled()) return null
         val lx = runCatching {
             lxUserPlayback?.resolve(
@@ -307,10 +310,13 @@ class NeteasePlaybackResolver(
             lx.quality?.let {
                 MusicQualityRuntime.recordActual(songId = songId, requested = quality, actual = it)
             }
-            return ResolvedRequest(
-                uri = Uri.parse(lx.url),
-                headers = lx.requestHeaders,
-                cacheIdentity = "lx-user:${lx.sourceId}",
+            return QualityCandidate(
+                request = ResolvedRequest(
+                    uri = Uri.parse(lx.url),
+                    headers = lx.requestHeaders,
+                    cacheIdentity = "lx-user:${lx.sourceId}",
+                ),
+                actualQuality = lx.quality,
             )
         }
         val chksz = runCatching { chkszPlayback?.resolve(songId, quality.toCommonTier()) }
@@ -319,11 +325,74 @@ class NeteasePlaybackResolver(
         return chksz?.let {
             Log.i(TAG, "Resolve success stage=chksz")
             PlaybackStageRuntime.record(songId.toString(), PlaybackStageRuntime.LabelChksz)
-            ResolvedRequest(
-                uri = Uri.parse(it.url),
-                cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
+            QualityCandidate(
+                request = ResolvedRequest(
+                    uri = Uri.parse(it.url),
+                    cacheIdentity = "chksz:${chkszPlayback?.cacheIdentity()}",
+                ),
+                // CHKSZ answers at the requested tier or fails and reports no measured
+                // quality, so treat it as meeting the bar (null-pass convention).
+                actualQuality = null,
             )
         }
+    }
+
+    private fun QualityCandidate.meetsRequested(requested: MusicQuality): Boolean =
+        actualQuality?.let { it.ordinal >= requested.ordinal } ?: true
+
+    /**
+     * Quality-first pick between the third-party sources and the cross-provider pool
+     * (bilibili for a Netease main). A candidate meeting the user's quality wins -
+     * third-party preferred - otherwise the higher actual quality is compared, ties
+     * going to the third-party side. Null only when neither side produced anything.
+     */
+    private fun selectCandidate(
+        requested: MusicQuality,
+        thirdParty: QualityCandidate?,
+        fallback: QualityCandidate?,
+    ): QualityCandidate? {
+        if (thirdParty == null) return fallback
+        if (fallback == null) return thirdParty
+        if (thirdParty.meetsRequested(requested)) return thirdParty
+        if (fallback.meetsRequested(requested)) return fallback
+        val triTier = thirdParty.actualQuality ?: requested
+        val fbTier = fallback.actualQuality ?: requested
+        return if (triTier.ordinal >= fbTier.ordinal) thirdParty else fallback
+    }
+
+    private fun crossProviderCandidate(
+        songId: Long,
+        quality: MusicQuality,
+        fallbackRequest: CrossProviderFallbackRequest?,
+    ): QualityCandidate? {
+        val fallback = fallbackRequest
+            ?.copy(quality = quality.toCommonTier())
+            ?.let { crossProviderFallback?.resolve(it) }
+            ?: return null
+        return QualityCandidate(
+            request = ResolvedRequest(
+                uri = Uri.parse(fallback.url),
+                headers = fallback.requestHeaders,
+                expiresAtEpochMs = fallback.expiresAtEpochMs,
+                cacheIdentity = "${fallback.source.storageValue}:${fallback.resourceId}",
+            ),
+            actualQuality = fallback.actualQuality.toMusicQuality(quality),
+            fallbackSource = fallback.source,
+        )
+    }
+
+    private fun applyFallbackRecords(songId: Long, quality: MusicQuality, candidate: QualityCandidate) {
+        val source = candidate.fallbackSource ?: return
+        candidate.actualQuality?.let {
+            MusicQualityRuntime.recordActual(songId = songId, requested = quality, actual = it)
+        }
+        // Also unconditional: a resolution that runs for a non-selected quality still
+        // plays from the fallback source someday, and the chip must not keep a stale
+        // LX/CHKSZ label for it.
+        if (quality == MusicQualityRuntime.selected) {
+            CrossProviderPlaybackRuntime.record(songId, source)
+        }
+        PlaybackStageRuntime.record(songId.toString(), source.displayName)
     }
 
     private fun resolveKey(
@@ -382,7 +451,6 @@ class NeteasePlaybackResolver(
                 chkszPlayback = chkszPlayback,
                 lxUserPlayback = lxUserPlayback,
                 thirdPartySourcesEnabled = thirdPartySourcesEnabled,
-                thirdPartyOnlyForMembership = thirdPartyOnlyForMembership,
                 crossProviderFallback = crossProviderFallback,
             ).also { providerDelegate = it }
         }
