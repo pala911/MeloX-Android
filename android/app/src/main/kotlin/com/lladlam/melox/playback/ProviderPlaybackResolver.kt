@@ -167,7 +167,7 @@ class ProviderPlaybackResolver(
                         Log.i(
                             TAG,
                             "Official source insufficient source=${source.storageValue} " +
-                                "actual=${actual.apiLevel} requested=${quality.apiLevel}, trying third-party",
+                                "actual=${actual.name} requested=${quality.name}, trying third-party",
                         )
                         val chosen = externalCandidate(track, quality, source, hasPlayableFallback = true, urgent = urgent)
                         if (chosen == null) {
