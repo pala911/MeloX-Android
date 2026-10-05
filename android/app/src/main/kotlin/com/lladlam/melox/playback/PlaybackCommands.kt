@@ -77,8 +77,10 @@ object PlaybackCommands {
         }
 
         val appContext = context.applicationContext
-        val quality = MusicQualityPreferences.read(appContext)
-        MusicQualityRuntime.selected = quality
+        // 先同步用户基础选择，再取生效值——命中移动数据单档位时建队列就带覆盖档
+        // （网易云 melox://song 的 quality 参数在解析时优先于运行时）。
+        MusicQualityRuntime.selected = MusicQualityPreferences.read(appContext)
+        val quality = MusicQualityRuntime.selected
         MusicQualityRuntime.clear()
         CrossProviderPlaybackRuntime.clear()
         val token = SessionToken(
@@ -178,7 +180,7 @@ object PlaybackCommands {
 
     fun addToQueue(context: Context, song: SearchSong) {
         val appContext = context.applicationContext
-        val quality = MusicQualityPreferences.read(appContext)
+        val quality = MusicQualityRuntime.selected
         val controller = activeController
         if (controller == null) {
             playQueue(context, listOf(song), song.id)
@@ -224,7 +226,7 @@ object PlaybackCommands {
 
     fun playNext(context: Context, song: SearchSong) {
         val appContext = context.applicationContext
-        val quality = MusicQualityPreferences.read(appContext)
+        val quality = MusicQualityRuntime.selected
         val controller = activeController
         if (controller == null) {
             playQueue(context, listOf(song), song.id)
@@ -277,9 +279,10 @@ object PlaybackCommands {
             if (songId == null) item else MediaItem.Builder()
                 .setMediaId(item.mediaId)
                 .setUri(
+                    // 用生效值重建：移动数据单档位命中时带覆盖档，跟随时即用户新选的档。
                     NeteasePlaybackResolver.uriForSong(
                         songId = songId,
-                        quality = quality,
+                        quality = MusicQualityRuntime.selected,
                         title = item.mediaMetadata.title?.toString(),
                         artist = item.mediaMetadata.artist?.toString(),
                         durationMs = item.mediaMetadata.extras

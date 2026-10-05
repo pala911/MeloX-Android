@@ -94,6 +94,7 @@ import com.lladlam.melox.core.library.NeteaseLibraryClient
 import com.lladlam.melox.playback.CrossProviderPlaybackPreferences
 import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.audio.MusicQualityPreferences
+import com.lladlam.melox.core.audio.MobileDataQualityRuntime
 import com.lladlam.melox.core.download.MeloXDownloadStore
 import com.lladlam.melox.core.network.MeloXMessageContact
 import com.lladlam.melox.core.network.MeloXPrivateMessage
@@ -867,6 +868,7 @@ private fun FloatingLyricsSettings(context: android.content.Context) {
 @Composable
 private fun PlaybackSettings(context: android.content.Context) {
     var quality by remember { mutableStateOf(MusicQualityPreferences.read(context)) }
+    var mobileQuality by remember { mutableStateOf(MobileDataQualityRuntime.readPreference(context)) }
     var volumeMode by remember { mutableStateOf(MeloXSettingsRuntime.volumeControlMode) }
     SettingsGlassGroup {
         MeloXSettingsDropdown(
@@ -884,6 +886,19 @@ private fun PlaybackSettings(context: android.content.Context) {
                 })
             },
             onSelected = { quality = it; PlaybackCommands.changeQuality(context, it) },
+            grouped = true,
+        )
+        MeloXSettingsDropdown(
+            title = stringResource(R.string.settings_mobile_data_quality),
+            selected = mobileQuality,
+            items = listOf<Pair<MusicQuality?, String>>(
+                null to stringResource(R.string.settings_mobile_data_quality_follow),
+                MusicQuality.Standard to stringResource(R.string.settings_quality_standard),
+                MusicQuality.High to stringResource(R.string.settings_quality_high),
+                MusicQuality.Lossless to stringResource(R.string.settings_quality_lossless),
+                MusicQuality.HiResolution to stringResource(R.string.settings_quality_hires),
+            ),
+            onSelected = { mobileQuality = it; MobileDataQualityRuntime.writePreference(context, it) },
             grouped = true,
         )
         MeloXSettingsDropdown(

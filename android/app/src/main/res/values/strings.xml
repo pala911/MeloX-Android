@@ -1083,6 +1083,8 @@
     <string name="settings_dev_automix_note">Debug builds only. Shows analysis counts, cache, and recent status. Audio is not recorded.</string>
     <string name="settings_dev_refresh">Refresh analysis status</string>
     <string name="settings_playback_quality">Playback quality</string>
+    <string name="settings_mobile_data_quality">Mobile data quality</string>
+    <string name="settings_mobile_data_quality_follow">Follow current quality setting</string>
     <string name="settings_volume_slider">Volume slider</string>
     <string name="settings_volume_system">System media volume</string>
     <string name="settings_volume_player">Player volume</string>

@@ -54,18 +54,6 @@ class NeteasePlaybackResolver(
         val provisional: Boolean = false,
     )
 
-    /**
-     * One playable answer plus the quality it actually sounds at. `null` quality
-     * means unknown and counts as "meets the requested bar" - the same convention
-     * the cross-provider gate uses.
-     */
-    private data class QualityCandidate(
-        val request: ResolvedRequest,
-        val actualQuality: MusicQuality?,
-        /** Set only for cross-provider picks; their records apply once they win. */
-        val fallbackSource: MusicSource? = null,
-    )
-
     private val cacheLock = Any()
     private val resolvedUris = object : LinkedHashMap<ResolveKey, ResolvedRequest>(MAX_RESOLVED_URIS, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<ResolveKey, ResolvedRequest>?): Boolean =
@@ -287,7 +275,7 @@ class NeteasePlaybackResolver(
         fallbackRequest: CrossProviderFallbackRequest?,
         hasPlayableFallback: Boolean = false,
         urgent: Boolean = true,
-    ): QualityCandidate? {
+    ): QualityCandidate<MusicQuality, ResolvedRequest>? {
         if (!thirdPartySourcesEnabled()) return null
         val lx = runCatching {
             lxUserPlayback?.resolve(
@@ -337,34 +325,11 @@ class NeteasePlaybackResolver(
         }
     }
 
-    private fun QualityCandidate.meetsRequested(requested: MusicQuality): Boolean =
-        actualQuality?.let { it.ordinal >= requested.ordinal } ?: true
-
-    /**
-     * Quality-first pick between the third-party sources and the cross-provider pool
-     * (bilibili for a Netease main). A candidate meeting the user's quality wins -
-     * third-party preferred - otherwise the higher actual quality is compared, ties
-     * going to the third-party side. Null only when neither side produced anything.
-     */
-    private fun selectCandidate(
-        requested: MusicQuality,
-        thirdParty: QualityCandidate?,
-        fallback: QualityCandidate?,
-    ): QualityCandidate? {
-        if (thirdParty == null) return fallback
-        if (fallback == null) return thirdParty
-        if (thirdParty.meetsRequested(requested)) return thirdParty
-        if (fallback.meetsRequested(requested)) return fallback
-        val triTier = thirdParty.actualQuality ?: requested
-        val fbTier = fallback.actualQuality ?: requested
-        return if (triTier.ordinal >= fbTier.ordinal) thirdParty else fallback
-    }
-
     private fun crossProviderCandidate(
         songId: Long,
         quality: MusicQuality,
         fallbackRequest: CrossProviderFallbackRequest?,
-    ): QualityCandidate? {
+    ): QualityCandidate<MusicQuality, ResolvedRequest>? {
         val fallback = fallbackRequest
             ?.copy(quality = quality.toCommonTier())
             ?.let { crossProviderFallback?.resolve(it) }
@@ -381,7 +346,11 @@ class NeteasePlaybackResolver(
         )
     }
 
-    private fun applyFallbackRecords(songId: Long, quality: MusicQuality, candidate: QualityCandidate) {
+    private fun applyFallbackRecords(
+        songId: Long,
+        quality: MusicQuality,
+        candidate: QualityCandidate<MusicQuality, ResolvedRequest>,
+    ) {
         val source = candidate.fallbackSource ?: return
         candidate.actualQuality?.let {
             MusicQualityRuntime.recordActual(songId = songId, requested = quality, actual = it)

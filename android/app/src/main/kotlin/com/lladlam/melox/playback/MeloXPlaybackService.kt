@@ -34,7 +34,7 @@ import androidx.core.app.NotificationCompat
 import com.lladlam.melox.MainActivity
 import com.lladlam.melox.MeloXAppVisibility
 import com.lladlam.melox.core.account.NeteaseSessionStore
-import com.lladlam.melox.core.audio.MusicQualityPreferences
+import com.lladlam.melox.core.audio.MusicQualityRuntime
 import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.download.MeloXDownloadStore
 import com.lladlam.melox.core.download.MeloXProviderDownloadStore
@@ -899,7 +899,7 @@ class MeloXPlaybackService : MediaSessionService() {
                     emptyList()
                 }
                 val existing = (0 until active.mediaItemCount).map { active.getMediaItemAt(it).mediaId }.toSet()
-                val quality = MusicQualityPreferences.read(this@MeloXPlaybackService)
+                val quality = MusicQualityRuntime.selected
                 val additions = recommendations
                     .filterNot { it.id.toString() in existing }
                     .take(20)

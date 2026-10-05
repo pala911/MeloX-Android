@@ -114,7 +114,25 @@ object MusicQualityRuntime {
     )
 
     @Volatile
-    var selected: MusicQuality = MusicQuality.Standard
+    private var baseSelected: MusicQuality = MusicQuality.Standard
+
+    /**
+     * 写入 = 存用户的基础选择（设置里选的档）；读取 = 当前生效档——命中移动数据
+     * 单档位覆盖（非 WiFi 且设置了覆盖档）时返回覆盖档，否则返回基础选择。
+     * 设置页/下载等要回显用户选择的地方用 [MusicQualityPreferences.read]，不要读这里。
+     */
+    var selected: MusicQuality
+        get() {
+            val overrideQuality = MobileDataQualityRuntime.overrideQuality
+            return if (overrideQuality != null && MobileDataQualityRuntime.onMobileData) {
+                overrideQuality
+            } else {
+                baseSelected
+            }
+        }
+        set(value) {
+            baseSelected = value
+        }
 
     private val actualBySong = ConcurrentHashMap<Long, QualityRecord>()
 

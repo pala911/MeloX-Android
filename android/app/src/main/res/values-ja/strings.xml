@@ -1083,6 +1083,8 @@
     <string name="settings_dev_automix_note">デバッグビルドのみ。分析回数、キャッシュ、最近の状態を表示します。音声は録音しません。</string>
     <string name="settings_dev_refresh">分析状態を更新</string>
     <string name="settings_playback_quality">再生音質</string>
+    <string name="settings_mobile_data_quality">モバイルデータ音質</string>
+    <string name="settings_mobile_data_quality_follow">現在の音質設定に従う</string>
     <string name="settings_volume_slider">音量スライダー</string>
     <string name="settings_volume_system">システムのメディア音量</string>
     <string name="settings_volume_player">プレーヤーの音量</string>

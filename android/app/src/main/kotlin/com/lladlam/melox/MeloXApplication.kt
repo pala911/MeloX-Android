@@ -11,6 +11,7 @@ import com.lladlam.melox.core.diagnostics.MeloXCrashStore
 import com.lladlam.melox.core.network.MeloXHttpClient
 import com.lladlam.melox.core.audio.MusicQualityPreferences
 import com.lladlam.melox.core.audio.MusicQualityRuntime
+import com.lladlam.melox.core.audio.MobileDataQualityRuntime
 import com.lladlam.melox.platform.xiaomi.ShizukuXmsfNetworkHelper
 import com.lladlam.melox.ui.player.ArtworkDynamicPaletteProvider
 import java.io.File
@@ -28,6 +29,7 @@ class MeloXApplication : Application() {
         MeloXCrashStore.install(this)
         ShizukuXmsfNetworkHelper.installHiddenApiExemptions()
         MusicQualityRuntime.selected = MusicQualityPreferences.read(this)
+        MobileDataQualityRuntime.install(this)
         MeloXHttpClient.initialize(this)
         registerActivityLifecycleCallbacks(MeloXAppVisibility)
         registerComponentCallbacks(MeloXMemoryCallbacks)

@@ -1083,6 +1083,8 @@
     <string name="settings_dev_automix_note">僅 Debug 建置會顯示分析數量、快取與最近狀態，不會記錄音訊內容。</string>
     <string name="settings_dev_refresh">重新整理分析狀態</string>
     <string name="settings_playback_quality">播放音質</string>
+    <string name="settings_mobile_data_quality">行動數據音質</string>
+    <string name="settings_mobile_data_quality_follow">跟隨目前音質設定</string>
     <string name="settings_volume_slider">音量滑桿控制</string>
     <string name="settings_volume_system">系統媒體音量</string>
     <string name="settings_volume_player">播放器獨立音量</string>

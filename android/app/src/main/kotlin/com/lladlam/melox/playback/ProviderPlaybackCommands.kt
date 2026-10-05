@@ -52,8 +52,9 @@ object ProviderPlaybackCommands {
             return
         }
         ProviderPlaybackRuntime.initialize(appContext)
-        val neteaseQuality = MusicQualityPreferences.read(appContext)
-        MusicQualityRuntime.selected = neteaseQuality
+        // 同步基础选择后取生效值：移动数据单档位命中时，媒体项在建队列时就带覆盖档。
+        MusicQualityRuntime.selected = MusicQualityPreferences.read(appContext)
+        val neteaseQuality = MusicQualityRuntime.selected
         val qualityTier = neteaseQuality.toCommonTier()
         val startIndex = tracks.indexOfFirst { it.id == selectedTrackId }.coerceAtLeast(0)
         val items = tracks.mapIndexed { index, track ->
