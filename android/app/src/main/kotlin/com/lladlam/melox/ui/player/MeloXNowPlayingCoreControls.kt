@@ -67,7 +67,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lladlam.melox.core.audio.MusicQuality
-import com.lladlam.melox.core.audio.MusicQualityPreferences
 import com.lladlam.melox.core.audio.MusicQualityRuntime
 import com.lladlam.melox.core.download.MeloXDownloadStore
 import com.lladlam.melox.core.music.model.AudioQualityTier
@@ -239,9 +238,7 @@ private fun SceneQualityChip(
         ?.toLongOrNull()
     val downloadedQuality = neteaseSongId?.let(downloads::downloadedQuality)
     var selected by remember(context, state.mediaId) {
-        mutableStateOf(
-            MusicQualityPreferences.read(context).also { MusicQualityRuntime.selected = it },
-        )
+        mutableStateOf(MusicQualityRuntime.selected)
     }
     var neteaseActual by remember(state.mediaId) {
         mutableStateOf(MusicQualityRuntime.actualFor(neteaseSongId))

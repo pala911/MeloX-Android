@@ -155,9 +155,17 @@ class ProviderPlaybackResolver(
             val result = when (resolution) {
                 is PlaybackResolution.Playable -> {
                     val actual = resolution.actualQuality ?: resolution.requestedQuality
+                    val measuredBitrate = resolution.bitrate
+                    val measuredFormat = resolution.format
                     val playable = ResolvedRequest(Uri.parse(resolution.url), resolution.requestHeaders, resolution.expiresAtEpochMs)
                     if (actual.ordinal >= quality.ordinal) {
-                        ProviderPlaybackQualityRuntime.recordActual(id = id, requested = quality, actual = actual)
+                        ProviderPlaybackQualityRuntime.recordActual(
+                            id = id,
+                            requested = quality,
+                            actual = actual,
+                            bitrate = measuredBitrate,
+                            format = measuredFormat,
+                        )
                         PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
                         playable
                     } else {
@@ -190,7 +198,13 @@ class ProviderPlaybackResolver(
                             chosen.request
                         } else {
                             playable.also {
-                                ProviderPlaybackQualityRuntime.recordActual(id = id, requested = quality, actual = actual)
+                                ProviderPlaybackQualityRuntime.recordActual(
+                                    id = id,
+                                    requested = quality,
+                                    actual = actual,
+                                    bitrate = measuredBitrate,
+                                    format = measuredFormat,
+                                )
                                 PlaybackStageRuntime.record(PlaybackTrackIdentity.encode(id), source.displayName)
                             }
                         }

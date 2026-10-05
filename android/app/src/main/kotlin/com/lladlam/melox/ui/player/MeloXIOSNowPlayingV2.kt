@@ -70,7 +70,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lladlam.melox.core.account.NeteaseSessionStore
 import com.lladlam.melox.core.audio.MusicQuality
-import com.lladlam.melox.core.audio.MusicQualityPreferences
 import com.lladlam.melox.core.audio.MusicQualityRuntime
 import com.lladlam.melox.core.audio.NeteaseQualityClient
 import com.lladlam.melox.core.audio.SongAudioAvailability
@@ -543,9 +542,7 @@ private fun MeloXQualityChipV3(
     }
     var expanded by remember { mutableStateOf(false) }
     var selected by remember(context) {
-        mutableStateOf(
-            MusicQualityPreferences.read(context).also { MusicQualityRuntime.selected = it },
-        )
+        mutableStateOf(MusicQualityRuntime.selected)
     }
     var actual by remember(state.mediaId) {
         mutableStateOf(MusicQualityRuntime.actualFor(state.mediaId?.toLongOrNull()))
@@ -566,10 +563,13 @@ private fun MeloXQualityChipV3(
         availability = runCatching { qualityClient.audioAvailability(songId) }
             .getOrDefault(SongAudioAvailability.Unknown)
     }
-    LaunchedEffect(state.mediaId, selected) {
+    LaunchedEffect(state.mediaId) {
         // Provider media ids are not numeric, so they skip the NetEase lookups
         // but still poll the stage label like every other source.
         while (true) {
+            // 生效档（含移动数据单档位覆盖）要随网络切换刷新，否则标签会停在
+            // 初值的基线档上，与音质弹层显示不一致。
+            selected = MusicQualityRuntime.selected
             state.mediaId?.toLongOrNull()?.let { songId ->
                 actual = MusicQualityRuntime.actualFor(songId)
                 fallbackSource = CrossProviderPlaybackRuntime.sourceFor(songId)
