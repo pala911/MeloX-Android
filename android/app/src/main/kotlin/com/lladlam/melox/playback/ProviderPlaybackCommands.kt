@@ -78,19 +78,12 @@ object ProviderPlaybackCommands {
                     // without knowing which service owns the track.
                     PlaybackCommands.adoptController(controller)
                     controller.shuffleModeEnabled = false
-                    val smartQueue = MeloXPlaybackModePreferences.autoMix(appContext) &&
-                        MeloXPlaybackModePreferences.smartQueue(appContext) &&
-                        items.size > 1
-                    if (smartQueue) {
-                        controller.setMediaItems(
-                            listOf(MeloXSmartQueueBuilder.begin(items, startIndex)),
-                            0,
-                            startPositionMs,
-                        )
-                    } else {
-                        MeloXSmartQueueBuilder.reset()
-                        controller.setMediaItems(items, startIndex, startPositionMs)
-                    }
+                    // Smart queue no longer withholds candidates outside Media3: the
+                    // full list is enqueued immediately so the up-next queue matches
+                    // upstream behavior. The builder stays reset, which keeps the
+                    // background smart-append chain dormant.
+                    MeloXSmartQueueBuilder.reset()
+                    controller.setMediaItems(items, startIndex, startPositionMs)
                     controller.prepare()
                     controller.play()
                 }.onFailure { onFailure?.invoke(it) }

@@ -113,10 +113,7 @@ object PlaybackCommands {
                     adoptController(controller)
                     controller.shuffleModeEnabled = false
 
-                    val smartQueueEnabled = MeloXPlaybackModePreferences.autoMix(appContext) &&
-                        MeloXPlaybackModePreferences.smartQueue(appContext) &&
-                        playable.size > 1
-                    val useShuffle = MeloXPlaybackModePreferences.shuffle(appContext) && !smartQueueEnabled
+                    val useShuffle = MeloXPlaybackModePreferences.shuffle(appContext)
                     val generation = queueGeneration.incrementAndGet()
                     val selectedSourceIndex = selectedPair.first
                     val firstItem = selectedPair.let { (index, song) ->
@@ -152,13 +149,8 @@ object PlaybackCommands {
                         withContext(Dispatchers.Main) {
                             if (generation != queueGeneration.get()) return@withContext
                             if (controller.mediaItemCount != 1 || controller.getMediaItemAt(0).mediaId != firstItem.mediaId) return@withContext
-                            if (smartQueueEnabled) {
-                                val selectedIndex = if (useShuffle) 0 else ordered.indexOfFirst {
-                                    it.mediaMetadata.extras?.getInt(QUEUE_ORIGINAL_INDEX_KEY) == selectedSourceIndex
-                                }.coerceAtLeast(0)
-                                MeloXSmartQueueBuilder.begin(ordered, selectedIndex)
-                                return@withContext
-                            }
+                            // Smart queue no longer withholds candidates: the full list
+                            // is enqueued immediately (upstream queue behavior).
                             if (useShuffle) {
                                 controller.addMediaItems(ordered.drop(1))
                             } else {
@@ -167,7 +159,7 @@ object PlaybackCommands {
                                 }.drop(1)
                                 if (after.isNotEmpty()) controller.addMediaItems(after)
                             }
-                            Log.d(TAG, "Playback queue finalized: total=${ordered.size}, smart=$smartQueueEnabled, offline=$offline")
+                            Log.d(TAG, "Playback queue finalized: total=${ordered.size}, offline=$offline")
                         }
                     }
 
