@@ -59,6 +59,16 @@ interface SearchCapability {
     ): MusicPage<MusicTrack>
 }
 
+/**
+ * Optional multi-part (分P) expansion. Search returns one representative track per
+ * video; providers that expose per-part pages (bilibili) can rebuild a candidate as
+ * page tracks so cross-provider fallback can score the matching part instead of the
+ * video-level duration/title (Neri 页级打分 selectNeteaseAutoBiliPage).
+ */
+interface PageExpandableCapability {
+    suspend fun expandPages(track: MusicTrack): List<MusicTrack>
+}
+
 /** Optional richer search surface. Providers only implement types their API actually exposes. */
 interface CatalogSearchCapability {
     suspend fun searchPlaylists(

@@ -11,6 +11,7 @@ import com.lladlam.melox.core.music.model.TrackAvailability
 import com.lladlam.melox.core.music.provider.MusicProvider
 import com.lladlam.melox.core.music.provider.MusicProviderRegistry
 import com.lladlam.melox.core.music.provider.MusicCapability
+import com.lladlam.melox.core.music.provider.PageExpandableCapability
 import com.lladlam.melox.core.music.provider.PlaybackCapability
 import com.lladlam.melox.core.music.provider.SearchCapability
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigDefaults
@@ -170,6 +171,73 @@ class CrossProviderPlaybackFallbackResolverTest {
         assertEquals(bili.id.value, result?.resourceId)
     }
 
+    @Test
+    fun bilibiliDurationBucketDropsOutOfBucketCandidate() {
+        // 任务①b 时长桶门：目标 200s=桶1。同桶候选 A 只有 72 分，异桶候选 B（11min=桶2）
+        // 有 75 分——没有桶门时 B 会胜出，门必须先把它丢掉 A 才是最终命中。
+        val inBucket = track(
+            source = MusicSource.Bilibili,
+            title = "Song A cover",
+            artists = listOf("The Artist Band"),
+            durationMs = 240_000L,
+        )
+        val outOfBucket = track(
+            source = MusicSource.Bilibili,
+            title = "A Song Live",
+            durationMs = 660_000L,
+        )
+        val resolver = resolver(
+            FakeProvider(MusicSource.Bilibili, listOf(outOfBucket, inBucket), playable = true),
+        )
+
+        val result = resolver.resolve(request())
+
+        assertEquals(inBucket.id.value, result?.resourceId)
+    }
+
+    @Test
+    fun bilibiliDurationBucketKeepsAllWhenNoneInBucket() {
+        // 全部异桶时不拦（Neri 首轮搜空 → 去筛重搜照单全收的语义）：
+        // 只有 45min 桶3 候选也必须能命中，交 70 分门槛定夺。
+        val onlyOutOfBucket = track(
+            source = MusicSource.Bilibili,
+            title = "A Song Live",
+            durationMs = 2_700_000L,
+        )
+        val resolver = resolver(
+            FakeProvider(MusicSource.Bilibili, listOf(onlyOutOfBucket), playable = true),
+        )
+
+        val result = resolver.resolve(request())
+
+        assertEquals(onlyOutOfBucket.id.value, result?.resourceId)
+    }
+
+    @Test
+    fun bilibiliPageExpansionPicksBestMatchingPart() {
+        // 任务①b 页级打分（Neri selectNeteaseAutoBiliPage）：种子是 40min 合集总时长
+        // （时长 -15 压到 40 分过不了 70 门槛）；expandPages 返回 [种子, 分P] 时必须按
+        // argmax 选中 200s 精确命中的分P（85 分）并以分P 的 id 解析；取首个会得到种子而失败。
+        val seed = track(
+            source = MusicSource.Bilibili,
+            artists = listOf("SomeUP"),
+            durationMs = 2_400_000L,
+        )
+        val part = track(
+            source = MusicSource.Bilibili,
+            title = "A Song - 副歌",
+            artists = listOf("SomeUP"),
+            durationMs = 200_000L,
+        )
+        val resolver = resolver(
+            FakeBiliPageProvider(listOf(seed), pages = listOf(seed, part)),
+        )
+
+        val result = resolver.resolve(request())
+
+        assertEquals(part.id.value, result?.resourceId)
+    }
+
     private fun resolver(vararg providers: MusicProvider) = CrossProviderPlaybackFallbackResolver(
         enabledProvider = { true },
         registryProvider = { MusicProviderRegistry(providers.asList()) },
@@ -197,7 +265,7 @@ class CrossProviderPlaybackFallbackResolverTest {
         availability = TrackAvailability.Playable,
     )
 
-    private class FakeProvider(
+    private open class FakeProvider(
         override val source: MusicSource,
         private val tracks: List<MusicTrack>,
         private val playable: Boolean,
@@ -229,5 +297,13 @@ class CrossProviderPlaybackFallbackResolverTest {
         } else {
             PlaybackResolution.Preview("https://preview.example/${track.id.value}")
         }
+    }
+
+    /** 任务①b：带分P 展开能力的 bili fake（桶门看 source，展开看能力接口）。 */
+    private class FakeBiliPageProvider(
+        tracks: List<MusicTrack>,
+        private val pages: List<MusicTrack>,
+    ) : FakeProvider(MusicSource.Bilibili, tracks, playable = true), PageExpandableCapability {
+        override suspend fun expandPages(track: MusicTrack): List<MusicTrack> = pages
     }
 }

@@ -9,13 +9,26 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Neri `durationFilterForBiliSearch` 蓝本：目标时长 → B站搜索时长桶
+ * （0=不筛，1=<10min，2=10-30min，3=30-60min，4=>=60min）。
+ * 搜索侧 duration 参数与跨源兜底的客户端桶门共用这一份实现，保证两侧口径一致。
+ */
+internal fun bilibiliSearchDurationBucket(durationMs: Long?): Int = when {
+    durationMs == null || durationMs <= 0L -> 0
+    durationMs < 10 * 60_000L -> 1
+    durationMs < 30 * 60_000L -> 2
+    durationMs < 60 * 60_000L -> 3
+    else -> 4
+}
+
 class BilibiliProvider(
     private val sessionProvider: () -> BilibiliSession,
     private val httpClient: OkHttpClient = com.lladlam.melox.core.network.MeloXHttpClient.shared,
     private val associationProvider: (String, Long) -> BilibiliPlaybackAssociation? = { _, _ -> null },
     private val apiCache: BilibiliApiCache? = null,
     private val sessionRevisionProvider: () -> Long = { 0L },
-) : MusicProvider, SearchCapability, PlaybackCapability, UserLibraryCapability, PlaylistCapability {
+) : MusicProvider, SearchCapability, PlaybackCapability, UserLibraryCapability, PlaylistCapability, PageExpandableCapability {
     override val source = MusicSource.Bilibili
     override val displayName = source.displayName
     override val capabilities = setOf(MusicCapability.Search, MusicCapability.Playback, MusicCapability.Library, MusicCapability.Playlists)
@@ -98,18 +111,51 @@ class BilibiliProvider(
         return playlist.copy(artworkUrl = cover)
     }
 
-    override suspend fun searchSongs(query: String, page: Int, pageSize: Int): MusicPage<MusicTrack> {
+    override suspend fun searchSongs(query: String, page: Int, pageSize: Int): MusicPage<MusicTrack> =
+        searchSongsInternal(query, page, pageSize, durationBucket = 0)
+
+    /**
+     * Neri 蓝本（NeteaseAutoSourceSwitch.fetchBiliAutoSourceCandidates）：按目标时长先带
+     * `duration` 桶筛（B站搜索 API：0=全部 1=<10min 2=10-30min 3=30-60min 4=>60min），
+     * 首轮搜空再把筛去掉重搜一次（等价 duration=0；重搜不传该参数，缓存键与旧调用一致）。
+     */
+    suspend fun searchSongs(query: String, page: Int, pageSize: Int, durationMs: Long?): MusicPage<MusicTrack> {
+        val bucket = bilibiliSearchDurationBucket(durationMs)
+        if (bucket <= 0) return searchSongsInternal(query, page, pageSize, durationBucket = 0)
+        val filtered = searchSongsInternal(query, page, pageSize, durationBucket = bucket)
+        if (filtered.items.isNotEmpty()) return filtered
+        return searchSongsInternal(query, page, pageSize, durationBucket = 0)
+    }
+
+    private suspend fun searchSongsInternal(
+        query: String,
+        page: Int,
+        pageSize: Int,
+        durationBucket: Int,
+    ): MusicPage<MusicTrack> {
         if (query.isBlank()) return MusicPage(emptyList(), page, pageSize, 0)
         val params = mapOf(
             "keyword" to BilibiliApiCache.normalizeSearchQuery(query), "search_type" to "video",
             "page" to page.toString(), "page_size" to pageSize.toString(),
-        )
+        ) + (if (durationBucket > 0) mapOf("duration" to durationBucket.toString()) else emptyMap())
         val data = cachedWbiGet("search", "/x/web-interface/wbi/search/type", params, BilibiliApiCache.Search).data()
         val results = data.optJSONArray("result") ?: JSONArray()
         val tracks = results.objects().mapNotNull { item ->
             val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return@mapNotNull null
-            val cid = item.optLong("cid").takeIf { it > 0 } ?: runCatching { view(bvid).optLong("cid") }.getOrNull()
-            cid?.takeIf { it > 0 }?.let { mapTrack(item, bvid, it, item.optLong("aid"), 1) }
+            val itemCid = item.optLong("cid").takeIf { it > 0 }
+            // page=1 硬编码修正：条目缺 cid 才回退 view()——此时按 cid 反查分P 页码/part/时长
+            // （搜索条目的 duration 是合集总时长，part 时长才是本P 的，供打分用）。
+            val viewJson = if (itemCid == null) runCatching { view(bvid) }.getOrNull() else null
+            val cid = itemCid ?: viewJson?.optLong("cid")?.takeIf { it > 0 } ?: return@mapNotNull null
+            val pageMeta = viewJson?.optJSONArray("pages")?.objects()
+                ?.firstOrNull { it.optLong("cid") == cid }
+            mapTrack(
+                item, bvid, cid, item.optLong("aid"),
+                pageMeta?.optInt("page")?.takeIf { it > 0 } ?: 1,
+                part = pageMeta?.optString("part")?.takeIf(String::isNotBlank),
+                durationMs = pageMeta?.optLong("duration")?.takeIf { it > 0 }?.times(1000),
+                owner = viewJson?.optJSONObject("owner")?.optString("name")?.takeIf(String::isNotBlank),
+            )
         }
         return MusicPage(tracks, page, pageSize, data.optLong("numResults").takeIf { it > 0 })
     }
@@ -181,6 +227,41 @@ class BilibiliProvider(
                 view.optJSONObject("owner")?.optString("name"), view.optString("pic"),
             )
         }
+    }
+
+    /**
+     * 页级打分的候选重建（Neri selectNeteaseAutoBiliPage）：按分P 把视频展开成 track 列表，
+     * 标题=视频标题 - part、时长=该 P 时长、页码入 metadata；由跨源兜底对原 track 与各分P
+     * 用同一套 scoreCandidate 取最高者，命中的即为「选中后时长回写」（part 时长进打分与解析）。
+     */
+    override suspend fun expandPages(track: MusicTrack): List<MusicTrack> {
+        val metadata = track.providerMetadata as? ProviderTrackMetadata.Bilibili
+            ?: parseIdentity(track.id.value)?.let { ProviderTrackMetadata.Bilibili(it.first, it.second) }
+            ?: return listOf(track)
+        val viewJson = runCatching { view(metadata.bvid) }.getOrNull() ?: return listOf(track)
+        val pages = viewJson.optJSONArray("pages") ?: return listOf(track)
+        val owner = viewJson.optJSONObject("owner")?.optString("name")?.takeIf(String::isNotBlank)
+        val pic = secure(viewJson.optString("pic"))?.takeIf { it.isNotBlank() } ?: track.artworkUrl
+        val baseTitle = track.title
+        val artists = owner?.let { listOf(MusicArtistRef(name = it)) } ?: track.artists
+        return pages.objects().mapIndexedNotNull { index, page ->
+            val cid = page.optLong("cid").takeIf { it > 0 } ?: return@mapIndexedNotNull null
+            val part = page.optString("part").takeIf(String::isNotBlank)
+            MusicTrack(
+                MusicResourceId(source, "${metadata.bvid}:$cid"),
+                part?.takeIf { it != baseTitle }?.let { "$baseTitle - $it" } ?: baseTitle,
+                artists,
+                artworkUrl = pic,
+                durationMs = page.optLong("duration").takeIf { it > 0 }?.times(1000) ?: track.durationMs,
+                availability = TrackAvailability.Playable,
+                providerMetadata = ProviderTrackMetadata.Bilibili(
+                    metadata.bvid,
+                    cid,
+                    viewJson.optLong("aid").takeIf { it > 0 } ?: metadata.aid,
+                    page.optInt("page", index + 1),
+                ),
+            )
+        }.ifEmpty { listOf(track) }
     }
 
     private fun view(bvid: String) = cachedGet(

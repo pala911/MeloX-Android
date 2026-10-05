@@ -11,8 +11,11 @@ import com.lladlam.melox.core.music.model.ProviderTrackMetadata
 import com.lladlam.melox.core.music.model.TrackAvailability
 import com.lladlam.melox.core.music.provider.MusicProvider
 import com.lladlam.melox.core.music.provider.MusicProviderRegistry
+import com.lladlam.melox.core.music.provider.PageExpandableCapability
 import com.lladlam.melox.core.music.provider.PlaybackCapability
 import com.lladlam.melox.core.music.provider.SearchCapability
+import com.lladlam.melox.core.provider.bilibili.BilibiliProvider
+import com.lladlam.melox.core.provider.bilibili.bilibiliSearchDurationBucket
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigDefaults
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteFallbackConfig
 import kotlinx.coroutines.Dispatchers
@@ -236,7 +239,18 @@ class CrossProviderPlaybackFallbackResolver(
                                 val search = provider as SearchCapability
                                 val outcome = runCatching {
                                     withTimeoutOrNull(SearchTimeoutMs) {
-                                        search.searchSongs(query, page = 1, pageSize = SearchPageSize)
+                                        if (provider is BilibiliProvider) {
+                                            // 任务①b：bili 搜索先按目标时长带 duration 桶筛，
+                                            // 搜空时 searchSongs 内部会去掉筛重搜（Neri 蓝本）。
+                                            provider.searchSongs(
+                                                query,
+                                                page = 1,
+                                                pageSize = SearchPageSize,
+                                                durationMs = request.durationMs,
+                                            )
+                                        } else {
+                                            search.searchSongs(query, page = 1, pageSize = SearchPageSize)
+                                        }
                                     }
                                 }
                                 // 优先源已成功返回或整体超时都会取消在跑的搜索：不算失败，不记日志。
@@ -260,7 +274,7 @@ class CrossProviderPlaybackFallbackResolver(
                                         eventLogger(
                                             "search ${provider.source.storageValue}: ${page.items.size} candidates",
                                         )
-                                        page.items
+                                        refineBiliCandidates(provider, page.items, sourceTrack)
                                     }
                                 }
                             }
@@ -304,6 +318,74 @@ class CrossProviderPlaybackFallbackResolver(
     private fun isEligibleFallbackProvider(provider: MusicProvider): Boolean =
         provider.source in EligibleSources && provider is SearchCapability && provider is PlaybackCapability
 
+    /**
+     * 任务①b：bili 候选精修——时长桶门 + 分P 页级打分（Neri 时长桶过滤/selectNeteaseAutoBiliPage）。
+     * 非 bilibili 源原样返回；bili 源无分P能力（单测 fake）时只做桶门。
+     * 打分复用 [scoreCandidate]，此处不另立规则。
+     */
+    private suspend fun refineBiliCandidates(
+        provider: MusicProvider,
+        items: List<MusicTrack>,
+        source: MusicTrack,
+    ): List<MusicTrack> {
+        if (items.isEmpty()) return items
+        val gated = if (provider.source == MusicSource.Bilibili) {
+            val result = gateBiliByDurationBucket(items, source.durationMs)
+            if (result.size != items.size) {
+                eventLogger(
+                    "duration bucket gate source=bilibili: dropped ${items.size - result.size}/${items.size} " +
+                        "(targetBucket=${bilibiliSearchDurationBucket(source.durationMs)})",
+                )
+            }
+            result
+        } else {
+            items
+        }
+        val capability = provider as? PageExpandableCapability ?: return gated
+        // 初排不设 70 分门槛：合集视频的种子常被"总时长 -15"压到门槛下，
+        // 但展开分P 后命中的页面能翻盘——门槛留给展开后的 rankCandidates。
+        val prelim = gated.mapNotNull { candidate ->
+            scoreCandidate(source, candidate)?.let { candidate to it }
+        }.sortedByDescending { it.second }
+            .take(ExpandedCandidateLimit)
+            .map { it.first }
+        if (prelim.isEmpty()) return gated
+        // 并行展开（设计：top3 各自 async view，预算 1.5s/个取并集，最坏 1.5s 而非 4.5s）。
+        val winnerById = coroutineScope {
+            prelim.map { seed ->
+                async { seed.id to expandToBestPage(capability, seed, source) }
+            }.awaitAll().toMap()
+        }
+        return gated.map { winnerById[it.id] ?: it }.distinctBy { it.id }
+    }
+
+    /** 展开一个候选的分P，原 track 与各分P 取 scoreCandidate 最高者；超时/异常/无可打分维持原候选。 */
+    private suspend fun expandToBestPage(
+        capability: PageExpandableCapability,
+        seed: MusicTrack,
+        source: MusicTrack,
+    ): MusicTrack {
+        val outcome = runCatching {
+            withTimeoutOrNull(PageExpandTimeoutMs) { capability.expandPages(seed) }
+        }
+        if (outcome.exceptionOrNull() is CancellationException) {
+            throw outcome.exceptionOrNull()!!
+        }
+        val pages = outcome.getOrNull().orEmpty()
+        if (pages.isEmpty()) return seed
+        val best = (pages + seed)
+            .distinctBy { it.id }
+            .mapNotNull { candidate -> scoreCandidate(source, candidate)?.let { candidate to it } }
+            .maxByOrNull { it.second }
+            ?: return seed
+        if (best.first.id != seed.id) {
+            eventLogger(
+                "page expansion source=bilibili: ${seed.id.value} -> ${best.first.id.value} score=${best.second}",
+            )
+        }
+        return best.first
+    }
+
     companion object {
         val EligibleSources = setOf(
             // 候选库只有网易云与 bilibili（需求：其它的平台都不放到音源候选库里）。
@@ -329,6 +411,9 @@ private const val MaxPlaybackAttempts = 12
 private const val LeadPhaseAttemptCap = 3
 private const val SearchPageSize = 10
 private const val SearchTimeoutMs = 2_500L
+// 任务①b：初排取 top3 分P 展开（并行 view），单候选展开预算 1.5s，超时/失败维持原候选。
+private const val ExpandedCandidateLimit = 3
+private const val PageExpandTimeoutMs = 1_500L
 
 private const val TitleHitScore = 55
 private const val TitleTokenFullScore = 35
@@ -363,6 +448,21 @@ internal fun rankCandidates(
         compareByDescending<FallbackCandidateScore> { it.score }
             .thenBy { providerPriority[it.candidate.id.source] ?: Int.MAX_VALUE },
     )
+
+/**
+ * 任务①b 时长桶门（Neri 服务端 duration 筛的客户端等价，兜住"去筛重搜"那批混桶结果）：
+ * 候选与目标同桶才留；查不出时长的候选不拦；全部异桶时不拦——宁可交给 70 分门槛，
+ * 也不能把一次搜索清空（对应 Neri 首轮搜空 → duration=0 重搜后照单全收的语义）。
+ */
+internal fun gateBiliByDurationBucket(items: List<MusicTrack>, targetDurationMs: Long?): List<MusicTrack> {
+    val targetBucket = bilibiliSearchDurationBucket(targetDurationMs)
+    if (targetBucket <= 0) return items
+    val inBucket = items.filter { candidate ->
+        val bucket = bilibiliSearchDurationBucket(candidate.durationMs)
+        bucket == 0 || bucket == targetBucket
+    }
+    return inBucket.ifEmpty { items }
+}
 
 internal fun scoreCandidate(source: MusicTrack, candidate: MusicTrack): Int? {
     val sourceTitle = normalizeScoreText(source.title)
