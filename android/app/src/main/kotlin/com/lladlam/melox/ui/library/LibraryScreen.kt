@@ -2032,7 +2032,10 @@ private fun MeloXPlaylistDetailScreen(
     }
 
     LaunchedEffect(initialPlaylist.id, providerPlaylist?.id) {
-        if (isAlbum || providerPlaylist != null) {
+        // providedSongs（首页快捷入口的合成歌单）是本地数据、且合成 id 永不落缓存：
+        // 走 else 分支时二次进入 cache 必 miss、进程级冷启动守卫又已放行过一次，
+        // refreshPlaylist 不再执行，detail 恒为 null → 只剩头部无列表。
+        if (isAlbum || providerPlaylist != null || providedSongs != null) {
             refreshPlaylist()
         } else {
             cache.loadPlaylistDetail(initialPlaylist.id)?.let { detail = it }
