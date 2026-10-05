@@ -11,6 +11,8 @@ import com.lladlam.melox.core.music.model.MusicTrack
 import com.lladlam.melox.core.music.model.PlaybackResolution
 import com.lladlam.melox.core.music.model.ProviderTrackMetadata
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -70,6 +72,7 @@ class KuwoApiClient(
         val mid = metadata.mid
 
         var lastError: IOException? = null
+        var clipUrl: String? = null
         for (candidate in quality.kuwoPlaybackCandidates()) {
             val response = runCatching {
                 requests.get(
@@ -107,8 +110,30 @@ class KuwoApiClient(
                 Log.i(TAG, "Playback quality fallback: mid=$mid requested=${quality.name} actual=${candidate.actualTier}")
             }
             Log.i(TAG, "Playback URL resolved: mid=$mid format=${candidate.format} endpoint=${url.redactedEndpoint()}")
+            val fullUrl = secureUrl(url)
+            // 付费/受限曲 antiserver 只给几秒试听片段（/lx/resource/n3/…：实测成都
+            // mid=345182170 mp3=81629B≈5.1s，而搜索元数据 328s；同曲 mid=52625289 却是
+            // 完整 4.7MB）。用 Range 读 Content-Length 对照搜索时长判定，两个条件都满足
+            // 才算片段（防元数据不准误伤低码率整曲）。片段记下来，全轮都是片段就返回
+            // Preview —— 回落侧=换下一候选，provider 侧=三方→跨源→最后才接受片段。
+            val expectedFloorBytes = (track.durationMs ?: 0L) / 1_000L * MinFullLengthBytesPerSecond
+            if (expectedFloorBytes > 0) {
+                val totalBytes = probeTotalBytes(fullUrl)
+                if (totalBytes != null &&
+                    totalBytes < expectedFloorBytes &&
+                    totalBytes < TrialClipAbsoluteCeilingBytes
+                ) {
+                    Log.i(
+                        TAG,
+                        "Playback is a trial clip: mid=$mid format=${candidate.format} " +
+                            "bytes=$totalBytes expectedAtLeast=$expectedFloorBytes",
+                    )
+                    clipUrl = clipUrl ?: fullUrl
+                    continue
+                }
+            }
             return PlaybackResolution.Playable(
-                url = secureUrl(url),
+                url = fullUrl,
                 requestedQuality = quality,
                 actualQuality = candidate.actualTier,
                 format = candidate.format,
@@ -121,6 +146,7 @@ class KuwoApiClient(
             )
         }
 
+        clipUrl?.let { return PlaybackResolution.Preview(it) }
         val message = lastError?.message ?: "酷我音乐没有返回可播放链接"
         return PlaybackResolution.Unavailable(message)
     }
@@ -186,8 +212,32 @@ class KuwoApiClient(
         return metadata
     }
 
+    /** Range 只取前 2 字节读 Content-Range 总长；拿不到（不支持 Range/异常）返回 null=不拦截。 */
+    private fun probeTotalBytes(url: String): Long? = runCatching {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 8_000
+        connection.setRequestProperty("Range", "bytes=0-1")
+        connection.setRequestProperty("User-Agent", KuwoRequestClient.UserAgent)
+        connection.setRequestProperty("Referer", "http://www.kuwo.cn/")
+        try {
+            if (connection.responseCode !in 200..206) return@runCatching null
+            connection.getHeaderField("Content-Range")
+                ?.substringAfterLast('/', "")
+                ?.toLongOrNull()
+        } finally {
+            connection.disconnect()
+        }
+    }.getOrNull()
+
     private companion object {
         const val TAG = "KuwoApiClient"
+
+        // 32kbps：低于它的整曲不存在；试听片段(≈5s/80KB)与整曲(328s→≥1.3MB)差一个数量级。
+        const val MinFullLengthBytesPerSecond = 4_000L
+        // 只有「低于按元数据时长折算的下限」且「绝对值 < 约20s@128k」同时成立才算试听片段，
+        // 元数据时长虚高时不会把低码率整曲误判成片段。
+        const val TrialClipAbsoluteCeilingBytes = 320_000L
     }
 }
 

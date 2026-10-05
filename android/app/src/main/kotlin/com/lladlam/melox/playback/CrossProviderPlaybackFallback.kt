@@ -176,7 +176,8 @@ class CrossProviderPlaybackFallbackResolver(
                 val loginBlocked = mutableSetOf<MusicSource>()
                 var attempts = 0
                 // 逐候选尝试：Playable 且音质达标才接受（需求③；bilibili 兜底豁免，音质未知放行）。
-                fun attemptCandidates(ranked: List<FallbackCandidateScore>): CrossProviderFallbackResult? {
+                // suspend local fun：resolvePlayback 是挂起函数，只能在协程体里调。
+                suspend fun attemptCandidates(ranked: List<FallbackCandidateScore>): CrossProviderFallbackResult? {
                     for (match in ranked) {
                         if (attempts >= MaxPlaybackAttempts) break
                         val provider = providers.firstOrNull { it.source == match.candidate.id.source } ?: continue
