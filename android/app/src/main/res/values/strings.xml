@@ -317,6 +317,8 @@
     <string name="provider_jellyfin_connect_hint">Connect a Jellyfin music server you host</string>
     <string name="provider_enable_third_party">Turn on third-party source settings</string>
     <string name="provider_third_party_consent_hint">You need to accept the third-party source terms first. This is not managed by cloud control.</string>
+    <string name="provider_membership_fallback">Use only for membership tracks</string>
+    <string name="provider_membership_fallback_subtitle">Prefer the official source, and try a third-party resolver only when membership or rights block playback</string>
     <string name="provider_chksz">CHKSZ resolver</string>
     <string name="provider_chksz_missing">No API key · tap to set one</string>
     <string name="provider_chksz_configured">CHKSZ API key is set</string>
