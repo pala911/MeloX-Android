@@ -52,17 +52,19 @@ class CrossProviderPlaybackFallbackResolverTest {
 
     @Test
     fun unknownDurationUsesExactTitleAndCompleteArtistMatch() {
+        // 时长未知时，完整歌手名单必须排到部分名单前面（+10 完整分）。
+        // 两候选放同一源内验证：两阶段搜索下 lead 源（bili 恒第一）可播即收，
+        // 跨源"更优分胜出"已不是保证，名单对比只在同源候选间仍有意义。
         val partialArtists = track(
             source = MusicSource.QQMusic,
             artist = "Primary Artist",
         )
         val exact = track(
-            source = MusicSource.Kugou,
+            source = MusicSource.QQMusic,
             artists = listOf("Primary Artist", "Guest"),
         )
         val resolver = resolver(
-            FakeProvider(MusicSource.QQMusic, listOf(partialArtists), playable = true),
-            FakeProvider(MusicSource.Kugou, listOf(exact), playable = true),
+            FakeProvider(MusicSource.QQMusic, listOf(partialArtists, exact), playable = true),
         )
 
         val result = resolver.resolve(
@@ -72,7 +74,7 @@ class CrossProviderPlaybackFallbackResolverTest {
             ),
         )
 
-        assertEquals(MusicSource.Kugou, result?.source)
+        assertEquals(MusicSource.QQMusic, result?.source)
         assertEquals(exact.id.value, result?.resourceId)
     }
 
@@ -123,6 +125,49 @@ class CrossProviderPlaybackFallbackResolverTest {
         )
     }
 
+    @Test
+    fun qualityGateRejectsLowerQualityCandidateAndUsesNextSource() {
+        // qq 排前（lead）且能播，但只给 Standard（低于请求的 HiResolution）→ 不许吃差音质，
+        // 换下一家按请求音质回报的 kugou。（没有门槛时旧逻辑会取 qq。）
+        val qq = track(MusicSource.QQMusic)
+        val kugou = track(MusicSource.Kugou)
+        val resolver = resolver(
+            FakeProvider(
+                MusicSource.QQMusic,
+                listOf(qq),
+                playable = true,
+                reportQuality = AudioQualityTier.Standard,
+            ),
+            FakeProvider(MusicSource.Kugou, listOf(kugou), playable = true),
+        )
+
+        val result = resolver.resolve(request())
+
+        assertEquals(MusicSource.Kugou, result?.source)
+        assertEquals(kugou.id.value, result?.resourceId)
+    }
+
+    @Test
+    fun bilibiliFallbackExemptsQualityGate() {
+        // bilibili 固定最先兜底且豁免音质：即使它报 Standard 也直接收，不轮到 kugou。
+        val bili = track(MusicSource.Bilibili)
+        val kugou = track(MusicSource.Kugou)
+        val resolver = resolver(
+            FakeProvider(
+                MusicSource.Bilibili,
+                listOf(bili),
+                playable = true,
+                reportQuality = AudioQualityTier.Standard,
+            ),
+            FakeProvider(MusicSource.Kugou, listOf(kugou), playable = true),
+        )
+
+        val result = resolver.resolve(request())
+
+        assertEquals(MusicSource.Bilibili, result?.source)
+        assertEquals(bili.id.value, result?.resourceId)
+    }
+
     private fun resolver(vararg providers: MusicProvider) = CrossProviderPlaybackFallbackResolver(
         enabledProvider = { true },
         registryProvider = { MusicProviderRegistry(providers.asList()) },
@@ -154,6 +199,7 @@ class CrossProviderPlaybackFallbackResolverTest {
         override val source: MusicSource,
         private val tracks: List<MusicTrack>,
         private val playable: Boolean,
+        private val reportQuality: AudioQualityTier? = null,
     ) : MusicProvider, SearchCapability, PlaybackCapability {
         override val displayName = source.displayName
         override val capabilities = setOf(MusicCapability.Search, MusicCapability.Playback)
@@ -174,7 +220,9 @@ class CrossProviderPlaybackFallbackResolverTest {
                 url = "https://audio.example/${track.id.value}",
                 requestHeaders = mapOf("Referer" to "https://example.com/"),
                 requestedQuality = quality,
-                actualQuality = AudioQualityTier.Lossless,
+                // 默认按请求音质回报，保持既有用例聚焦匹配/排序意图；
+                // 音质门槛（低于请求不收）由 qualityGate*/bilibili* 两个用例显式覆盖。
+                actualQuality = reportQuality ?: quality,
             )
         } else {
             PlaybackResolution.Preview("https://preview.example/${track.id.value}")
