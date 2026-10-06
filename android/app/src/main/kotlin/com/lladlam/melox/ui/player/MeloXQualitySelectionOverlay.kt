@@ -35,6 +35,32 @@ import com.lladlam.melox.ui.glass.MeloXGlassButton
 import com.lladlam.melox.ui.glass.MeloXGlassButtonStyle
 import com.lladlam.melox.ui.glass.MeloXGlassDialog
 import kotlinx.coroutines.delay
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Display-only cache of the per-song availability probe.
+ *
+ * The dialog used to refetch `/api/v3/song/detail` on every single open, so the kbps
+ * line only appeared after that round trip came back -- and vanished entirely when it
+ * failed, which is what made it look intermittent. Song availability is static
+ * metadata, so the last good answer is reused to paint the dialog immediately and a
+ * background refresh corrects it.
+ *
+ * Deliberately NOT cached in [NeteaseQualityClient]: there the same call decides which
+ * playback candidates get tried, and a stale entry could send resolution down the wrong
+ * branch. Here it only ever feeds text.
+ */
+private object QualityAvailabilityCache {
+    private val entries = ConcurrentHashMap<Long, SongAudioAvailability>()
+
+    fun get(songId: Long): SongAudioAvailability? = entries[songId]
+
+    fun put(songId: Long, value: SongAudioAvailability) {
+        // Only a probe that actually came back is worth remembering; caching the
+        // unknown/failed result is exactly what made the line disappear.
+        if (value.isKnown) entries[songId] = value else entries.remove(songId)
+    }
+}
 
 /** Reports the active audio quality; changing the preference belongs to Settings. */
 @Composable
@@ -60,7 +86,7 @@ internal fun MeloXQualitySelectionOverlay(
         ?.toLongOrNull()
     val downloadedQuality = songId?.let(downloads::downloadedQuality)
     var availability by remember(state.mediaId, visible) {
-        mutableStateOf(SongAudioAvailability.Unknown)
+        mutableStateOf(songId?.let(QualityAvailabilityCache::get) ?: SongAudioAvailability.Unknown)
     }
     var providerActual by remember(state.mediaId, visible) {
         mutableStateOf(ProviderPlaybackQualityRuntime.actualFor(identity))
@@ -91,6 +117,7 @@ internal fun MeloXQualitySelectionOverlay(
         }
         availability = runCatching { client.audioAvailability(songId) }
             .getOrDefault(SongAudioAvailability.Unknown)
+        QualityAvailabilityCache.put(songId, availability)
     }
     LaunchedEffect(visible, songId) {
         if (!visible || songId == null) return@LaunchedEffect
@@ -195,7 +222,7 @@ internal fun MeloXQualitySelectionOverlay(
                     onOpenPlaybackSettings()
                 },
                 modifier = Modifier.weight(1f),
-                style = MeloXGlassButtonStyle.Plain,
+                style = MeloXGlassButtonStyle.BorderedProminent,
             ) { Text("设置") }
             MeloXGlassButton(
                 onClick = onDismiss,
