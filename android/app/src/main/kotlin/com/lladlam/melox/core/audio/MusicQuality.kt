@@ -1,6 +1,7 @@
 package com.lladlam.melox.core.audio
 
 import android.content.Context
+import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 
 /** Android mirror of MeloX/Core/Settings/Playback/MusicQuality.swift. */
@@ -155,6 +156,13 @@ object MusicQualityRuntime {
         if (requested == selected) {
             actualBySong[songId] = QualityRecord(requested, actual, bitrate)
         }
+        // A rejected write is as interesting as an accepted one: the dialog reading
+        // null here otherwise looks identical to a record that was never made.
+        Log.d(
+            "YSYYQuality",
+            "recordActual song=$songId requested=$requested actual=$actual " +
+                "bitrate=$bitrate selected=$selected accepted=${requested == selected}",
+        )
     }
 
     fun actualFor(songId: Long?): MusicQuality? =
@@ -175,6 +183,7 @@ object MusicQualityRuntime {
             ?.bitrate
 
     fun clear(songId: Long? = null) {
+        Log.d("YSYYQuality", "clear song=$songId held=${actualBySong.keys}")
         if (songId == null) actualBySong.clear() else actualBySong.remove(songId)
     }
 }
