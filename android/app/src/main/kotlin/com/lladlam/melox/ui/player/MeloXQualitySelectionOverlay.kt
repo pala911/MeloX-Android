@@ -1,5 +1,6 @@
 package com.lladlam.melox.ui.player
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -139,6 +140,22 @@ internal fun MeloXQualitySelectionOverlay(
         sourceDisplayName = actualSourceName,
         downloaded = downloadedQuality != null,
     )
+    // Which of the three bitrate sources the dialog is actually reading, so a
+    // "why is there no kbps line" report can be answered from a log instead of a
+    // guessing round: measured = the LX probe, resource = what the service labels
+    // this tier with, provider = the provider-tier path.
+    LaunchedEffect(visible, details, availability, providerActual) {
+        if (!visible) return@LaunchedEffect
+        val resource = availability.resourceFor(actualQuality)
+        Log.d(
+            "YSYYQuality",
+            "dialog songId=$songId actual=$actualQuality selected=$selected " +
+                "measured=${MusicQualityRuntime.bitrateFor(songId)} " +
+                "resourceBr=${resource?.bitrate} resourceSr=${resource?.sampleRate} " +
+                "providerBr=${providerResource?.bitrate} providerActual=$providerActual " +
+                "stage=$actualSourceName fallback=$fallbackSource details=$details",
+        )
+    }
 
     MeloXGlassDialog(
         visible = visible,
