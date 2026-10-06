@@ -310,7 +310,15 @@ class NeteasePlaybackResolver(
             // player chip would keep claiming "标准" while a measured lossless stream
             // from the LX source is what actually plays.
             lx.quality?.let {
-                MusicQualityRuntime.recordActual(songId = songId, requested = quality, actual = it)
+                MusicQualityRuntime.recordActual(
+                    songId = songId,
+                    requested = quality,
+                    actual = it,
+                    // The LX probe already measured the file it is about to stream;
+                    // carrying it here lets the dialog show that number rather than
+                    // the bitrate the service prints for this tier.
+                    bitrate = lx.bitrate,
+                )
             }
             return QualityCandidate(
                 request = ResolvedRequest(

@@ -28,6 +28,14 @@ internal data class LxUserPlaybackResult(
      * was *asked* for says nothing about the file it hands back.
      */
     val quality: MusicQuality? = null,
+    /**
+     * Exact bitrate behind [quality], measured off the CDN probe. [quality] is
+     * only a four-bucket approximation (128k / 320k / lossless / hi-res), while
+     * this is the real number, so the player dialog can show what is actually
+     * streaming instead of the label the music service prints for that tier.
+     * Null when the script reported a tier of its own (no probe ran).
+     */
+    val bitrate: Int? = null,
 )
 
 /** Resolves a song through locally installed LX Music user API scripts. */
@@ -193,6 +201,10 @@ class LxUserPlaybackResolver(
                     // another source's lossless one.
                     var bestUrl: String? = null
                     var bestRank = -1
+                    // Bitrate that went with bestRank, so the link kept as the best
+                    // reports the number that was measured for *it* and not for
+                    // whichever candidate was probed last.
+                    var bestBitrate: Int? = null
                     var probes = 0
                     // A source that already handed back a link has shown us its best;
                     // asking it again one tier lower almost always returns the same
@@ -209,7 +221,12 @@ class LxUserPlaybackResolver(
                             if (android.os.SystemClock.elapsedRealtime() > softDeadline) {
                                 Log.w(TAG, "LX budget exhausted script=${record.id} quality=$requestedQuality source=$source best=$bestRank")
                                 return@withRuntime bestUrl?.let {
-                                    LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank))
+                                    LxUserPlaybackResult(
+                                        record.id,
+                                        it,
+                                        quality = rankToMusicQuality(bestRank),
+                                        bitrate = bestBitrate,
+                                    )
                                 }
                             }
                             LxUserRuntimeSession.awaitRequestSlot(MIN_REQUEST_GAP_MS)
@@ -257,11 +274,14 @@ class LxUserPlaybackResolver(
                             // bitrate. That probe hits the final CDN, not the rate-limited
                             // LX API, so it costs nothing against the "4 requests / 2s" rule.
                             val reportedRank = lxQualityRank(reported)
+                            var measuredBitrate: Int? = null
                             val rank = if (reportedRank >= 0 || url == null || track.durationMs == null || probes >= MAX_PROBES) {
                                 reportedRank
                             } else {
                                 probes++
-                                probeQualityRank(url, track.durationMs, record.id)
+                                val probed = probeQualityRank(url, track.durationMs, record.id)
+                                measuredBitrate = probed.bitrate
+                                probed.rank
                             }
                             Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality " +
                                 "url=${url != null} reported=$reported rank=$rank need=$need link=${url?.take(220)}")
@@ -282,15 +302,24 @@ class LxUserPlaybackResolver(
                                     record.id,
                                     url,
                                     quality = rankToMusicQuality(rank),
+                                    bitrate = measuredBitrate,
                                 )
                             }
                             if (rank > bestRank) {
                                 bestRank = rank
                                 bestUrl = url
+                                bestBitrate = measuredBitrate
                             }
                         }
                     }
-                    bestUrl?.let { LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(bestRank)) }
+                    bestUrl?.let {
+                        LxUserPlaybackResult(
+                            record.id,
+                            it,
+                            quality = rankToMusicQuality(bestRank),
+                            bitrate = bestBitrate,
+                        )
+                    }
                 }
             }.onFailure { error ->
                 Log.w(
@@ -389,10 +418,15 @@ class LxUserPlaybackResolver(
                             else -> null
                         }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
                         url?.let {
-                            val rank = track.durationMs?.let { duration ->
+                            val probed = track.durationMs?.let { duration ->
                                 probeQualityRank(it, duration, record.id)
-                            } ?: -1
-                            LxUserPlaybackResult(record.id, it, quality = rankToMusicQuality(rank))
+                            }
+                            LxUserPlaybackResult(
+                                record.id,
+                                it,
+                                quality = rankToMusicQuality(probed?.rank ?: -1),
+                                bitrate = probed?.bitrate,
+                            )
                         }
                     }.firstOrNull()
                 }
@@ -564,13 +598,20 @@ private fun Throwable.safeLogMessage(): String = message.orEmpty()
     .ifBlank { "none" }
 
 /**
+ * What one CDN probe learned: [lxQualityRank]'s bucket plus the bitrate it was
+ * derived from, so callers can forward the exact number to the UI.
+ */
+private data class ProbeResult(val rank: Int, val bitrate: Int?)
+
+/**
  * Derives the real quality of a resolved link by asking the CDN for its total
  * size (a single `Range: bytes=0-0` GET, which returns the full length in
  * `Content-Range` without downloading the audio) and dividing by the track
- * duration. Returns [lxQualityRank]'s bucket, or `-1` when the size cannot be
- * determined or the probe times out.
+ * duration. Returns the [lxQualityRank] bucket with the measured bitrate, or
+ * `rank = -1` with `bitrate = null` when the size cannot be determined or the
+ * probe times out.
  */
-private fun probeQualityRank(url: String, durationMs: Long, scriptId: String): Int {
+private fun probeQualityRank(url: String, durationMs: Long, scriptId: String): ProbeResult {
     try {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
@@ -589,13 +630,16 @@ private fun probeQualityRank(url: String, durationMs: Long, scriptId: String): I
             }
         }
         conn.disconnect()
-        if (total == null || total <= 0L) return -1
+        if (total == null || total <= 0L) return ProbeResult(-1, null)
         val seconds = (durationMs.coerceAtLeast(1L) / 1000L).coerceAtLeast(1L)
         val bitrate = (total * 8L) / seconds
         Log.d(TAG, "LX probe script=$scriptId total=$total bitrate=$bitrate rank=${lxQualityRank(bitrate.toString())}")
-        return lxQualityRank(bitrate.toString())
+        return ProbeResult(
+            rank = lxQualityRank(bitrate.toString()),
+            bitrate = bitrate.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt(),
+        )
     } catch (e: Throwable) {
         Log.w(TAG, "LX probe failed script=$scriptId detail=${e.safeLogMessage()}")
-        return -1
+        return ProbeResult(-1, null)
     }
 }

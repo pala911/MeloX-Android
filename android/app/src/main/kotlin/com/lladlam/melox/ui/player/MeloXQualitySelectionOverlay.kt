@@ -131,6 +131,10 @@ internal fun MeloXQualitySelectionOverlay(
     val details = qualityDetails(
         resource = availability.resourceFor(actualQuality),
         provider = providerResource,
+        // What the bytes on the wire actually measure (the LX CDN probe wins over
+        // the tier label below): showing the service's printed number for a file a
+        // third-party source handed back would claim a rate the stream may not hit.
+        measuredBitrate = MusicQualityRuntime.bitrateFor(songId),
         quality = actualQuality,
         sourceDisplayName = actualSourceName,
         downloaded = downloadedQuality != null,
@@ -193,13 +197,18 @@ private fun SongAudioAvailability.resourceFor(quality: MusicQuality): SongAudioR
 private fun qualityDetails(
     resource: SongAudioResource?,
     provider: ProviderPlaybackQualityRuntime.ProviderAudioResource?,
+    measuredBitrate: Int?,
     quality: MusicQuality,
     sourceDisplayName: String,
     downloaded: Boolean,
 ): String {
     if (downloaded) return "本地文件 · 参数以下载音频为准"
     val details = buildList {
-        (resource?.bitrate ?: provider?.bitrate)?.let { add("${it / 1000} kbps") }
+        // Measured beats labelled: the LX probe and the provider tier path both see
+        // the file that is playing, while resource.bitrate is only what the music
+        // service prints for the tier. They usually agree, but a third-party source
+        // can hand back a file at a different rate than the service's own copy.
+        (measuredBitrate ?: provider?.bitrate ?: resource?.bitrate)?.let { add("${it / 1000} kbps") }
         resource?.sampleRate?.let { add("${it / 1_000.0} kHz") }
         provider?.format?.let { add(it) }
         when (quality) {

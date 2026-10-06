@@ -359,6 +359,7 @@ class ProviderPlaybackResolver(
                     id = track.id,
                     requested = quality,
                     actual = it.toCommonTier(),
+                    bitrate = lx.bitrate,
                 )
             }
             Log.i(TAG, "Resolve success source=${source.storageValue} stage=lx quality=${lx.quality?.apiLevel}")

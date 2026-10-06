@@ -111,6 +111,13 @@ object MusicQualityRuntime {
     private data class QualityRecord(
         val requested: MusicQuality,
         val actual: MusicQuality,
+        /**
+         * Bitrate measured off the stream that is actually playing (the LX CDN
+         * probe), when there is one. Null for resolutions that report a tier but
+         * never see the bytes - the UI then falls back to the bitrate the music
+         * service labels that tier with.
+         */
+        val bitrate: Int? = null,
     )
 
     @Volatile
@@ -136,12 +143,17 @@ object MusicQualityRuntime {
 
     private val actualBySong = ConcurrentHashMap<Long, QualityRecord>()
 
-    fun recordActual(songId: Long, requested: MusicQuality, actual: MusicQuality) {
+    fun recordActual(
+        songId: Long,
+        requested: MusicQuality,
+        actual: MusicQuality,
+        bitrate: Int? = null,
+    ) {
         // Background analysis can resolve the same song at Standard while the
         // foreground decoder keeps playing Hi-Res. Never let that secondary
         // request replace the quality reported for the user's active selection.
         if (requested == selected) {
-            actualBySong[songId] = QualityRecord(requested, actual)
+            actualBySong[songId] = QualityRecord(requested, actual, bitrate)
         }
     }
 
@@ -150,6 +162,17 @@ object MusicQualityRuntime {
             ?.let(actualBySong::get)
             ?.takeIf { it.requested == selected }
             ?.actual
+
+    /**
+     * Measured bitrate for [songId], under the same freshness rule as
+     * [actualFor]: a record written for a selection the user has since changed
+     * must not contribute a number to a dialog about the current tier.
+     */
+    fun bitrateFor(songId: Long?): Int? =
+        songId
+            ?.let(actualBySong::get)
+            ?.takeIf { it.requested == selected }
+            ?.bitrate
 
     fun clear(songId: Long? = null) {
         if (songId == null) actualBySong.clear() else actualBySong.remove(songId)
