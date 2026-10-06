@@ -362,7 +362,7 @@ object MeloXSettingsRuntime {
         podcastsTabPlacement = MeloXSettingsPreferences.boolean(app, "placement_podcasts_tab", false)
         downloadsTabPlacement = MeloXSettingsPreferences.boolean(app, "placement_downloads_tab", false)
         cloudTabPlacement = MeloXSettingsPreferences.boolean(app, "placement_cloud_tab", false)
-        rememberLastTab = MeloXSettingsPreferences.boolean(app, "general_remember_tab", true)
+        rememberLastTab = MeloXSettingsPreferences.boolean(app, "general_remember_tab", false)
         disableAutomaticTabBarShrink = MeloXSettingsPreferences.boolean(app, "general_disable_auto_tabbar_shrink", false)
         tabOrder = MeloXSettingsPreferences.string(app, "tab_order", "Home,Explore,Library,Podcasts,Downloads,Cloud,Settings")
             .split(',').filter { it in setOf("Home", "Explore", "Library", "Podcasts", "Downloads", "Cloud", "Settings") }.distinct()
@@ -570,7 +570,7 @@ object MeloXSettingsRuntime {
             .let { order -> (order + listOf("QuickActions", "Playlists", "NewSongs")).distinct() }
         exploreTabEnabled = MeloXSettingsPreferences.boolean(app, "tab_explore", true)
         libraryTabEnabled = MeloXSettingsPreferences.boolean(app, "tab_library", true)
-        rememberLastTab = MeloXSettingsPreferences.boolean(app, "general_remember_tab", true)
+        rememberLastTab = MeloXSettingsPreferences.boolean(app, "general_remember_tab", false)
         disableAutomaticTabBarShrink = MeloXSettingsPreferences.boolean(app, "general_disable_auto_tabbar_shrink", false)
         tabOrder = MeloXSettingsPreferences.string(app, "tab_order", "Home,Explore,Library,Podcasts,Downloads,Cloud,Settings")
             .split(',').filter { it in setOf("Home", "Explore", "Library", "Podcasts", "Downloads", "Cloud", "Settings") }.distinct()

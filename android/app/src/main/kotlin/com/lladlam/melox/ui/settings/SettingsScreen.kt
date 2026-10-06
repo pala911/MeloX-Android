@@ -2319,7 +2319,7 @@ private fun GeneralSettings(context: android.content.Context) {
             onSelected = { defaultTab = it; MeloXSettingsPreferences.setString(context, "general_default_tab", it) },
             grouped = true,
         )
-        SettingsToggleRow(context, stringResource(R.string.settings_general_remember_tab), "general_remember_tab", true, grouped = true)
+        SettingsToggleRow(context, stringResource(R.string.settings_general_remember_tab), "general_remember_tab", false, grouped = true)
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_general_swipe),
             selected = swipeFullAction,
