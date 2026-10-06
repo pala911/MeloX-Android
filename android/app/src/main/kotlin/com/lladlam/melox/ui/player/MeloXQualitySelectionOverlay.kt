@@ -139,6 +139,11 @@ internal fun MeloXQualitySelectionOverlay(
         quality = actualQuality,
         sourceDisplayName = actualSourceName,
         downloaded = downloadedQuality != null,
+        // 兜底到别的源、或网易云 id 其实由 LX/CHKSZ 在放时，上面的数字仍是网易云给
+        // 这一档印的标号，跟实际那条流不是同一份文件——标出来，别让人把 bili 的流
+        // 读成网易云的参数。
+        servedElsewhere = fallbackSource != null ||
+            (stageLabel != null && stageLabel != ownStage),
     )
     // Which of the three bitrate sources the dialog is actually reading, so a
     // "why is there no kbps line" report can be answered from a log instead of a
@@ -218,6 +223,7 @@ private fun qualityDetails(
     quality: MusicQuality,
     sourceDisplayName: String,
     downloaded: Boolean,
+    servedElsewhere: Boolean,
 ): String {
     if (downloaded) return "本地文件 · 参数以下载音频为准"
     val details = buildList {
@@ -235,6 +241,15 @@ private fun qualityDetails(
             // 非环绕档按立体声报，与网易云链路同口径；否则 provider 歌因为拿不到
             // SongAudioResource 会连声道都不显示，只剩一句「未提供音频参数」。
             else -> add("2 声道")
+        }
+        // 只在这一行的数字确实全部来自网易云标注时才补标：LX 探到的实测值、provider
+        // 档带的码率本身就是实际那条流的，标成「网易云标注」反而误导。
+        if (servedElsewhere &&
+            measuredBitrate == null &&
+            provider?.bitrate == null &&
+            resource != null
+        ) {
+            add("网易云标注")
         }
     }
     return details.joinToString(" · ").ifBlank { "$sourceDisplayName 未提供音频参数" }
