@@ -57,13 +57,17 @@ jobs:
       # frames, and they skip minify/shrink so the APK is twice the size.
       # Signing uses the keystore committed at android/melox-debug.keystore so
       # every build shares one signature and `adb install -r` keeps working.
+      # ⚠ 上游 0.6.5 把 app/build.gradle.kts 的 `storeFile = file(p)` 改成了
+      #   `rootProject.file(p)`，基准目录从 android/app/ 变成 android/。
+      #   所以这里必须传 `melox-debug.keystore`（相对 android/）而不是
+      #   `../melox-debug.keystore`（那会解析到仓库根，validateSigningRelease 报找不到）。
       - name: Assemble Release APK
         run: |
           chmod +x android/gradlew
           cd android
           test -f melox-debug.keystore
           ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --max-workers=2 --stacktrace \
-            -PmeloxReleaseStoreFile=../melox-debug.keystore \
+            -PmeloxReleaseStoreFile=melox-debug.keystore \
             -PmeloxReleaseStorePassword=android \
             -PmeloxReleaseKeyAlias=androiddebugkey \
             -PmeloxReleaseKeyPassword=android
