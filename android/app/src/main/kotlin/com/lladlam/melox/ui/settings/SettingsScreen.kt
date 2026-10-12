@@ -468,6 +468,7 @@ internal fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, ses
     }
 }
 
+@Composable
 private fun PrivacySettings(context: android.content.Context) {
     var algorithmEnabled by remember { mutableStateOf(LocalRecommendationStore.isAlgorithmEnabled(context)) }
     var consent by remember { mutableStateOf(LocalRecommendationStore.hasPersonalizationConsent(context)) }
