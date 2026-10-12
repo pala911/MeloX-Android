@@ -684,7 +684,6 @@ internal object MeloXProviderLyricsLoader {
                     chosen?.binding ?: currentResolved.binding,
                     chosen?.document ?: currentResolved.document,
                 )
-                )
             }
         }
         val candidates = orderedSources
