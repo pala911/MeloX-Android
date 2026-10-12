@@ -73,8 +73,7 @@ object PlaybackCommands {
             return
         }
 
-val appContext = context.applicationContext
-        // 先同步用户基础选择，再取生效值——命中移动数据单档位时建队列就带覆盖档
+// 先同步用户基础选择，再取生效值——命中移动数据单档位时建队列就带覆盖档
         // （网易云 melox://song 的 quality 参数在解析时优先于运行时）。
         //
         // Upstream keeps the raw preference as `quality`. Read back through

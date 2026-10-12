@@ -757,8 +757,10 @@ fun MeloXApp(
                     // 上的覆盖层第一次返回被「切回主页」吞掉、第二次才关 —— 用户感知即「退两次、
                     // 且直接跳了两级（tab + 覆盖层）」。改为先关覆盖层，再处理切 tab / 退出确认。
                     // 本地 fork 没有 availableUpdate 弹窗（见 strip-startup-dialogs），故不含它。
+                    // 网易云登录在 0.6.5 已是独立 Activity（MeloXNeteaseLoginActivity），
+                    // 不再有页内 showNeteaseLogin 覆盖层，故也不计入。
                     val anyOverlayVisible = recognitionVisible || messagesVisible ||
-                        cloudControlChoicePending || showNeteaseLogin || clipboardTarget != null
+                        cloudControlChoicePending || clipboardTarget != null
                     val exitConfirmThresholdMs = 2_000L
                     var pendingExitAtMs by remember { mutableStateOf(0L) }
                     BackHandler {
@@ -768,7 +770,6 @@ fun MeloXApp(
                                 recognitionVisible -> recognitionVisible = false
                                 messagesVisible -> messagesVisible = false
                                 cloudControlChoicePending -> cloudControlChoicePending = false
-                                showNeteaseLogin -> showNeteaseLogin = false
                                 clipboardTarget != null -> onClipboardLinkConsumed()
                             }
                             return@BackHandler

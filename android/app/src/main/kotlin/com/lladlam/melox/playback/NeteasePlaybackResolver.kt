@@ -30,6 +30,8 @@ class NeteasePlaybackResolver(
     private val localSourceProvider: (Long) -> Uri? = { null },
     private val providerLocalSourceProvider: (MusicResourceId) -> Uri? = { null },
     private val crossProviderFallback: CrossProviderPlaybackFallbackResolver? = null,
+    private val chkszPlayback: ChkszPlaybackResolver? = null,
+    private val lxUserPlayback: LxUserPlaybackResolver? = null,
     private val providerPlaybackEnabled: (com.lladlam.melox.core.music.model.MusicSource) -> Boolean = { true },
     private val thirdPartySourcesEnabled: () -> Boolean = { true },
 ) : ResolvingDataSource.Resolver {
@@ -487,6 +489,8 @@ class NeteasePlaybackResolver(
                 providerPlaybackEnabled = providerPlaybackEnabled,
                 thirdPartySourcesEnabled = thirdPartySourcesEnabled,
                 crossProviderFallback = crossProviderFallback,
+                chkszPlayback = chkszPlayback,
+                lxUserPlayback = lxUserPlayback,
             ).also { providerDelegate = it }
         }
     }

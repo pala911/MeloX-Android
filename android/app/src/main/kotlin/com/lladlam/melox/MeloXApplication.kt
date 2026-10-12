@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Bundle
 import android.content.ComponentCallbacks2
-import android.content.Context
 import android.content.res.Configuration
 import com.lladlam.melox.core.diagnostics.MeloXCrashStore
 import com.lladlam.melox.core.network.MeloXHttpClient

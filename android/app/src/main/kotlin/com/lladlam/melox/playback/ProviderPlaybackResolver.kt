@@ -34,6 +34,8 @@ class ProviderPlaybackResolver(
     private val localSourceProvider: (MusicResourceId) -> Uri? = { null },
     private val authKeyProvider: (MusicSource) -> String = { "" },
     private val providerPlaybackEnabled: (MusicSource) -> Boolean = { true },
+    private val chkszPlayback: ChkszPlaybackResolver? = null,
+    private val lxUserPlayback: LxUserPlaybackResolver? = null,
     private val thirdPartySourcesEnabled: () -> Boolean = { true },
     private val crossProviderFallback: CrossProviderPlaybackFallbackResolver? = null,
 ) : ResolvingDataSource.Resolver {

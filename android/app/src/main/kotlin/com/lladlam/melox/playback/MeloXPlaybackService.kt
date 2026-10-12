@@ -516,12 +516,16 @@ class MeloXPlaybackService : MediaSessionService() {
             },
         )
         val cookieProvider = { com.lladlam.melox.core.music.provider.PlaybackAccountStore.neteaseCookie(this@MeloXPlaybackService) }
+        val lxUserPlayback = LxUserPlaybackResolver(this)
+        val chkszPlayback = ChkszPlaybackResolver(this)
         playbackResolver = NeteasePlaybackResolver(
             cookieProvider = cookieProvider,
             client = NeteaseSearchClient(cookieProvider = cookieProvider),
             localSourceProvider = downloadStore::localPlaybackUri,
             providerLocalSourceProvider = providerDownloadStore::localPlaybackUri,
             crossProviderFallback = crossProviderFallback,
+            chkszPlayback = chkszPlayback,
+            lxUserPlayback = lxUserPlayback,
             providerPlaybackEnabled = { source ->
                 MeloXRemoteConfigPolicy.providerPlaybackEnabled(this@MeloXPlaybackService, source)
             },
