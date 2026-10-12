@@ -1,162 +1,168 @@
 package com.lladlam.melox.ui.settings
 
-import android.Manifest
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
-import android.app.Activity
 import android.content.pm.PackageManager
+import android.Manifest
 import android.net.Uri
 import android.os.Build
 import android.os.StatFs
 import android.provider.Settings as AndroidSettings
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.PredictiveBackHandler
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.Animatable
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.lladlam.melox.ui.animation.MeloXPageSpec
-import com.lladlam.melox.ui.MeloXInterruptiblePage
-import com.lladlam.melox.ui.meloXPageRecede
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.core.content.ContextCompat
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import coil3.compose.AsyncImage
-import com.lladlam.melox.R
+import com.lladlam.melox.BuildConfig
 import com.lladlam.melox.core.account.NeteaseSessionStore
-import com.lladlam.melox.core.music.model.MusicSource
-import com.lladlam.melox.core.music.model.MusicPlaylistSummary
-import com.lladlam.melox.core.music.model.MusicResourceId
-import com.lladlam.melox.core.music.provider.MeloXMusicProviders
-import com.lladlam.melox.core.music.provider.UserLibraryCapability
-import com.lladlam.melox.core.library.NeteaseLibraryClient
-import com.lladlam.melox.core.provider.qqmusic.QQMusicSessionStore
-import com.lladlam.melox.core.provider.kugou.KugouSessionStore
-import com.lladlam.melox.ui.account.QQMusicLoginScreen
-import com.lladlam.melox.ui.account.KugouLoginScreen
-import com.lladlam.melox.ui.account.MeloXNeteaseLoginActivity
-import com.lladlam.melox.playback.ProviderPlaybackQualityRuntime
-import com.lladlam.melox.playback.CrossProviderPlaybackPreferences
+import com.lladlam.melox.core.audio.MobileDataQualityRuntime
 import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.audio.MusicQualityPreferences
-import com.lladlam.melox.core.audio.MobileDataQualityRuntime
 import com.lladlam.melox.core.download.MeloXDownloadStore
+import com.lladlam.melox.core.library.NeteaseLibraryClient
+import com.lladlam.melox.core.music.model.MusicPlaylistSummary
+import com.lladlam.melox.core.music.model.MusicResourceId
+import com.lladlam.melox.core.music.model.MusicSource
+import com.lladlam.melox.core.music.provider.MeloXMusicProviders
+import com.lladlam.melox.core.music.provider.PlaybackAccountSlot
+import com.lladlam.melox.core.music.provider.PlaybackAccountStore
+import com.lladlam.melox.core.music.provider.UserLibraryCapability
+import com.lladlam.melox.core.network.MeloXHttpClient
 import com.lladlam.melox.core.network.MeloXMessageContact
 import com.lladlam.melox.core.network.MeloXPrivateMessage
 import com.lladlam.melox.core.network.NeteaseMusicOperationsClient
 import com.lladlam.melox.core.network.NeteaseSearchClient
-import com.lladlam.melox.core.network.MeloXHttpClient
 import com.lladlam.melox.core.network.parseNeteaseListenTogetherInvitation
+import com.lladlam.melox.core.provider.bilibili.BilibiliPlaybackAssociationStore
+import com.lladlam.melox.core.provider.kugou.KugouSessionStore
+import com.lladlam.melox.core.provider.qqmusic.QQMusicSessionStore
+import com.lladlam.melox.core.recognition.SongRecognitionClient
+import com.lladlam.melox.core.recognition.SongRecognitionResult
 import com.lladlam.melox.core.recommendation.LocalAnalysisStage
 import com.lladlam.melox.core.recommendation.LocalRecommendationEngine
 import com.lladlam.melox.core.recommendation.LocalRecommendationStore
-import com.lladlam.melox.core.recognition.SongRecognitionClient
-import com.lladlam.melox.core.recognition.SongRecognitionResult
-import com.lladlam.melox.playback.PlaybackCommands
+import com.lladlam.melox.platform.floating.MeloXFloatingLyricsService
+import com.lladlam.melox.platform.xiaomi.HyperOsFocusBridge
+import com.lladlam.melox.playback.CrossProviderPlaybackPreferences
+import com.lladlam.melox.playback.MeloXAudioAnalysisPreferences
+import com.lladlam.melox.playback.MeloXAutoMixDiagnostics
 import com.lladlam.melox.playback.MeloXAutoMixFadeCurve
 import com.lladlam.melox.playback.MeloXAutoMixFallback
 import com.lladlam.melox.playback.MeloXAutoMixMode
 import com.lladlam.melox.playback.MeloXAutoMixSettings
 import com.lladlam.melox.playback.MeloXEqualizerController
-import com.lladlam.melox.playback.MeloXPlaybackModePreferences
-import com.lladlam.melox.playback.MeloXAudioAnalysisPreferences
-import com.lladlam.melox.playback.MeloXPlaybackService
-import com.lladlam.melox.playback.MeloXMediaCache
 import com.lladlam.melox.playback.MeloXListenTogetherCoordinator
-import com.lladlam.melox.platform.floating.MeloXFloatingLyricsService
-import com.lladlam.melox.platform.xiaomi.HyperOsFocusBridge
-import com.lladlam.melox.ui.MeloXBottomContentClearance
-import com.lladlam.melox.ui.MeloXPinkCat
-import com.lladlam.melox.ui.hotStringResource
-import com.lladlam.melox.ui.hotText
+import com.lladlam.melox.playback.MeloXMediaCache
+import com.lladlam.melox.playback.MeloXPlaybackModePreferences
+import com.lladlam.melox.playback.MeloXPlaybackService
+import com.lladlam.melox.playback.PlaybackCommands
+import com.lladlam.melox.playback.ProviderPlaybackQualityRuntime
+import com.lladlam.melox.R
+import com.lladlam.melox.ui.account.KugouLoginScreen
+import com.lladlam.melox.ui.account.MeloXNeteaseLoginActivity
+import com.lladlam.melox.ui.account.QQMusicLoginScreen
+import com.lladlam.melox.ui.animation.MeloXPageSpec
 import com.lladlam.melox.ui.glass.MeloXActionIcon
-import com.lladlam.melox.ui.glass.MeloXGlassTextField
-import com.lladlam.melox.ui.glass.MeloXGlassDialog
+import com.lladlam.melox.ui.glass.meloXContentSurface
 import com.lladlam.melox.ui.glass.MeloXGlassButton
 import com.lladlam.melox.ui.glass.MeloXGlassButtonStyle
+import com.lladlam.melox.ui.glass.MeloXGlassDialog
+import com.lladlam.melox.ui.glass.MeloXGlassTextField
 import com.lladlam.melox.ui.glass.MeloXGlassToggle
-import com.lladlam.melox.ui.glass.MeloXLiquidSlider
-import com.lladlam.melox.ui.glass.MeloXSettingsDropdown
-import com.lladlam.melox.ui.glass.MeloXShapes
-import com.lladlam.melox.ui.glass.MeloXTypography
 import com.lladlam.melox.ui.glass.MeloXIosGroupedList
 import com.lladlam.melox.ui.glass.MeloXIosListRow
 import com.lladlam.melox.ui.glass.MeloXIosTopBar
+import com.lladlam.melox.ui.glass.meloXLiquidButton
+import com.lladlam.melox.ui.glass.MeloXLiquidSlider
 import com.lladlam.melox.ui.glass.MeloXPinnedListPage
-import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
+import com.lladlam.melox.ui.glass.MeloXSettingsDropdown
+import com.lladlam.melox.ui.glass.MeloXShapes
 import com.lladlam.melox.ui.glass.MeloXSymbol
 import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import com.lladlam.melox.ui.glass.MeloXSymbolVariant
 import com.lladlam.melox.ui.glass.MeloXSystemColors
-import com.lladlam.melox.ui.glass.meloXContentSurface
-import com.lladlam.melox.ui.glass.meloXLiquidButton
+import com.lladlam.melox.ui.glass.MeloXTypography
+import com.lladlam.melox.ui.hotStringResource
+import com.lladlam.melox.ui.hotText
+import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
 import com.lladlam.melox.ui.legal.MELOX_LEGAL_VERSION
 import com.lladlam.melox.ui.legal.MeloXLegalLinks
+import com.lladlam.melox.ui.MeloXBottomContentClearance
+import com.lladlam.melox.ui.MeloXInterruptiblePage
+import com.lladlam.melox.ui.meloXPageRecede
+import com.lladlam.melox.ui.MeloXPinkCat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.CancellationException
 
 // ⚠ 必须 public：`MeloXSettingsDetailActivity.launch(context, route, source)` 是 public 的
 //   Activity 入口，签名里出现 internal 类型会直接编译不过（public 函数暴露 internal 类型）。
@@ -176,9 +182,6 @@ enum class SettingsRoute(val title: String) {
     Storage("存储管理"),
     TabLayout("页面与标签栏"),
     General("通用"),
-    RemoteConfig("远程兼容性配置"),
-    About("关于 MeloX"),
-    Legal("隐私政策与免责声明"),
     Privacy("隐私与本地算法"),
     Developer("开发者选项"),
     Experimental("测试功能尝鲜"),
@@ -462,6 +465,190 @@ internal fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, ses
                 }
             }
         }
+    }
+}
+
+private fun PrivacySettings(context: android.content.Context) {
+    var algorithmEnabled by remember { mutableStateOf(LocalRecommendationStore.isAlgorithmEnabled(context)) }
+    var consent by remember { mutableStateOf(LocalRecommendationStore.hasPersonalizationConsent(context)) }
+    var showPolicy by remember { mutableStateOf(false) }
+    var showClearPersonalization by remember { mutableStateOf(false) }
+    var secondsLeft by remember { mutableIntStateOf(10) }
+    val progress by LocalRecommendationStore.progress
+
+    LaunchedEffect(showPolicy) {
+        if (!showPolicy) return@LaunchedEffect
+        secondsLeft = 10
+        while (secondsLeft > 0) { kotlinx.coroutines.delay(1_000L); secondsLeft-- }
+    }
+
+    SettingsGlassGroup {
+        Column(Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.settings_privacy_data_title), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.settings_privacy_data_body), modifier = Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f), fontSize = 13.sp, lineHeight = 19.sp)
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsGlassGroup {
+        SettingsExternalToggleRow(stringResource(R.string.settings_privacy_algorithm), algorithmEnabled, stringResource(R.string.settings_privacy_algorithm_note)) {
+            algorithmEnabled = it
+            LocalRecommendationStore.setAlgorithmEnabled(context, it)
+            if (it && consent) LocalRecommendationEngine.start(context) else if (!it) LocalRecommendationEngine.stop()
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsGlassGroup {
+        Text(stringResource(R.string.settings_privacy_personalization), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Text(if (consent) stringResource(R.string.settings_privacy_consented) else stringResource(R.string.settings_privacy_not_consented), modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 10.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
+        SettingsActionButton(if (consent) stringResource(R.string.settings_privacy_withdraw) else stringResource(R.string.settings_privacy_read_policy)) {
+            if (consent) {
+                consent = false
+                LocalRecommendationStore.clearPersonalization(context)
+                LocalRecommendationEngine.stop()
+            } else showPolicy = true
+        }
+        SettingsActionButton(stringResource(R.string.settings_privacy_clear_all)) { showClearPersonalization = true }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsGlassGroup {
+        Column(Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.settings_privacy_status), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (progress.isFullAnalysis) "后台全量分析：${progress.stage} · ${progress.processed}/${progress.total}"
+                else "快速更新：${progress.stage}",
+                modifier = Modifier.padding(top = 8.dp),
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+            )
+            Text("模型后端：${progress.modelBackend}", modifier = Modifier.padding(top = 4.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f))
+            progress.message?.let { Text(it, modifier = Modifier.padding(top = 5.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f)) }
+        }
+    }
+    SettingsActionButton(stringResource(R.string.settings_privacy_start_full)) {
+        if (algorithmEnabled && consent) LocalRecommendationEngine.startFullAnalysis(context)
+    }
+    if (showPolicy) {
+        MeloXGlassDialog(visible = true, onDismiss = { if (secondsLeft == 0) showPolicy = false }) {
+            Text(stringResource(R.string.settings_privacy_policy_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.settings_privacy_policy_body), modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp, lineHeight = 19.sp)
+            Spacer(Modifier.height(16.dp))
+            SettingsActionButton(if (secondsLeft > 0) "请阅读后等待 ${secondsLeft} 秒" else stringResource(R.string.legal_agree_enable)) {
+                if (secondsLeft == 0) {
+                    consent = true; showPolicy = false
+                    LocalRecommendationStore.setPersonalizationConsent(context, true)
+                    LocalRecommendationStore.setConsentAt(context, System.currentTimeMillis())
+                    if (algorithmEnabled) LocalRecommendationEngine.start(context)
+                }
+            }
+        }
+    }
+    if (showClearPersonalization) {
+        MeloXGlassDialog(visible = true, onDismiss = { showClearPersonalization = false }) {
+            Text(stringResource(R.string.settings_privacy_clear_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.settings_privacy_clear_body), modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp, lineHeight = 19.sp)
+            Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showClearPersonalization = false }
+                SettingsDangerButton(stringResource(R.string.settings_privacy_clear_confirm), Modifier.weight(1f)) {
+                    LocalRecommendationEngine.stop()
+                    LocalRecommendationStore.clearPersonalization(context)
+                    consent = false
+                    showClearPersonalization = false
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SystemPlaybackSettings(context: android.content.Context) {
+    var systemLyrics by remember { mutableStateOf(MeloXSettingsRuntime.systemLyricsEnabled) }
+    var notifications by remember { mutableStateOf(MeloXSettingsRuntime.lyricNotificationsEnabled) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        notifications = granted
+        MeloXSettingsPreferences.setBoolean(context, "lyrics_notifications_enabled", granted)
+    }
+
+    SettingsGlassGroup {
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_system_lyrics),
+            value = systemLyrics,
+            note = stringResource(R.string.settings_system_lyrics_note),
+            grouped = true,
+        ) {
+            systemLyrics = it
+            MeloXSettingsPreferences.setBoolean(context, "system_lyrics_enabled", it)
+        }
+        val protocol = remember { HyperOsFocusBridge.protocol(context) }
+        MeloXSettingsDropdown(
+            title = stringResource(R.string.settings_system_title_format),
+            selected = MeloXSettingsRuntime.systemLyricTitleMode,
+            items = listOf(
+                MeloXSystemLyricTitleMode.LyricFirst to stringResource(R.string.settings_system_title_lyric),
+                MeloXSystemLyricTitleMode.SongFirst to stringResource(R.string.settings_system_title_song),
+            ),
+            onSelected = { MeloXSettingsPreferences.setString(context, "system_lyrics_title_mode", it.name) },
+            grouped = true,
+        )
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_lyric_notification),
+            value = notifications,
+            note = stringResource(R.string.settings_lyric_notification_note),
+            grouped = true,
+        ) { enabled ->
+            if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                notifications = enabled
+                MeloXSettingsPreferences.setBoolean(context, "lyrics_notifications_enabled", enabled)
+            }
+        }
+        val hyperIsland = remember { mutableStateOf(MeloXSettingsPreferences.boolean(context, "hyperos_super_island_enabled", false)) }
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_hyperos_island),
+            value = hyperIsland.value,
+            note = stringResource(R.string.settings_hyperos_island_note),
+            grouped = true,
+        ) { enabled ->
+            hyperIsland.value = enabled
+            MeloXSettingsPreferences.setBoolean(context, "hyperos_super_island_enabled", enabled)
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsGlassGroup {
+        SettingsToggleRow(context, stringResource(R.string.settings_notify_next_line), "lyrics_notification_next_line", false, grouped = true)
+        SettingsToggleRow(context, stringResource(R.string.settings_notify_progress), "lyrics_notification_progress", true, grouped = true)
+        SettingsToggleRow(context, stringResource(R.string.settings_notify_artwork), "lyrics_notification_artwork", true, grouped = true)
+        SettingsToggleRow(context, stringResource(R.string.settings_notify_background_only), "lyrics_notification_background_only", false, grouped = true)
+        SettingsToggleRow(context, stringResource(R.string.settings_notify_dismiss_paused), "lyrics_notification_dismiss_paused", true, grouped = true)
+    }
+    NotificationTemplateField(context, stringResource(R.string.settings_notify_title_template), "lyrics_notification_title_template", "{lyric}")
+    NotificationTemplateField(context, stringResource(R.string.settings_notify_subtitle_template), "lyrics_notification_subtitle_template", "{song} · {artist}")
+    NotificationTemplateField(context, stringResource(R.string.settings_notify_fallback), "lyrics_notification_fallback", "{song} · {artist}")
+    Text(
+        stringResource(R.string.settings_notify_variables),
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .46f),
+        fontSize = 11.sp,
+        modifier = Modifier.padding(bottom = 10.dp),
+    )
+    SettingsActionButton(stringResource(R.string.settings_notify_test)) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel("ysyy_lyrics", context.getString(R.string.settings_notify_channel_lyrics), NotificationManager.IMPORTANCE_LOW))
+        }
+        manager.notify(
+            10_043,
+            NotificationCompat.Builder(context, "ysyy_lyrics")
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentTitle("这是测试歌词")
+                .setContentText("YSYY · 通知模板预览")
+                .setStyle(NotificationCompat.BigTextStyle().bigText("这是测试歌词\n下一句歌词预览"))
+                .setSilent(true)
+                .build(),
+        )
     }
 }
 
