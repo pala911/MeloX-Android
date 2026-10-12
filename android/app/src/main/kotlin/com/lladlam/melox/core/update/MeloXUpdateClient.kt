@@ -74,6 +74,57 @@ class MeloXUpdateClient(
         throw IOException("更新检查失败：${lastError?.message ?: "所有 GitHub 源均不可用"}")
     }
 
+    /**
+     * Downloads an incremental-update patch, verifying its declared size and
+     * SHA-256 before returning it. Mirrors the full-APK download routing, and
+     * gives up (returns `null`) so the caller can fall back to the full APK.
+     */
+    suspend fun downloadPatch(
+        context: Context,
+        patch: com.lladlam.melox.core.remoteconfig.MeloXRemoteUpdatePatch,
+    ): java.io.File? = withContext(Dispatchers.IO) {
+        val router = requireNotNull(routing) { "Context is required for patch downloads" }
+        val target = java.io.File(context.cacheDir, "melox_patch_${patch.toVersion}.bin")
+        var lastError: Throwable? = null
+        for (source in router.candidates()) {
+            val result = runCatching {
+                target.delete()
+                val request = Request.Builder().url(router.routedUrl(source, patch.patchUrl)).build()
+                router.client(source).newBuilder()
+                    .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .callTimeout(180, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                    .newCall(request).execute().use { response ->
+                        check(response.isSuccessful) { "HTTP ${response.code}" }
+                        val digest = java.security.MessageDigest.getInstance("SHA-256")
+                        var written = 0L
+                        response.body.byteStream().use { input ->
+                            target.outputStream().buffered(1 shl 16).use { output ->
+                                val buffer = ByteArray(1 shl 16)
+                                while (true) {
+                                    val read = input.read(buffer)
+                                    if (read < 0) break
+                                    written += read
+                                    check(written <= patch.patchBytes) { "patch larger than declared" }
+                                    digest.update(buffer, 0, read)
+                                    output.write(buffer, 0, read)
+                                }
+                            }
+                        }
+                        check(written == patch.patchBytes) { "patch size mismatch: $written" }
+                        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                        check(actual.equals(patch.patchSha256, ignoreCase = true)) { "patch sha256 mismatch" }
+                    }
+            }
+            result.onSuccess { return@withContext target }
+            lastError = result.exceptionOrNull()
+        }
+        android.util.Log.w("MeloXUpdate", "patch download failed", lastError)
+        target.delete()
+        null
+    }
+
     suspend fun downloadUrl(release: MeloXRelease): String? = withContext(Dispatchers.IO) {
         val original = release.apkUrl ?: return@withContext null
         val router = requireNotNull(routing) { "Context is required for update requests" }

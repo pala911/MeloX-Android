@@ -14,12 +14,16 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
+import com.lladlam.melox.core.remoteconfig.MeloXHotStyles
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
 import com.lladlam.melox.ui.settings.MeloXThemeMode
 import com.lladlam.melox.ui.glass.MeloXTypography as GlassTypography
@@ -96,6 +100,11 @@ fun MeloXTheme(
     val context = androidx.compose.ui.platform.LocalContext.current
     val view = LocalView.current
     val fontFamily = rememberMeloXFontFamily(context)
+    val hotColors by MeloXHotStyles.colors.collectAsState()
+    val baseScheme = if (darkTheme) DarkColors else LightColors
+    val colorScheme = remember(baseScheme, hotColors, darkTheme) {
+        baseScheme.withHotOverrides(hotColors, darkTheme)
+    }
     SideEffect {
         context.findActivity()?.window?.let { window ->
             WindowCompat.getInsetsController(window, view).apply {
@@ -109,7 +118,7 @@ fun MeloXTheme(
     }
     CompositionLocalProvider(LocalMeloXFontFamily provides fontFamily) {
         MaterialTheme(
-            colorScheme = if (darkTheme) DarkColors else LightColors,
+            colorScheme = colorScheme,
             typography = MeloXTypography.copyWithFamily(fontFamily),
             shapes = MeloXShapes,
         ) {

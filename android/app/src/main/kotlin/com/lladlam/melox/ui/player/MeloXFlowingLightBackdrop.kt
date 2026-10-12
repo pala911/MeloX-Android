@@ -48,7 +48,7 @@ internal fun MeloXBlurredArtworkBackdrop(
     val context = LocalContext.current
     val appInForeground = MeloXAppVisibility.isForeground
     val artworkModel = remember(context, artworkUrl) {
-        ImageRequest.Builder(context).data(artworkUrl).size(320, 320).crossfade(80).build()
+        ImageRequest.Builder(context).data(artworkUrl).size(320, 320).crossfade(220).build()
     }
     androidx.compose.foundation.layout.Box(modifier.fillMaxSize()) {
         AsyncImage(
@@ -95,7 +95,7 @@ internal fun MeloXLyricsArtworkBackdrop(
     val latestIsPlaying by rememberUpdatedState(isPlaying)
     val elapsedWhilePlayingMs = remember(artworkUrl) { mutableLongStateOf(0L) }
     val artworkModel = remember(context, artworkUrl) {
-        ImageRequest.Builder(context).data(artworkUrl).size(384, 384).crossfade(80).build()
+        ImageRequest.Builder(context).data(artworkUrl).size(384, 384).crossfade(220).build()
     }
 
     // The source implementation invalidates its Canvas roughly every 42ms
@@ -256,7 +256,6 @@ internal fun MeloXFlowingLightBackdrop(
             meshImage = meshImages[writeIndex]
             awaitCancellation()
         }
-        val animatePalette = !MeloXSettingsRuntime.reduceMotion
         var lastRenderNanos = 0L
         while (true) {
             val frameNanos = withFrameNanos { it }
@@ -277,6 +276,8 @@ internal fun MeloXFlowingLightBackdrop(
             // Otherwise the mesh drifts at a constant speed instead of tracking
             // the synthetic playback clock, so its brightness never pulses.
             val reactive = sample.hasAnalysis
+            // 「减少动态效果」时不重算调色板（上游 0.6.2 7a5a7ef）。
+            val animatePalette = !MeloXSettingsRuntime.reduceMotion
             energy += (sample.energy - energy) * .18f
             beatPulse += (sample.beat - beatPulse) * .32f
             val motion = if (reactive) {
@@ -284,7 +285,7 @@ internal fun MeloXFlowingLightBackdrop(
             } else {
                 ConstantFlowMotion
             }
-            // User speed multiplier from Settings -> Player appearance.
+            // 用户可调的速度倍率（设置 → 播放器外观 → 流动速度）。
             val speed = MeloXSettingsRuntime.flowingLightSpeed.coerceIn(.25f, 2f)
             phase[0] = (phase[0] + motion * speed * elapsedMs / (1_000f / 60f)) % FlowPhasePeriod
             if (animatePalette) {

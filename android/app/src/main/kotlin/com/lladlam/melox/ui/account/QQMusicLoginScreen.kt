@@ -76,6 +76,7 @@ import com.lladlam.melox.core.provider.qqmusic.QQMusicQrLoginMethod
 import com.lladlam.melox.core.provider.qqmusic.QQMusicQrLoginSession
 import com.lladlam.melox.core.provider.qqmusic.QQMusicQrLoginState
 import com.lladlam.melox.core.provider.qqmusic.QQMusicSessionStore
+import com.lladlam.melox.ui.glass.MeloXShapes
 import com.lladlam.melox.ui.glass.MeloXSymbol
 import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import com.lladlam.melox.ui.glass.MeloXIosTopBar
@@ -454,24 +455,35 @@ private fun QQMusicLoginMethodSelector(
     }
 }
 
+/** 二维码页的「刷新/保存」玻璃按钮。QQ 音乐与网易云扫码页共用同一套样式。 */
 @Composable
-private fun QrActionButton(
+internal fun QrActionButton(
     onClick: () -> Unit,
     icon: MeloXSymbol,
     label: String,
     tint: Color,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /**
+     * 次级入口：同一套玻璃语言，但去掉强调色、表面更淡 ——
+     * 让「逃生通道」类按钮不跟主操作（刷新 / 保存）抢视觉权重。
+     */
+    secondary: Boolean = false,
 ) {
     val controlColor = if (isMeloXDarkTheme()) Color.White else Color.Black
+    val accent = if (secondary) MaterialTheme.colorScheme.onSurfaceVariant else tint
+    val contentAlpha = if (!enabled) 0.42f else if (secondary) 0.72f else 1f
     Row(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            // 胶囊：与全站控件条 / 底栏同一套几何（MeloXShapes.capsule）。
+            // 高度固定 50dp 而不是 heightIn(min) —— 胶囊的圆角半径由实际高度决定，
+            // 高度随内容浮动会让同一排按钮圆角不一致。
+            .height(50.dp)
             .meloXLiquidButton(
-                shape = RoundedCornerShape(18.dp),
+                shape = MeloXShapes.capsule,
                 enabled = enabled,
-                tint = tint,
-                surfaceColor = tint.copy(alpha = 0.08f),
+                tint = accent,
+                surfaceColor = accent.copy(alpha = if (secondary) 0.05f else 0.08f),
                 lensRadius = 9.dp,
                 refractionHeight = 12.dp,
             )
@@ -483,14 +495,14 @@ private fun QrActionButton(
         MeloXSymbolIcon(
             symbol = icon,
             modifier = Modifier.size(16.dp),
-            color = controlColor.copy(alpha = if (enabled) 1f else 0.42f),
+            color = controlColor.copy(alpha = contentAlpha),
             iconSize = 16.sp,
             contentDescription = label,
         )
         Spacer(Modifier.size(6.dp))
         Text(
             text = label,
-            color = controlColor.copy(alpha = if (enabled) 1f else 0.42f),
+            color = controlColor.copy(alpha = contentAlpha),
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
         )

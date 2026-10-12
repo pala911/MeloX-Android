@@ -55,6 +55,7 @@ class LocalMusicRepository(context: Context) {
         return current.fileKey == fileKey
     }
 
+    // 上游 0.6.1（0cc0d0f）：扫描器抽出内嵌封面后批量写回（配合 LocalMediaScanner 使用）。
     @Synchronized
     fun updateArtwork(artworkByKey: Map<String, String>) {
         if (artworkByKey.isEmpty()) return

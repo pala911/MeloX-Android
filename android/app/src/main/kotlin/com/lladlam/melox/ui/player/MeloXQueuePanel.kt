@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -70,7 +71,8 @@ fun MeloXQueuePanel(
         LazyColumn(
             state = listState,
             userScrollEnabled = interactive,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            // 触顶/触底橡胶回弹触感。
+            modifier = Modifier.weight(1f).fillMaxWidth().meloXEdgeOverscrollHaptic(listState),
             contentPadding = PaddingValues(top = 10.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {

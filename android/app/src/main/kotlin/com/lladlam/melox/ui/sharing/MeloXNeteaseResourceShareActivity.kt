@@ -35,8 +35,8 @@ import com.lladlam.melox.core.network.NeteaseSearchClient
 import com.lladlam.melox.core.network.NeteaseSocialExtrasClient
 import com.lladlam.melox.ui.glass.meloXLiquidButton
 import com.lladlam.melox.ui.glass.MeloXActionIcon
-import com.lladlam.melox.ui.prepareMeloXPagePredictiveBack
-import com.lladlam.melox.ui.MeloXPredictiveBackPage
+import com.lladlam.melox.ui.prepareMeloXPageWindow
+import com.lladlam.melox.ui.MeloXPageHost
 import com.lladlam.melox.ui.theme.MeloXTheme
 import kotlinx.coroutines.launch
 
@@ -52,14 +52,14 @@ private data class ShareResource(val type: String, val id: Long, val title: Stri
 
 class MeloXNeteaseResourceShareActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState); enableEdgeToEdge(); prepareMeloXPagePredictiveBack()
+        super.onCreate(savedInstanceState); enableEdgeToEdge(); prepareMeloXPageWindow()
         val direct = intent.getStringExtra(EXTRA_TYPE)?.let { type ->
             val id = intent.getLongExtra(EXTRA_ID, -1L); if (id > 0L) ShareResource(type, id, intent.getStringExtra(EXTRA_TITLE).orEmpty(), intent.getStringExtra(EXTRA_URL).orEmpty()) else null
         }
         val incoming = if (intent.action == Intent.ACTION_SEND) parseText(intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()) else null
         val resource = direct ?: incoming
         if (resource == null || resource.type !in setOf("song", "playlist", "album")) { finish(); return }
-         setContent { MeloXPredictiveBackPage(onBack = ::finish) { MeloXTheme { ShareScreen(resource, ::finish) } } }
+         setContent { MeloXPageHost { MeloXTheme { ShareScreen(resource, ::finish) } } }
     }
 
     companion object {

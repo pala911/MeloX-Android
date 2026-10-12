@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 页面 Activity 的窗口底色 = `MeloXTheme.LightColors.background`（#F7F7FA）。
+         必须与 Compose 里的底色逐字一致，否则转场期间会看到一次颜色跳变。
+         改这里必须同时改 `ui/theme/MeloXTheme.kt` 的 `LightColors.background`。 -->
+    <color name="melox_page_background">#FFF7F7FA</color>
+</resources>

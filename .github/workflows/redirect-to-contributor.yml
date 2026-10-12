@@ -1,0 +1,88 @@
+name: Redirect PRs to contributor
+
+# Contributors should open PRs against `contributor`, not `main`.
+# `main` is the protected release line: only the maintainer pushes to it
+# (via the branch ruleset's admin bypass), and it is auto-synced back into
+# `contributor` by sync-contributor.yml.
+#
+# This workflow watches for pull requests whose *base* is `main` and leaves
+# a friendly comment pointing the author at `contributor` instead. It does
+# NOT touch the PR's base branch (GitHub forbids changing it) and does NOT
+# close the PR — a human decides that.
+#
+# Why `pull_request_target` and not `pull_request`?  A PR opened from a fork
+# gets a read-only GITHUB_TOKEN under the `pull_request` event, which cannot
+# post comments.  `pull_request_target` runs in the context of the base repo
+# with write permissions.  That is only safe because this workflow *never*
+# checks out or executes anything from the PR head — it just reads the event
+# payload and posts a comment.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  redirect:
+    runs-on: ubuntu-latest
+    # Skip PRs opened by the maintainer / bots; only nudge outside contributors.
+    if: ${{ github.actor != 'lladlam' && github.actor != 'github-actions[bot]' }}
+    steps:
+      - name: Comment asking to retarget to `contributor`
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const author = pr.user.login;
+
+            // Don't spam if we already commented (e.g. on reopen).
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+            });
+            const marker = '<!-- redirect-to-contributor -->';
+            if (comments.some(c => c.body && c.body.includes(marker))) {
+              core.info('Already commented on this PR, skipping.');
+              return;
+            }
+
+            const body = [
+              marker,
+              `Hi @${author}, thanks for the contribution!`,
+              '',
+              'This repository uses a two-branch flow, so please point your PR at **`contributor`** instead of `main`:',
+              '',
+              '- **`contributor`** — integration branch. **All external contributions land here first.**',
+              '- **`main`** — release line. Only the maintainer pushes/merges into it, and it is synced back into `contributor` automatically.',
+              '',
+              '### How to retarget',
+              '1. Open a new PR from your fork with **base = `contributor`** (GitHub cannot change the base of an existing PR).',
+              '2. If needed, close this PR — the same commits can be reused, no need to rewrite anything.',
+              '',
+              'The code itself is welcome; only the target branch needs to change. Thanks again!',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });
+
+            // Best-effort label so the maintainer can triage at a glance.
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: ['needs-retarget'],
+              });
+            } catch (e) {
+              core.info(`Could not add label (does it exist?): ${e.message}`);
+            }

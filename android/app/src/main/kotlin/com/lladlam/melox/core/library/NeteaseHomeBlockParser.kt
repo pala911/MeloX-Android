@@ -111,8 +111,9 @@ internal object NeteaseHomeBlockParser {
         val artists = buildList {
             for (index in 0 until artistsArray.length()) artistsArray.optJSONObject(index)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add)
         }.joinToString(" / ")
+        val artistId = if (artistsArray.length() > 0) artistsArray.optJSONObject(0)?.optLong("id")?.takeIf { it > 0 } else null
         val title = ui?.optJSONObject("mainTitle")?.optString("title").orEmpty().ifBlank { "未知歌曲" }
-        return SearchSong(id, title, artists.ifBlank { "未知歌手" }, "", secure(ui?.optJSONObject("image")?.optString("imageUrl")?.takeIf(String::isNotBlank)), 0L)
+        return SearchSong(id, title, artists.ifBlank { "未知歌手" }, "", null, artistId, secure(ui?.optJSONObject("image")?.optString("imageUrl")?.takeIf(String::isNotBlank)), 0L)
     }
 
     private fun parseFullSong(value: JSONObject): SearchSong? {
@@ -121,12 +122,16 @@ internal object NeteaseHomeBlockParser {
         val artists = buildList {
             for (index in 0 until artistsArray.length()) artistsArray.optJSONObject(index)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add)
         }.joinToString(" / ")
+        val artistId = if (artistsArray.length() > 0) artistsArray.optJSONObject(0)?.optLong("id")?.takeIf { it > 0 } else null
         val album = value.optJSONObject("al") ?: value.optJSONObject("album")
+        val albumId = album?.optLong("id")?.takeIf { it > 0 }
         return SearchSong(
             id = id,
             name = value.optString("name").ifBlank { "未知歌曲" },
             artists = artists.ifBlank { "未知歌手" },
             album = album?.optString("name").orEmpty(),
+            albumId = albumId,
+            artistId = artistId,
             artworkUrl = secure(album?.optString("picUrl")?.takeIf(String::isNotBlank) ?: album?.optString("blurPicUrl")?.takeIf(String::isNotBlank)),
             durationMs = value.optLong("dt", value.optLong("duration", 0L)).coerceAtLeast(0L),
         )

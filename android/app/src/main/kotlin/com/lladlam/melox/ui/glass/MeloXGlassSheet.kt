@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.kyant.backdrop.backdrops.emptyBackdrop
 import com.lladlam.melox.ui.theme.isMeloXDarkTheme
 import com.lladlam.melox.ui.animation.meloXPanelEnter
 import com.lladlam.melox.ui.animation.meloXPanelExit
@@ -156,6 +158,10 @@ fun MeloXGlassDialog(
     // Confirmation/prompt content must remain fully opaque. Only the empty
     // area around the dialog uses a translucent modal scrim.
     val dialogSurface = if (dark) Color.Black else Color.White
+    // 弹窗是模态层：把内容子树的背板切成空背板，玻璃控件就取样不到弹窗背后的页面，
+    // 否则它们会退化成「页面内容的镜头折射窗口」（音质弹窗的「设置」直接折射出播放页
+    // 的封面/歌词）。面板本身是实色 surface，仍走上面那一份取样，观感不变。
+    val dialogBackdrop = emptyBackdrop()
     if (visibility.currentState || visibility.targetState) {
         Dialog(
             onDismissRequest = requestDismiss,
@@ -172,7 +178,12 @@ fun MeloXGlassDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.22f))
+                        // ⚠ 2026-09-26 由 0.22 提到 0.42：原值在浅色主题下只压掉 78% 亮度，
+                        //   当面板正下方是**亮色专辑封面 / 亮色歌词底**（播放页音质弹窗最典型的
+                        //   组合）时，剩下的 22% 在部分屏幕上仍读成「透过去看见后面」；
+                        //   0.42f 相当于把亮度压到 58%，实测跨 CJK 字体 / 屏厂 / 亮度下都不再
+                        //   出现「设置」按钮字面「飘在播放页上」的读法。
+                        .background(Color.Black.copy(alpha = 0.42f))
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
@@ -197,7 +208,13 @@ fun MeloXGlassDialog(
                                 onClick = {},
                             )
                             .padding(horizontal = 18.dp, vertical = 18.dp),
-                        content = content,
+                        content = {
+                            // ⚠ 只包住 content，不能包住 Column：面板的实色 surface 挂在
+                            //   Column 的 modifier 上，那份取样必须保留；这里只切断内容子树。
+                            CompositionLocalProvider(LocalMeloXBackdrop provides dialogBackdrop) {
+                                content()
+                            }
+                        },
                     )
                 }
             }

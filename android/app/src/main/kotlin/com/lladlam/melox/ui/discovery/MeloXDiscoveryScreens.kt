@@ -11,9 +11,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -22,16 +25,21 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
@@ -40,7 +48,9 @@ import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -49,6 +59,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,14 +75,19 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.lladlam.melox.core.account.NeteaseAccountProfile
@@ -99,8 +115,9 @@ import com.lladlam.melox.core.recommendation.LocalRecommendationStore
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.playback.ProviderPlaybackCommands
 import com.lladlam.melox.ui.animation.MeloXMotion
-import com.lladlam.melox.ui.animation.meloXPageEnter
-import com.lladlam.melox.ui.animation.meloXPageExit
+import com.lladlam.melox.ui.animation.MeloXPageBoundsTransform
+import com.lladlam.melox.ui.animation.meloXPageRedirectSpec
+import com.lladlam.melox.ui.MeloXInterruptiblePage
 import com.lladlam.melox.ui.animation.meloXSettledMillis
 import com.lladlam.melox.ui.account.MeloXAccountActivity
 import com.lladlam.melox.ui.collection.MeloXCollectionDetailActivity
@@ -121,6 +138,9 @@ import com.lladlam.melox.ui.podcast.MeloXPodcastScreen
 import com.lladlam.melox.ui.library.MeloXUnifiedPlaylistDetailScreen
 import com.lladlam.melox.ui.library.MeloXUnifiedSongListDetailScreen
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
+import com.lladlam.melox.ui.meloXPageRecede
+import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
 import com.lladlam.melox.ui.layout.rememberMeloXWindowInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -131,25 +151,24 @@ import kotlinx.coroutines.withContext
 private val Accent = Color(0xFFFF3147)
 private val Categories = listOf("推荐歌单", "排行榜", "精品歌单", "播客", "全部", "华语", "欧美", "流行", "摇滚", "民谣", "电子", "轻音乐", "影视原声", "ACG")
 
-/** Display label for an explore category id. The id itself stays Chinese. */
-@Composable
-private fun exploreCategoryLabel(id: String): String = when (id) {
-    "推荐歌单" -> stringResource(R.string.home_cat_for_you_short)
-    "排行榜" -> stringResource(R.string.home_cat_charts)
-    "精品歌单" -> stringResource(R.string.home_cat_picks_short)
-    "播客" -> stringResource(R.string.home_cat_podcasts)
-    "全部" -> stringResource(R.string.home_cat_all)
-    "华语" -> stringResource(R.string.home_cat_chinese)
-    "欧美" -> stringResource(R.string.home_cat_western)
-    "流行" -> stringResource(R.string.home_cat_pop)
-    "摇滚" -> stringResource(R.string.home_cat_rock)
-    "民谣" -> stringResource(R.string.home_cat_folk)
-    "电子" -> stringResource(R.string.home_cat_electronic)
-    "轻音乐" -> stringResource(R.string.home_cat_easy)
-    "影视原声" -> stringResource(R.string.home_cat_soundtrack)
-    "ACG" -> stringResource(R.string.home_cat_acg)
-    else -> id
-}
+// 发现页可折叠头部：上滑时大标题缩小、整体压缩，标签行随头部高度收缩自然上移吸顶。
+// 防透出：背景恒为页面底色（不透明），内容滚动进入头部区域时始终被盖住，绝不透出。
+// 防抽搐：① 折叠进度直接由网格自身 firstVisibleItemScrollOffset 驱动（与 MeloXPinnedListPage
+//        同款，不依赖嵌套滚动连接，杜绝头部与内容错位），越过首屏后强制保持折叠、不回弹；
+//        ② 标题字号固定、仅用 graphicsLayer 缩放（绘制期，不触发文字重排版）。
+private val ExploreHeaderTopInsetExpanded = 18.dp
+private val ExploreHeaderTopInsetCollapsed = 10.dp
+private val ExploreTitleBlockExpanded = 62.dp
+private val ExploreTitleBlockCollapsed = 38.dp
+private val ExploreTitleGapExpanded = 16.dp
+private val ExploreTitleGapCollapsed = 8.dp
+private val ExploreTabsBlock = 66.dp // 38 按钮 + 上下各 14 的 LazyRow 内边距
+private val EXPLORE_HEADER_EXPANDED =
+    ExploreHeaderTopInsetExpanded + ExploreTitleBlockExpanded + ExploreTitleGapExpanded + ExploreTabsBlock
+private val EXPLORE_HEADER_COLLAPSED =
+    ExploreHeaderTopInsetCollapsed + ExploreTitleBlockCollapsed + ExploreTitleGapCollapsed + ExploreTabsBlock
+// 折叠行程（滚动距离）：越大折叠越「绵」，与标题/标签的视觉缩放解耦。
+private val EXPLORE_COLLAPSE_SCROLL = 120.dp
 
 // 首页/发现页覆盖层过渡的收尾余量：动画时长之外再留一点，等 sharedElement 的
 // overlay 层真正收干净，再解锁并放开卡片。给少了会在切换瞬间看到 overlay 残影。
@@ -262,28 +281,12 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
     // 内容与可见性分开持有：返回时只把 selectedCollection 置空（让列表卡片重新进入过渡），
     // overlayCollection 保留，退出过渡期间详情仍被组合 → 封面才能一镜到底地 morph 回卡片。
     var overlayCollection by remember { mutableStateOf<DiscoveryCollection?>(null) }
-    // 卡片可见性必须与 selectedCollection 同帧同步：点击即退出、返回即进入，才能与详情
-    // hero 的 AnimatedVisibility 完全重叠。原「占用 key」方案把它压后到 LaunchedEffect
-    // 里赋值 —— 进入晚一帧、返回要等 PageExitMillis + settle(280ms) 才放开，返回方向的
-    // 卡片 enter 落在 hero exit(220ms) 结束之后，两端永不重叠 → sharedElement 无从配对。
-    // 过渡串行化已由 overlayTransitionBusy 排队负责，不再需要占用 key。
-    var selectedArtworkSlot by remember { mutableStateOf<String?>(null) }
-    // 覆盖层进入/退出过渡是否仍在进行。退出没跑完就点下一张卡会让 HomeOverlayPage 的
-    // AnimatedVisibility 取消旧过渡、直奔新目标，旧卡被遗弃在半途。过渡期间的打开请求
-    // 先排队，等本次过渡跑完立刻执行（直接忽略会丢输入）。
-    var overlayTransitionBusy by remember { mutableStateOf(false) }
-    var pendingCollection by remember { mutableStateOf<DiscoveryCollection?>(null) }
     var songList by remember { mutableStateOf<HomeSongList?>(null) }
-    // 内容与可见性分开持有（同 overlayCollection）：退出过渡期间 songList 已为 null，
-    // 但详情内容要留到过渡跑完。否则返回按钮一按就对着空 Box 播退出动画 → 直接消失
-    // （手势返回因为先跟手滑出，看不出这个问题）。
+    // 「每日推荐 / 热歌榜 / 私人雷达」歌单页的内容持有物。与 selectedCollection 同理：
+    // 可见性看 songList（返回时置空，让底下首页复位），内容另存 overlaySongList、返回时不清。
+    // 两边共用一个 state 的话，返回瞬间 content lambda 取到的是 null，AnimatedVisibility
+    // 的退场过渡在演一个空壳 ⇒ 观感就是「没有返回动画」。
     var overlaySongList by remember { mutableStateOf<HomeSongList?>(null) }
-    LaunchedEffect(songList) {
-        if (songList == null && overlaySongList != null) {
-            delay(meloXSettledMillis(MeloXMotion.PageExitMillis, DiscoveryOverlaySettleMillis))
-            overlaySongList = null
-        }
-    }
     var activeAction by remember { mutableStateOf<String?>(null) }
     var localRecommendations by remember { mutableStateOf(emptyList<com.lladlam.melox.core.recommendation.LocalRecommendationItem>()) }
     var localCandidates by remember { mutableStateOf(emptyList<MusicTrack>()) }
@@ -307,7 +310,7 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
                 content = it
                 cache.saveHomeContent(homeCacheKey, it)
                 error = null
-            }.onFailure { error = it.message ?: context.getString(R.string.home_load_failed) }
+            }.onFailure { error = it.message ?: "首页加载失败" }
             refreshing = false
         }
     }
@@ -321,7 +324,7 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
         localCandidates = localData.second
         content = cache.loadHomeContent(homeCacheKey)
         if (session.isLoggedIn) session.refreshProfile()
-        if (NeteaseLibraryCache.beginHomeColdStartRefresh(homeCacheKey)) refresh(false)
+        if (NeteaseLibraryCache.beginHomeColdStartRefresh(homeCacheKey, cache.cacheDir)) refresh(false)
     }
 
     val blocks = content?.let { value ->
@@ -332,27 +335,27 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
                         candidate.title == recommendation.title && candidate.artistText == recommendation.artist
                     }?.let { DiscoveryTrack.Provider(it) }
                 }
-                if (orderedCandidates.isNotEmpty()) add(HomeBlock.Tracks(context.getString(R.string.home_for_you_melox), context.getString(R.string.home_local_algorithm), orderedCandidates))
+                if (orderedCandidates.isNotEmpty()) add(HomeBlock.Tracks(stringResource(R.string.home_for_you_melox), stringResource(R.string.home_local_algorithm), orderedCandidates))
             }
             MeloXSettingsRuntime.homeSectionOrder.forEach { section ->
                 when (section) {
                     "QuickActions" -> if (MeloXSettingsRuntime.homeQuickActionsEnabled) add(HomeBlock.QuickActions)
                     "Playlists" -> if (MeloXSettingsRuntime.homePlaylistsEnabled && value.playlists.isNotEmpty()) {
-                        add(HomeBlock.Collections(context.getString(R.string.home_action_daily), context.getString(R.string.home_pull_to_refresh), value.playlists.map { DiscoveryCollection.Netease(it) }))
+                        add(HomeBlock.Collections("每日推荐", stringResource(R.string.home_pull_to_refresh), value.playlists.map { DiscoveryCollection.Netease(it) }))
                     }
                     "NewSongs" -> if (MeloXSettingsRuntime.homeNewSongsEnabled && value.newSongs.isNotEmpty()) {
-                        add(HomeBlock.Tracks(context.getString(R.string.home_for_you), context.getString(R.string.home_new_songs), value.newSongs.map { DiscoveryTrack.Netease(it) }))
+                        add(HomeBlock.Tracks(stringResource(R.string.home_for_you), stringResource(R.string.home_new_songs), value.newSongs.map { DiscoveryTrack.Netease(it) }))
                     }
                 }
             }
-            if (value.recentlyTrending.isNotEmpty()) add(HomeBlock.Tracks(context.getString(R.string.home_recent_trending), context.getString(R.string.home_from_netease_home), value.recentlyTrending.map { DiscoveryTrack.Netease(it) }))
-            if (value.tailoredSongs.isNotEmpty()) add(HomeBlock.Tracks(context.getString(R.string.home_based_on_taste), context.getString(R.string.home_personalized), value.tailoredSongs.map { DiscoveryTrack.Netease(it) }))
-            if (value.chartPlaylists.isNotEmpty()) add(HomeBlock.Collections(context.getString(R.string.home_action_charts), context.getString(R.string.home_netease_charts), value.chartPlaylists.map { DiscoveryCollection.Netease(it) }))
-            if (value.radarPlaylists.isNotEmpty()) add(HomeBlock.Collections(context.getString(R.string.home_action_radar), context.getString(R.string.home_your_radar), value.radarPlaylists.map { DiscoveryCollection.Netease(it) }))
-            if (value.personalPlaylists.isNotEmpty()) add(HomeBlock.Collections(context.getString(R.string.home_my_playlists), context.getString(R.string.home_kept_for_you), value.personalPlaylists.map { DiscoveryCollection.Netease(it) }))
-            if (value.regionalSongs.isNotEmpty()) add(HomeBlock.Tracks(context.getString(R.string.home_area_trending, MeloXSettingsRuntime.musicArea), context.getString(R.string.home_area_picks), value.regionalSongs.map { DiscoveryTrack.Netease(it) }))
-            if (value.roamingSongs.isNotEmpty()) add(HomeBlock.Tracks(context.getString(R.string.home_action_roam), context.getString(R.string.home_explore_more), value.roamingSongs.map { DiscoveryTrack.Netease(it) }))
-            if (value.similarSongs.isNotEmpty()) add(HomeBlock.Tracks(context.getString(R.string.home_action_similar), context.getString(R.string.home_from_now_playing), value.similarSongs.map { DiscoveryTrack.Netease(it) }))
+            if (value.recentlyTrending.isNotEmpty()) add(HomeBlock.Tracks(stringResource(R.string.home_recent_trending), stringResource(R.string.home_from_netease_home), value.recentlyTrending.map { DiscoveryTrack.Netease(it) }))
+            if (value.tailoredSongs.isNotEmpty()) add(HomeBlock.Tracks(stringResource(R.string.home_based_on_taste), stringResource(R.string.home_personalized), value.tailoredSongs.map { DiscoveryTrack.Netease(it) }))
+            if (value.chartPlaylists.isNotEmpty()) add(HomeBlock.Collections("排行榜", stringResource(R.string.home_netease_charts), value.chartPlaylists.map { DiscoveryCollection.Netease(it) }))
+            if (value.radarPlaylists.isNotEmpty()) add(HomeBlock.Collections("私人雷达", stringResource(R.string.home_your_radar), value.radarPlaylists.map { DiscoveryCollection.Netease(it) }))
+            if (value.personalPlaylists.isNotEmpty()) add(HomeBlock.Collections(stringResource(R.string.home_my_playlists), stringResource(R.string.home_kept_for_you), value.personalPlaylists.map { DiscoveryCollection.Netease(it) }))
+            if (value.regionalSongs.isNotEmpty()) add(HomeBlock.Tracks("${MeloXSettingsRuntime.musicArea}最近热门", stringResource(R.string.home_area_picks), value.regionalSongs.map { DiscoveryTrack.Netease(it) }))
+            if (value.roamingSongs.isNotEmpty()) add(HomeBlock.Tracks("私人漫游", stringResource(R.string.home_explore_more), value.roamingSongs.map { DiscoveryTrack.Netease(it) }))
+            if (value.similarSongs.isNotEmpty()) add(HomeBlock.Tracks("相似歌曲", stringResource(R.string.home_from_now_playing), value.similarSongs.map { DiscoveryTrack.Netease(it) }))
             if (
                 value.podcasts.isNotEmpty() &&
                 MeloXSettingsRuntime.podcastsEnabled &&
@@ -363,37 +366,47 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
 
     val account = session.profile?.let { profile ->
         HomeAccountUi(
-            name = profile.nickname.takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) } ?: context.getString(R.string.home_netease_user),
+            name = profile.nickname.takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) } ?: stringResource(R.string.home_netease_user),
             avatarUrl = profile.avatarUrl,
             subtitle = profile.signature
                 ?.takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
-                ?: context.getString(R.string.home_profile_subtitle),
+                ?: stringResource(R.string.home_profile_subtitle),
             onClick = { MeloXAccountActivity.launch(context, profile.userId) },
         )
     }
 
     SharedTransitionLayout(Modifier.fillMaxSize()) {
         val sharedScope = this
-        // 覆盖层过渡生命周期：只负责上锁/解锁与排队。卡片可见性已由 selectedCollection
-        // 同帧同步驱动（见声明处注释），与详情 hero 完全对齐。
+        // 覆盖层内容生命周期：只做「退场跑完再释放 overlayCollection」——
+        // 退场期间详情子树仍在组合，封面才有机会一镜到底 morph 回卡片。
+        // ⚠ 不再上锁/排队：退出途中再点卡会让 selectedCollection 立刻变非空 ⇒ 本 effect 被
+        //   取消重启，内容不被清、直接续上；滑动改向由 MeloXInterruptiblePage 的弹簧接管。
         LaunchedEffect(selectedCollection) {
-            overlayTransitionBusy = true
-            if (selectedCollection != null) {
-                delay(meloXSettledMillis(MeloXMotion.PageEnterMillis, DiscoveryOverlaySettleMillis))
-            } else if (overlayCollection != null) {
+            if (selectedCollection == null && overlayCollection != null) {
                 delay(meloXSettledMillis(MeloXMotion.PageExitMillis, DiscoveryOverlaySettleMillis))
-                selectedArtworkSlot = null
                 overlayCollection = null
             }
-            overlayTransitionBusy = false
-            // 只在这段过渡自己跑完后接上排队请求。中途被取消时不能在这里清空，
-            // 否则下一次点击会被丢掉，用户还得再点一次。
-            pendingCollection?.let {
-                pendingCollection = null
-                selectedCollection = it
-                overlayCollection = it
+        }
+        // 歌单页退场跑完再释放内容，理由同 overlayCollection。
+        LaunchedEffect(songList) {
+            if (songList == null && overlaySongList != null) {
+                delay(meloXSettledMillis(MeloXMotion.PageExitMillis, DiscoveryOverlaySettleMillis))
+                overlaySongList = null
             }
         }
+        // ⚠ **hero push 时旧页也左移让出 1/3**（2026-10-02）：与推入页走同一条弹簧
+        //   （[meloXPagePushSpec] / [meloXPageRedirectSpec] 同参数）⇒ 两页严格互补，
+        //   观感与「无 hero 的整页推入」完全一致，区别只是多了一个封面 morph。
+        //   ⚠ 旧页位移必须走 [meloXPageRecede] 的**布局期** place：共享元素 morph 的 bounds
+        //     取自 lookahead 布局坐标，走 graphicsLayer 的话封面不跟随、半路与卡片脱开。
+        val homeRecede = remember { Animatable(0f) }
+        val homeCollectionOpen = selectedCollection != null
+        LaunchedEffect(homeCollectionOpen) {
+            val target = if (homeCollectionOpen) 1f else 0f
+            if (homeRecede.value == target) return@LaunchedEffect // 首帧 / 已到位：不重播
+            homeRecede.animateTo(target, meloXPageRedirectSpec())
+        }
+        Box(Modifier.fillMaxSize().meloXPageRecede { homeRecede.value }) {
         MeloXHomeLayout(
             source = MusicSource.Netease,
             account = account,
@@ -403,93 +416,88 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
             onRefresh = { refresh(true) },
             activeAction = activeAction,
             onQuickAction = quickAction@ { action ->
-            when (action) {
-                "听歌识曲" -> {
-                    onOpenTool("Recognition")
-                    return@quickAction
-                }
-                "私信" -> {
-                    onOpenTool("Messages")
-                    return@quickAction
-                }
-                "播客" -> {
-                    onOpenTool("Podcasts")
-                    return@quickAction
-                }
-                "下载" -> {
-                    onOpenTool("Downloads")
-                    return@quickAction
-                }
-                "云盘" -> {
-                    onOpenTool("Cloud")
-                    return@quickAction
-                }
-            }
-            activeAction = action
-            scope.launch {
-                runCatching {
-                    when (action) {
-                        "每日推荐" -> client.dailyRecommendedSongs()
-                        "热歌榜" -> client.hotSongs()
-                        "私人漫游" -> client.personalFm(explore = true)
-                        "私人雷达" -> {
-                            val uid = session.profile?.userId ?: throw IllegalStateException(context.getString(R.string.home_login_required))
-                            val snapshot = client.snapshot(uid)
-                            val radar = snapshot.playlists.firstOrNull { it.name.contains("雷达") }
-                                ?: throw IllegalStateException(context.getString(R.string.home_no_radar))
-                            client.playlistDetail(radar.id).songs
-                        }
-                        "相似歌曲" -> PlaybackCommands.currentSongId()?.let { client.similarSongsBlocking(it) }
-                            ?: throw IllegalStateException(context.getString(R.string.home_play_song_first))
-                        "心动模式" -> {
-                            val userId = session.profile?.userId ?: throw IllegalStateException(context.getString(R.string.home_login_required))
-                            val snapshot = client.snapshot(userId)
-                            val seed = snapshot.likedSongs.randomOrNull() ?: throw IllegalStateException(context.getString(R.string.home_liked_empty))
-                            val playlistId = snapshot.likedPlaylistId ?: throw IllegalStateException(context.getString(R.string.home_liked_playlist_missing))
-                            client.intelligenceModeSongs(seed.id, playlistId)
-                        }
-                        else -> emptyList()
+                when (action) {
+                    "听歌识曲" -> {
+                        onOpenTool("Recognition")
+                        return@quickAction
                     }
-                }.onSuccess { songs ->
-                    if (action in HomeSongListActions && songs.isNotEmpty()) {
-                        val list = HomeSongList(
-                            title = action,
-                            subtitle = context.getString(R.string.home_source_song_count, songs.size),
-                            artworkUrl = songs.firstOrNull()?.artworkUrl,
-                            songs = songs,
-                        )
-                        overlaySongList = list
-                        songList = list
-                    } else {
-                        songs.firstOrNull()?.let {
-                            PlaybackCommands.playQueue(context, songs, it.id, heartMode = action == "心动模式")
-                        } ?: run { error = context.getString(R.string.home_no_playable) }
+                    "私信" -> {
+                        onOpenTool("Messages")
+                        return@quickAction
                     }
-                }.onFailure { error = it.message ?: context.getString(R.string.home_action_load_failed, action) }
-                activeAction = null
-            }
-        },
-        onCollection = { collection, slot ->
-            // 上一段过渡（进入/退出）没跑完就先排队，等它跑完立刻执行；直接执行会
-            // 掐断旧过渡把卡片遗弃在半途，直接忽略又会丢输入。
-            selectedArtworkSlot = slot
-            if (overlayTransitionBusy) pendingCollection = collection
-            else {
-                selectedCollection = collection
-                overlayCollection = collection
-            }
-        },
-            // 与卡片侧 `"$slot:${collection.key}" != selectedCollectionKey` 同口径、
-            // 同帧求值：点击当帧卡片就退出，返回当帧卡片就进入。
-            selectedCollectionKey = selectedCollection?.let { collection ->
-                selectedArtworkSlot?.let { slot -> "$slot:${collection.key}" } ?: collection.key
+                    "播客" -> {
+                        onOpenTool("Podcasts")
+                        return@quickAction
+                    }
+                    "下载" -> {
+                        onOpenTool("Downloads")
+                        return@quickAction
+                    }
+                    "云盘" -> {
+                        onOpenTool("Cloud")
+                        return@quickAction
+                    }
+                }
+                activeAction = action
+                scope.launch {
+                    runCatching {
+                        when (action) {
+                            "每日推荐" -> client.dailyRecommendedSongs()
+                            "热歌榜" -> client.hotSongs()
+                            "私人漫游" -> client.personalFm(explore = true)
+                            "私人雷达" -> {
+                                val uid = session.profile?.userId ?: throw IllegalStateException("请先登录网易云音乐")
+                                val snapshot = client.snapshot(uid)
+                                val radar = snapshot.playlists.firstOrNull { it.name.contains("雷达") }
+                                    ?: throw IllegalStateException("当前账号没有可用的私人雷达")
+                                client.playlistDetail(radar.id).songs
+                            }
+                            "相似歌曲" -> PlaybackCommands.currentSongId()?.let { client.similarSongsBlocking(it) }
+                                ?: throw IllegalStateException("请先播放一首歌曲")
+                            "心动模式" -> {
+                                val userId = session.profile?.userId ?: throw IllegalStateException("请先登录网易云音乐")
+                                val snapshot = client.snapshot(userId)
+                                val seed = snapshot.likedSongs.randomOrNull() ?: throw IllegalStateException("收藏歌曲为空")
+                                val playlistId = snapshot.likedPlaylistId ?: throw IllegalStateException("没有找到“我喜欢的音乐”歌单")
+                                client.intelligenceModeSongs(seed.id, playlistId)
+                            }
+                            else -> emptyList()
+                        }
+                    }.onSuccess { songs ->
+                        if (action in HomeSongListActions && songs.isNotEmpty()) {
+                            val list = HomeSongList(
+                                title = action,
+                                subtitle = "网易云音乐 · ${songs.size} 首歌曲",
+                                artworkUrl = songs.firstOrNull()?.artworkUrl,
+                                songs = songs,
+                            )
+                            songList = list
+                            overlaySongList = list
+                        } else {
+                            songs.firstOrNull()?.let {
+                                PlaybackCommands.playQueue(context, songs, it.id, heartMode = action == "心动模式")
+                            } ?: run { error = "没有可播放的推荐歌曲" }
+                        }
+                    }.onFailure { error = it.message ?: "$action 加载失败" }
+                    activeAction = null
+                }
             },
+            onCollection = {
+                // 立即写入，不排队：退场途中再点卡时由 MeloXInterruptiblePage 的弹簧在途改向
+                // （继承当前位移与速度），点下去即响应 —— 这正是「退出后能立刻点击」。
+                selectedCollection = it
+                overlayCollection = it
+            },
+            selectedCollectionKey = selectedCollection?.key,
             sharedTransitionScope = sharedScope,
         )
+        } // Box: 被 hero 推入页盖住的旧页（退让 1/3 屏宽）
 
         // 首页留在底下。歌单页只是叠上去，打开时从右侧滑入，预见式返回滑开时露出首页。
         HomeOverlayPage(
             shown = selectedCollection != null,
+            // ⚠ 返回同步清空「隐藏集合」：卡片立即可见 ⇒ morph 落点有目标（不破坏一镜到底）。
+            //   注意：只清在真实返回时；并行连点（A→B）走 onCollection 累加、不在此清，故旧卡片不闪回。
             onBack = { selectedCollection = null },
             // 封面是共享元素，跟手滑出会让封面一起飞出屏外再 morph 回来。
             followPredictiveBack = false,
@@ -500,10 +508,7 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
                     onBack = { selectedCollection = null },
                     sharedTransitionScope = sharedScope,
                     animatedVisibilityScope = this,
-                    artworkSharedKey = discoveryCollectionArtworkSharedKey(
-                        collection,
-                        selectedArtworkSlot ?: "detail",
-                    ),
+                    artworkSharedKey = discoveryCollectionArtworkSharedKey(collection),
                 )
             }
         }
@@ -511,6 +516,7 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
             shown = songList != null,
             onBack = { songList = null },
         ) {
+            // 取 overlaySongList（返回时不清）：退场过渡期间详情仍被组合，那一滑才有东西可画。
             overlaySongList?.let { list ->
                 HomeSongListDetail(list = list, onBack = { songList = null })
             }
@@ -524,10 +530,8 @@ private val HomeSongListActions = setOf("每日推荐", "热歌榜", "私人雷�
 private fun HomeOverlayPage(
     shown: Boolean,
     onBack: () -> Unit,
-    // 带共享元素的页面（歌单详情）关掉跟手位移：封面本身就是共享元素，跟着页面滑出
-    // 屏外后，提交时再 snap 回来 + morph，看起来像「封面飞出去再飞回原位」。这类页面
-    // 在提交后直接走 AnimatedVisibility 退出 + 共享元素 morph，与返回按钮完全一致。
-    // 没有共享元素的页面（每日推荐/热歌榜/私人雷达）保留跟手滑出，滑开时露出首页。
+    // 共享元素页面（封面要 morph 回列表卡片）不能跟手滑：跟手会让封面一起飞出屏外
+    // 再 morph 回来。上游 0.6.5 摘掉了这个开关，这里按本地需要保留。
     followPredictiveBack: Boolean = true,
     // 以 receiver 暴露 AnimatedVisibilityScope，让内部详情页能把封面
     // 接到同一个 SharedTransitionLayout 里的列表卡片上（一镜到底）。
@@ -539,14 +543,16 @@ private fun HomeOverlayPage(
     LaunchedEffect(shown) { if (shown) progress.snapTo(0f) }
     // 详情叠在首页上。普通返回和预见式返回都先关掉它，
     // 滑开时露出底下的首页，而不是灰色底或「再按一次退出」。
-    BackHandler(enabled = shown, onBack = onBack)
+    // ⚠ 普通返回键交给 MeloXInterruptiblePage 接管（onBack）：它在「退出途中」也保持启用并
+    //   吞掉事件，避免连点穿透把页面连锁关掉。手势路径仍走下面的 PredictiveBackHandler。
     PredictiveBackHandler(enabled = shown) {
         try {
             it.collect { event -> if (followPredictiveBack) progress.snapTo(event.progress) }
+            // 先启动退出过渡：此刻位移仍在手势落点上，封面从这里一镜到底
+            // morph 回列表卡片，剩余位移随后收尾。
+            // 不能在 onBack() 之后 snapTo(0f)：那会在页面已经在屏外时把位移
+            // 瞬间归零，整页闪回屏幕正中再滑出。
             if (followPredictiveBack) {
-                // 与搜索页详情返回一致：先关闭（退出过渡从手势落点启动），再让剩余
-                // 位移收尾。不能在关闭后 snapTo(0f)——那会把已滑出屏幕的页面瞬间
-                // 闪回屏幕正中再滑出去，手势返回会看到页面消失又重现一次。
                 onBack()
                 progress.animateTo(1f, tween(160))
             } else {
@@ -557,25 +563,13 @@ private fun HomeOverlayPage(
             if (followPredictiveBack) progress.animateTo(0f, tween(160))
         }
     }
-    AnimatedVisibility(
+    MeloXInterruptiblePage(
         visible = shown,
-        enter = meloXPageEnter(fromRight = true),
-        exit = meloXPageExit(toRight = true),
+        retreatProgress = { progress.value },
+        onBack = onBack,
         modifier = Modifier.fillMaxSize().zIndex(if (shown) 1f else 0f),
     ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    translationX = size.width * progress.value
-                    val scale = 1f - 0.08f * progress.value
-                    scaleX = scale
-                    scaleY = scale
-                    transformOrigin = TransformOrigin(0f, 0.5f)
-                },
-        ) {
-            content()
-        }
+        content()
     }
 }
 
@@ -648,6 +642,10 @@ private fun ProviderHomeDataScreen(source: MusicSource, onOpenTool: (String) -> 
     var refreshing by remember(source) { mutableStateOf(false) }
     var error by remember(source) { mutableStateOf<String?>(null) }
     var selectedCollection by remember(source) { mutableStateOf<DiscoveryCollection?>(null) }
+    // 内容与可见性分开持有（与网易云首页同款）：返回时只把 selectedCollection 置空，
+    // overlayCollection 保留到退场过渡跑完，否则退场期间 content lambda 已取到 null，
+    // 那个过渡在演一个空壳 ⇒「没有返回动画」。
+    var overlayCollection by remember(source) { mutableStateOf<DiscoveryCollection?>(null) }
 
     fun refresh() {
         if (refreshing || home == null) return
@@ -663,23 +661,31 @@ private fun ProviderHomeDataScreen(source: MusicSource, onOpenTool: (String) -> 
                 feed = feedResult
                 account = accountResult
                 error = null
-            }.onFailure { error = it.message ?: context.getString(R.string.home_load_failed) }
+            }.onFailure { error = it.message ?: "首页加载失败" }
             refreshing = false
         }
     }
 
     LaunchedEffect(source) { refresh() }
 
+    // 退场过渡跑完再释放歌单页内容（理由见 overlayCollection）。
+    LaunchedEffect(selectedCollection) {
+        if (selectedCollection == null && overlayCollection != null) {
+            delay(meloXSettledMillis(MeloXMotion.PageExitMillis, DiscoveryOverlaySettleMillis))
+            overlayCollection = null
+        }
+    }
+
     val blocks = feed?.let { value ->
         buildList<HomeBlock> {
             if (provider is PlaylistCapability && value.recommendedPlaylists.isNotEmpty()) {
-                add(HomeBlock.Collections(context.getString(R.string.home_action_daily), source.displayName, value.recommendedPlaylists.map { DiscoveryCollection.ProviderPlaylist(it) }))
+                add(HomeBlock.Collections("每日推荐", source.displayName, value.recommendedPlaylists.map { DiscoveryCollection.ProviderPlaylist(it) }))
             }
             if (value.newSongs.isNotEmpty()) {
-                add(HomeBlock.Tracks(context.getString(R.string.home_for_you), context.getString(R.string.home_new_songs), value.newSongs.map { DiscoveryTrack.Provider(it) }))
+                add(HomeBlock.Tracks(stringResource(R.string.home_for_you), stringResource(R.string.home_new_songs), value.newSongs.map { DiscoveryTrack.Provider(it) }))
             }
             if (provider is RankingCapability && value.rankings.isNotEmpty()) {
-                add(HomeBlock.Collections(context.getString(R.string.home_action_charts), source.displayName, value.rankings.map { DiscoveryCollection.ProviderRanking(it) }))
+                add(HomeBlock.Collections("排行榜", source.displayName, value.rankings.map { DiscoveryCollection.ProviderRanking(it) }))
             }
         }
     }
@@ -700,7 +706,7 @@ private fun ProviderHomeDataScreen(source: MusicSource, onOpenTool: (String) -> 
         account = accountUi,
         blocks = blocks,
         refreshing = refreshing,
-        error = if (home == null) context.getString(R.string.home_unavailable, source.displayName) else error,
+        error = if (home == null) "${source.displayName} 暂未提供首页数据" else error,
         onRefresh = ::refresh,
         activeAction = null,
         onQuickAction = { action ->
@@ -712,13 +718,17 @@ private fun ProviderHomeDataScreen(source: MusicSource, onOpenTool: (String) -> 
                 "云盘" -> onOpenTool("Cloud")
             }
         },
-        onCollection = { collection, _ -> selectedCollection = collection },
+        onCollection = {
+            selectedCollection = it
+            overlayCollection = it
+        },
     )
     HomeOverlayPage(
         shown = selectedCollection != null,
         onBack = { selectedCollection = null },
     ) {
-        selectedCollection?.let { collection ->
+        // 取 overlayCollection（返回时不清），退场过渡期间详情仍被组合。
+        overlayCollection?.let { collection ->
             DiscoveryCollectionDetail(collection = collection, onBack = { selectedCollection = null })
         }
     }
@@ -734,7 +744,7 @@ private fun MeloXHomeLayout(
     onRefresh: () -> Unit,
     activeAction: String?,
     onQuickAction: (String) -> Unit,
-    onCollection: (DiscoveryCollection, String) -> Unit,
+    onCollection: (DiscoveryCollection) -> Unit,
     // 当前打开的 collection key。被打开的那张卡片必须「退出」，否则
     // sharedElement 没有 enter/exit 可配对，封面不会 morph（官方范式）。
     selectedCollectionKey: String? = null,
@@ -742,15 +752,23 @@ private fun MeloXHomeLayout(
     sharedTransitionScope: SharedTransitionScope? = null,
 ) {
     val context = LocalContext.current.applicationContext
+    val exploreListState = rememberLazyListState()
+    // ⚠ 2026-09-29：状态栏避让从「容器 `statusBarsPadding()`」改成「滚动容器的顶部
+    //   contentPadding」。原来 padding 打在 LazyColumn 的 modifier 上 ⇒ 列表视口
+    //   被压到状态栏下缘(41dp)，滚动时内容在 y=41dp 处被裁掉、**永远进不了状态栏/挖孔区域**。
+    //   改成 contentPadding 后：静止态首项位置不变（18+41），滚动时内容从状态栏底下穿出。
+    val statusBarTop = rememberMeloXStableStatusBarHeight()
     PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
         if (blocks == null) {
             EmptyOrLoading(refreshing, error)
         } else {
             LazyColumn(
+                state = exploreListState,
+                // 触顶/触底橡胶回弹触感。
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding(),
-                contentPadding = PaddingValues(top = 18.dp, bottom = 146.dp),
+                    .meloXEdgeOverscrollHaptic(exploreListState),
+                contentPadding = PaddingValues(top = 18.dp + statusBarTop, bottom = 146.dp),
                 verticalArrangement = Arrangement.spacedBy(22.dp),
             ) {
                 item {
@@ -778,7 +796,6 @@ private fun MeloXHomeLayout(
                             item {
                                 CollectionRow(
                                     values = block.values,
-                                    slot = block.title,
                                     onSelect = onCollection,
                                     selectedCollectionKey = selectedCollectionKey,
                                     sharedTransitionScope = sharedTransitionScope,
@@ -796,10 +813,11 @@ private fun MeloXHomeLayout(
                             ) {
                                 items(block.values, key = { "podcast-${it.programId ?: it.id}" }) { podcast ->
                                     Column(
-                                        Modifier.width(150.dp).clickable {
-                                            podcast.programId?.let { MeloXCollectionDetailActivity.launchPodcastProgram(context, it) }
-                                                ?: MeloXCollectionDetailActivity.launchPodcast(context, podcast.id)
-                                        },
+                                        Modifier.width(150.dp)
+                                            .clickable {
+                                                podcast.programId?.let { MeloXCollectionDetailActivity.launchPodcastProgram(context, it) }
+                                                    ?: MeloXCollectionDetailActivity.launchPodcast(context, podcast.id)
+                                            },
                                     ) {
                                         AsyncImage(
                                             podcast.artworkUrl,
@@ -821,7 +839,7 @@ private fun MeloXHomeLayout(
                     }
                 }
                 if (blocks.isEmpty() && error == null) {
-                    item { Text(stringResource(R.string.home_empty_source, source.displayName), Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.onBackground.copy(alpha = .5f)) }
+                    item { Text("${source.displayName} 当前没有返回可展示内容", Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.onBackground.copy(alpha = .5f)) }
                 }
                 error?.let { message -> item { Text(message, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.error, fontSize = 13.sp) } }
             }
@@ -959,10 +977,6 @@ private fun NeteaseExploreDataScreen() {
     var selectedCollection by remember { mutableStateOf<DiscoveryCollection?>(null) }
     // 见 NeteaseHomeDataScreen：内容保留到退出过渡结束，返回时封面才能 morph 回卡片。
     var overlayCollection by remember { mutableStateOf<DiscoveryCollection?>(null) }
-    // 见 NeteaseHomeDataScreen：卡片可见性同帧同步，过渡串行化由排队负责。
-    var overlayTransitionBusy by remember { mutableStateOf(false) }
-    var pendingCollection by remember { mutableStateOf<DiscoveryCollection?>(null) }
-    var selectedArtworkSlot by remember { mutableStateOf<String?>(null) }
 
     fun refresh() {
         if (category == "播客" || refreshing) return
@@ -975,7 +989,7 @@ private fun NeteaseExploreDataScreen() {
                     cache.saveExplore(requested, it)
                     error = null
                 }
-                .onFailure { error = it.message ?: context.getString(R.string.home_explore_failed) }
+                .onFailure { error = it.message ?: "发现页加载失败" }
             refreshing = false
         }
     }
@@ -983,29 +997,31 @@ private fun NeteaseExploreDataScreen() {
     LaunchedEffect(category) {
         if (category == "播客") return@LaunchedEffect
         collections = cache.loadExplore(category).orEmpty().map { DiscoveryCollection.Netease(it) }
-        if (NeteaseLibraryCache.beginExploreColdStartRefresh(category)) refresh()
+        if (NeteaseLibraryCache.beginExploreColdStartRefresh(category, cache.cacheDir)) refresh()
     }
 
     SharedTransitionLayout(Modifier.fillMaxSize()) {
         val sharedScope = this
-        // 覆盖层过渡生命周期，同 NeteaseHomeDataScreen。
+        // 覆盖层内容生命周期：同 NeteaseHomeDataScreen，只做「退场跑完再释放内容」。
         LaunchedEffect(selectedCollection) {
-            overlayTransitionBusy = true
-            if (selectedCollection != null) {
-                delay(meloXSettledMillis(MeloXMotion.PageEnterMillis, DiscoveryOverlaySettleMillis))
-            } else if (overlayCollection != null) {
+            if (selectedCollection == null && overlayCollection != null) {
                 delay(meloXSettledMillis(MeloXMotion.PageExitMillis, DiscoveryOverlaySettleMillis))
-                selectedArtworkSlot = null
                 overlayCollection = null
             }
-            overlayTransitionBusy = false
-            pendingCollection?.let {
-                pendingCollection = null
-                selectedCollection = it
-                overlayCollection = it
-            }
+        }
+        // ⚠ hero push 时旧页也左移让出 1/3（与首页同款，2026-10-02）：与推入页走同一条弹簧
+        //   （[meloXPageRedirectSpec]），两页严格互补，观感与「无 hero 的整页推入」一致，
+        //   区别只是多一个封面 morph。旧页位移走 [meloXPageRecede] 的**布局期** place：
+        //   共享元素 morph 的 bounds 取自 lookahead 布局坐标，走 graphicsLayer 封面不跟随、半路脱开。
+        val exploreRecede = remember { Animatable(0f) }
+        val exploreCollectionOpen = selectedCollection != null
+        LaunchedEffect(exploreCollectionOpen) {
+            val target = if (exploreCollectionOpen) 1f else 0f
+            if (exploreRecede.value == target) return@LaunchedEffect
+            exploreRecede.animateTo(target, meloXPageRedirectSpec())
         }
         MeloXExploreLayout(
+            modifier = Modifier.fillMaxSize().meloXPageRecede { exploreRecede.value },
             categories = visibleCategories,
             category = category,
             onCategory = { category = it },
@@ -1014,25 +1030,18 @@ private fun NeteaseExploreDataScreen() {
             error = error,
             onRefresh = ::refresh,
             showPodcast = category == "播客",
-            onCollection = { collection, slot ->
-                // 上一段过渡（进入/退出）没跑完就先排队，等它跑完立刻执行；直接执行会
-                // 掐断旧过渡把卡片遗弃在半途，直接忽略又会丢输入。
-                selectedArtworkSlot = slot
-                if (overlayTransitionBusy) pendingCollection = collection
-                else {
-                    selectedCollection = collection
-                    overlayCollection = collection
-                }
+            onCollection = {
+                // 立即写入，不排队：退场途中再点卡时由 MeloXInterruptiblePage 的弹簧在途改向
+                // （继承当前位移与速度），点下去即响应 —— 这正是「退出后能立刻点击」。
+                selectedCollection = it
+                overlayCollection = it
             },
-            // 与卡片侧 `"$slot:${collection.key}" != selectedCollectionKey` 同口径、
-            // 同帧求值：点击当帧卡片就退出，返回当帧卡片就进入。
-            selectedCollectionKey = selectedCollection?.let { collection ->
-                selectedArtworkSlot?.let { slot -> "$slot:${collection.key}" } ?: collection.key
-            },
+            selectedCollectionKey = selectedCollection?.key,
             sharedTransitionScope = sharedScope,
         )
         HomeOverlayPage(
             shown = selectedCollection != null,
+            // ⚠ 返回同步清空「隐藏集合」：卡片立即可见 ⇒ morph 落点有目标（不破坏一镜到底）。
             onBack = { selectedCollection = null },
             // 封面是共享元素，跟手滑出会让封面一起飞出屏外再 morph 回来。
             followPredictiveBack = false,
@@ -1043,10 +1052,7 @@ private fun NeteaseExploreDataScreen() {
                     onBack = { selectedCollection = null },
                     sharedTransitionScope = sharedScope,
                     animatedVisibilityScope = this,
-                    artworkSharedKey = discoveryCollectionArtworkSharedKey(
-                        collection,
-                        selectedArtworkSlot ?: "detail",
-                    ),
+                    artworkSharedKey = discoveryCollectionArtworkSharedKey(collection),
                 )
             }
         }
@@ -1064,6 +1070,10 @@ private fun ProviderExploreDataScreen(source: MusicSource) {
     var refreshing by remember(source) { mutableStateOf(false) }
     var error by remember(source) { mutableStateOf<String?>(null) }
     var selectedCollection by remember(source) { mutableStateOf<DiscoveryCollection?>(null) }
+    // 内容与可见性分开持有（与网易云首页同款）：返回时只把 selectedCollection 置空，
+    // overlayCollection 保留到退场过渡跑完，否则退场期间 content lambda 已取到 null，
+    // 那个过渡在演一个空壳 ⇒「没有返回动画」。
+    var overlayCollection by remember(source) { mutableStateOf<DiscoveryCollection?>(null) }
 
     fun refresh() {
         if (refreshing || home == null) return
@@ -1075,12 +1085,20 @@ private fun ProviderExploreDataScreen(source: MusicSource) {
                 feed = it
                 error = null
                 if (category == "推荐歌单" && it.recommendedPlaylists.isEmpty() && it.rankings.isNotEmpty()) category = "排行榜"
-            }.onFailure { error = it.message ?: context.getString(R.string.home_explore_failed) }
+            }.onFailure { error = it.message ?: "发现页加载失败" }
             refreshing = false
         }
     }
 
     LaunchedEffect(source) { refresh() }
+
+    // 退场过渡跑完再释放歌单页内容（理由见 overlayCollection）。
+    LaunchedEffect(selectedCollection) {
+        if (selectedCollection == null && overlayCollection != null) {
+            delay(meloXSettledMillis(MeloXMotion.PageExitMillis, DiscoveryOverlaySettleMillis))
+            overlayCollection = null
+        }
+    }
 
     val categories = buildList {
         add("推荐歌单")
@@ -1091,23 +1109,49 @@ private fun ProviderExploreDataScreen(source: MusicSource) {
         else -> feed?.recommendedPlaylists.orEmpty().map { DiscoveryCollection.ProviderPlaylist(it) }
     }
 
-    MeloXExploreLayout(
-        categories = categories,
-        category = category,
-        onCategory = { category = it },
-        collections = collections,
-        refreshing = refreshing,
-        error = if (home == null) context.getString(R.string.home_explore_unavailable, source.displayName) else error,
-        onRefresh = ::refresh,
-        showPodcast = false,
-        onCollection = { collection, _ -> selectedCollection = collection },
-    )
-    HomeOverlayPage(
-        shown = selectedCollection != null,
-        onBack = { selectedCollection = null },
-    ) {
-        selectedCollection?.let { collection ->
-            DiscoveryCollectionDetail(collection = collection, onBack = { selectedCollection = null })
+    SharedTransitionLayout(Modifier.fillMaxSize()) {
+        val sharedScope = this
+        // ⚠ hero push 时旧页也左移让出 1/3（与首页/发现同款）：与推入页走同一条弹簧
+        //   （[meloXPageRedirectSpec]），两页严格互补，观感与「无 hero 的整页推入」一致，
+        //   区别只是多一个封面 morph。旧页位移走 [meloXPageRecede] 的**布局期** place：
+        //   共享元素 morph 的 bounds 取自 lookahead 布局坐标，走 graphicsLayer 封面不跟随、半路脱开。
+        val providerRecede = remember { Animatable(0f) }
+        val providerCollectionOpen = selectedCollection != null
+        LaunchedEffect(providerCollectionOpen) {
+            val target = if (providerCollectionOpen) 1f else 0f
+            if (providerRecede.value == target) return@LaunchedEffect
+            providerRecede.animateTo(target, meloXPageRedirectSpec())
+        }
+        MeloXExploreLayout(
+            modifier = Modifier.fillMaxSize().meloXPageRecede { providerRecede.value },
+            categories = categories,
+            category = category,
+            onCategory = { category = it },
+            collections = collections,
+            refreshing = refreshing,
+            error = if (home == null) "${source.displayName} 暂未提供发现数据" else error,
+            onRefresh = ::refresh,
+            showPodcast = false,
+            onCollection = {
+                selectedCollection = it
+                overlayCollection = it
+            },
+            sharedTransitionScope = sharedScope,
+        )
+        HomeOverlayPage(
+            shown = selectedCollection != null,
+            onBack = { selectedCollection = null },
+        ) {
+            // 取 overlayCollection（返回时不清），退场过渡期间详情仍被组合。
+            overlayCollection?.let { collection ->
+                DiscoveryCollectionDetail(
+                    collection = collection,
+                    onBack = { selectedCollection = null },
+                    sharedTransitionScope = sharedScope,
+                    animatedVisibilityScope = this,
+                    artworkSharedKey = discoveryCollectionArtworkSharedKey(collection),
+                )
+            }
         }
     }
 }
@@ -1122,17 +1166,139 @@ private fun MeloXExploreLayout(
     error: String?,
     onRefresh: () -> Unit,
     showPodcast: Boolean,
-    onCollection: (DiscoveryCollection, String) -> Unit,
+    onCollection: (DiscoveryCollection) -> Unit,
     selectedCollectionKey: String? = null,
     sharedTransitionScope: SharedTransitionScope? = null,
+    modifier: Modifier = Modifier,
 ) {
-    Column(Modifier.fillMaxSize().statusBarsPadding().padding(top = 18.dp)) {
-        MeloXIosTopBar(
+    val density = LocalDensity.current
+    val collapseDistancePx = with(density) { EXPLORE_COLLAPSE_SCROLL.toPx() }
+    // 折叠进度直接由网格自身的滚动状态驱动（与 MeloXPinnedListPage 同款，最稳）：
+    // 首屏内随 firstVisibleItemScrollOffset 从 0→1 收缩；越过首屏（index>0）后强制保持
+    // 折叠态，绝不回弹，也不会因嵌套滚动错位导致头部与内容脱节而透出内容。
+    val gridState = rememberLazyGridState()
+    val collapse by remember(gridState, collapseDistancePx) {
+        derivedStateOf {
+            if (showPodcast) 0f
+            else if (gridState.firstVisibleItemIndex > 0) 1f
+            else (gridState.firstVisibleItemScrollOffset / collapseDistancePx).coerceIn(0f, 1f)
+        }
+    }
+    val headerHeight = lerp(EXPLORE_HEADER_EXPANDED, EXPLORE_HEADER_COLLAPSED, collapse)
+    // 指示器状态提到这一层：网格分支要自绘指示器并把它整体下移一个头部高度。
+    val refreshState = rememberPullToRefreshState()
+
+    // ⚠ 稳定值：可见式 `statusBarsPadding()` 在沉浸 `hide()`/`show()` 时会 0↔真实高度跳
+    //   ⇒ 发现页整页跟着上下移。改吃稳定值 ⇒ 位置恒定。
+    val exploreStatusBarTop = rememberMeloXStableStatusBarHeight()
+    Box(modifier.fillMaxSize().padding(top = exploreStatusBarTop)) {
+        // 内容滚动区：顶部预留 EXPANDED 高度，使首屏内容从头部之下开始。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(top = if (showPodcast) EXPLORE_HEADER_EXPANDED else 0.dp),
+        ) {
+            if (showPodcast) {
+                MeloXPodcastScreen()
+            } else {
+                PullToRefreshBox(
+                    isRefreshing = refreshing,
+                    onRefresh = onRefresh,
+                    modifier = Modifier.fillMaxSize(),
+                    state = refreshState,
+                    // ⚠默认指示器画在 PullToRefreshBox 的「顶边」：IndicatorBox 的
+                    // translationY 从 -40dp 滑到 0，即全程贴在容器上沿。而本页顶部是一块
+                    // 不透明的折叠头部覆盖层（zIndex 1f）。网格分支不像播客分支那样给内容
+                    // 留 EXPLORE_HEADER_EXPANDED 顶内边距（网格靠 contentPadding 让内容从
+                    // 头部下方开始），于是指示器被头部整块盖住 —— 下拉时屏幕上看不到任何
+                    // 反馈（内容本身也不位移），用户只能读成「下拉没刷新」。
+                    // 对策：整体下移一个头部高度，让它从头部下缘滑出来。
+                    indicator = {
+                        PullToRefreshDefaults.Indicator(
+                            modifier = Modifier.align(Alignment.TopCenter).offset(y = headerHeight),
+                            state = refreshState,
+                            isRefreshing = refreshing,
+                        )
+                    },
+                ) {
+                    if (collections.isEmpty()) {
+                        EmptyOrLoading(refreshing, error)
+                    } else {
+                        CollectionGrid(
+                            values = collections,
+                            onSelect = onCollection,
+                            selectedCollectionKey = selectedCollectionKey,
+                            sharedTransitionScope = sharedTransitionScope,
+                            state = gridState,
+                            contentTopPadding = EXPLORE_HEADER_EXPANDED,
+                        )
+                    }
+                }
+            }
+        }
+
+        // 折叠头部（吸顶覆盖层，不透明背景，内容永透不出）。
+        ExploreCollapsingHeader(
             title = stringResource(R.string.tab_explore),
-            // Explore is not inside a horizontally padded LazyColumn like
-            // Home, so give the large title the same 20dp safe inset.
-            contentPadding = PaddingValues(horizontal = 20.dp),
+            categories = categories,
+            category = category,
+            onCategory = onCategory,
+            collapse = collapse,
+            modifier = Modifier
+                .fillMaxWidth()
+                .zIndex(1f),
         )
+    }
+}
+
+@Composable
+private fun ExploreCollapsingHeader(
+    title: String,
+    categories: List<String>,
+    category: String,
+    onCategory: (String) -> Unit,
+    collapse: Float,
+    modifier: Modifier = Modifier,
+) {
+    // 标题字号 34sp→24sp 等效缩放：1 → 24/34，手算线性插值（避免 Float 版 lerp 重载缺失）。
+    val titleScale = 1f + (24f / 34f - 1f) * collapse
+    Column(
+        modifier
+            .fillMaxWidth()
+            .height(lerp(EXPLORE_HEADER_EXPANDED, EXPLORE_HEADER_COLLAPSED, collapse))
+            // 关键：背景恒不透明（页面底色），内容永远被挡在头部之下 → 绝不透出
+            .background(MaterialTheme.colorScheme.background)
+            .zIndex(1f),
+    ) {
+        Spacer(Modifier.height(lerp(ExploreHeaderTopInsetExpanded, ExploreHeaderTopInsetCollapsed, collapse)))
+        // 标题块：高度随折叠收缩；字号固定，仅用 graphicsLayer 缩放（绘制期，不触发文字重排版）。
+        Box(
+            Modifier
+                .height(lerp(ExploreTitleBlockExpanded, ExploreTitleBlockCollapsed, collapse))
+                .padding(horizontal = 20.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                text = title,
+                fontSize = 34.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                // includeFontPadding=false + 显式 lineHeight：让字形盒子紧贴可见字形，
+                // 消除 Compose 默认字体度量把「发现」下缘（descender）吃掉的裁切。
+                lineHeight = 44.sp,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
+                modifier = Modifier.graphicsLayer {
+                    scaleX = titleScale
+                    scaleY = titleScale
+                    transformOrigin = TransformOrigin(0f, 0.5f)
+                    alpha = 1f - 0.15f * collapse
+                },
+            )
+        }
+        Spacer(Modifier.height(lerp(ExploreTitleGapExpanded, ExploreTitleGapCollapsed, collapse)))
+        // 标签行：随头部高度收缩自然上移吸顶（仅依赖外层高度变化，自身布局固定，不抽搐）。
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1150,25 +1316,10 @@ private fun MeloXExploreLayout(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                 ) {
                     Text(
-                        text = exploreCategoryLabel(item),
+                        text = item.removeSuffix("歌单"),
                         color = if (category == item) Color.White else MaterialTheme.colorScheme.onBackground,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                    )
-                }
-            }
-        }
-        Box(modifier = Modifier.weight(1f)) {
-            if (showPodcast) {
-                MeloXPodcastScreen()
-            } else {
-                PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
-                    if (collections.isEmpty()) EmptyOrLoading(refreshing, error) else CollectionGrid(
-                        values = collections,
-                        slot = category,
-                        onSelect = onCollection,
-                        selectedCollectionKey = selectedCollectionKey,
-                        sharedTransitionScope = sharedTransitionScope,
                     )
                 }
             }
@@ -1200,18 +1351,58 @@ private fun SectionTitle(title: String, trailing: String, modifier: Modifier = M
  * 其余卡片恒可见（首次组合不播动画），只有被点开的那张有 exit，
  * 封面才会从卡片位置连续地 morph 到详情 hero（官方 AnimatedVisibility 范式）。
  */
+/**
+ * 卡片 exit 过渡的**总时长**（2026-10-02 用户报「退出来时找不到共享元素」「位置偶尔会变化」）。
+ *
+ * ⚠⚠⚠ **必须远长于 hero morph 的 350ms**：`AnimatedVisibility` 在 exit 结束的那一刻会把内容
+ * **从组合中移除**。若 exit 与 morph 同期结束，退出时那张卡片是**重新组合**出来的 ——
+ * 布局要等一帧才确定 ⇒ sharedElement 的目标 bounds 在第一帧是错的 ⇒ 既找不到共享元素，
+ * 位置也会漂一下。这两个症状是**同一个原因**。
+ *
+ * 手法：alpha 用 [keyframesSpec] 在前 350ms 就降到 0（**观感不变**），只把 transition 的
+ * 总时长撑到本值 ⇒ 卡片在这段时间里始终留在组合中，morph 的两端都不会缺。
+ */
+private const val MeloXCardExitHoldMillis = 1200
+
 @Composable
 private fun DiscoveryCardVisibility(
     collection: DiscoveryCollection,
-    slot: String,
-    selectedCollectionKey: String?,
+    selectedCollectionKey: String? = null,
     modifier: Modifier = Modifier,
     content: @Composable AnimatedVisibilityScope.() -> Unit,
 ) {
     AnimatedVisibility(
-        visible = "$slot:${collection.key}" != selectedCollectionKey,
-        enter = fadeIn() + scaleIn(),
-        exit = fadeOut() + scaleOut(),
+        visible = collection.key != selectedCollectionKey,
+        // ⚠⚠ **`enter` 必须是 `None`；`exit` 必须与 hero morph 同拍**
+        //   （用户反复报「一个卡片没完全退出时点击另一个卡片打开，会残留上一个卡片」，试过
+        //   `fadeIn` —— **没修复**，因为只要 enter 带任何动画就还会露半透明旧卡片）。
+        //   · 为什么 None：sharedElement 的 morph 窗口由**详情端**的 exit 过渡提供
+        //     （两端只要有一端在 transition 里就 morph），不依赖卡片端自己的 enter 时长；卡片端只要
+        //     「就地出现」即可（= iOS 行为），也不需要任何手势 / 点击锁（用户明确「最好不是阉割并行手势」）。
+        //   · ⚠ 旧卡片「并行连点 A→B」残留的根因：可见性由单值 `selectedCollection?.key` 驱动，
+        //     切到 B 后 `collection.key != B.key` 让 A 误判「回来」⇒ 就地瞬现、露在新页后面。
+        //     enter=None 已消掉「半透明旧卡」，但瞬间不透明旧卡仍在 —— 这是已知次要现象，暂不额外处理
+        //     （曾试过「隐藏集合累加」「延迟清标志」两种方案，前者仍停留过久、后者引入变黑+断 morph，均撤销）。
+        //   · ⚠⚠ `exit` 绝不能留默认弹簧：名义时长（≈400ms、实际收敛不可控）与 morph 的
+        //     `tween(350ms)` **不同拍** ⇒ 卡片会在封面飞回来之前就被 dispose、失去 morph 目标 ⇒
+        //     封面停半空 / 落点与卡片错开。统一成同拍 tween，exit 结束那一刻 morph 正好精确到位。
+        //   ⚠ 首次组合本来就不播 enter ⇒ 首帧观感不变；打开方向走 exit，观感不变。
+        enter = EnterTransition.None,
+        // ⚠⚠ exit 的**总时长** = [MeloXCardExitHoldMillis]（1200ms），远超 morph 的 350ms ——
+        //   目的不是让动画变慢，而是让卡片在 morph 全程都留在组合里（理由见该常量 KDoc）。
+        //   alpha 用 keyframes 在前 350ms 就收完 ⇒ **观感与之前完全一致**；scaleOut 同样 350ms。
+        exit = fadeOut(
+            tween(
+                durationMillis = MeloXCardExitHoldMillis,
+                // ⚠ alpha 在前 350ms（= 1200 × 0.2917）内**按原曲线**收完，之后恒为 0 ——
+                //   观感与 350ms 版本逐帧一致；多出来的 850ms 只是为了把 transition 的总时长
+                //   撑住，让卡片留在组合中（`keyframesSpec` 在本项目 Compose 版本不可用，
+                //   `fadeOut` 也没有 `keyframes` 参数，故用自定义 Easing 等效实现）。
+                easing = Easing { f ->
+                    FastOutSlowInEasing.transform((f / 0.2917f).coerceAtMost(1f))
+                },
+            ),
+        ) + scaleOut(tween(MeloXMotion.PageTransitionMillis)),
         modifier = modifier,
         label = "discovery-card-${collection.key}",
         content = content,
@@ -1221,8 +1412,7 @@ private fun DiscoveryCardVisibility(
 @Composable
 private fun CollectionRow(
     values: List<DiscoveryCollection>,
-    slot: String,
-    onSelect: (DiscoveryCollection, String) -> Unit,
+    onSelect: (DiscoveryCollection) -> Unit,
     selectedCollectionKey: String? = null,
     sharedTransitionScope: SharedTransitionScope? = null,
 ) {
@@ -1230,20 +1420,34 @@ private fun CollectionRow(
         contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        itemsIndexed(values, key = { _, value -> value.key }) { index, collection ->
-            DiscoveryCardVisibility(
-                collection = collection,
-                slot = "$slot-$index",
-                selectedCollectionKey = selectedCollectionKey,
+            itemsIndexed(values, key = { _, value -> value.key }) { index, collection ->
+                // ⚠⚠⚠ 占位尺寸（宽 + 高）必须打在 `AnimatedVisibility` **外面这一层**（空的 `Box`），
+            //   不能只挂在 `CollectionCard` 内容上：exit 结束、内容 dispose 后，挂在**内容**上的
+            //   尺寸会跟着消失 ⇒ 该 item 宽/高塌成 0 ⇒ 后面卡片左移、anchor 跳变、下方 section
+            //   上移一个卡片高（用户报「退出时卡片右移」「从右往左第三张退出时跑到最右去了」
+            //   「下方内容跳一下」）。打在包裹层上，占位就与**内容生命周期解耦**：dispose 后该
+            //   item 仍占 174×254dp（254 = 8 内边距 + 174 封面 + 7 + 19×2 两行标题 + 3 + 14 播放量
+            //   + 8 内边距，即两行标题时也够、播放量不再溢出；详见 `CollectionCard`）。⚠ 宽按首卡 246
+            //   / 其余 174 区分（与旧布局一致）；高用固定 254 占位，不**硬填** `CollectionCard` 的
+            //   内容高度（标题 `maxLines=2` 行数不固定，硬填会裁字）。
+            Box(
+                Modifier
+                    .animateItem()
+                    .size(if (index == 0) 246.dp else 174.dp, 254.dp),
             ) {
-                CollectionCard(
-                    value = collection,
-                    modifier = Modifier.width(if (index == 0) 246.dp else 174.dp),
-                    onClick = { onSelect(collection, "$slot-$index") },
-                    sharedTransitionScope = sharedTransitionScope,
-                    animatedVisibilityScope = this,
-                    artworkSlot = "$slot-$index",
-                )
+                DiscoveryCardVisibility(
+                    collection = collection,
+                    selectedCollectionKey = selectedCollectionKey,
+                    modifier = Modifier.size(if (index == 0) 246.dp else 174.dp, 254.dp),
+                ) {
+                        CollectionCard(
+                            value = collection,
+                            modifier = Modifier,
+                            onClick = { onSelect(collection) },
+                        sharedTransitionScope = sharedTransitionScope,
+                        animatedVisibilityScope = this,
+                    )
+                }
             }
         }
     }
@@ -1270,49 +1474,57 @@ private fun ThreeLineSongCarousel(values: List<DiscoveryTrack>, onSelect: (Disco
 @Composable
 private fun CollectionGrid(
     values: List<DiscoveryCollection>,
-    slot: String,
-    onSelect: (DiscoveryCollection, String) -> Unit,
+    onSelect: (DiscoveryCollection) -> Unit,
     selectedCollectionKey: String? = null,
     sharedTransitionScope: SharedTransitionScope? = null,
+    state: LazyGridState = rememberLazyGridState(),
+    contentTopPadding: Dp = 0.dp,
 ) {
     val window = rememberMeloXWindowInfo()
     LazyVerticalGrid(
+        state = state,
         columns = GridCells.Fixed(window.gridColumns),
-        contentPadding = PaddingValues(start = window.gutter, end = window.gutter, bottom = 146.dp),
+        contentPadding = PaddingValues(start = window.gutter, end = window.gutter, top = contentTopPadding, bottom = 146.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         values.firstOrNull()?.let { hero ->
             item(key = "hero-${hero.key}", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
-                DiscoveryCardVisibility(
-                    collection = hero,
-                    slot = "$slot-hero",
-                    selectedCollectionKey = selectedCollectionKey,
-                ) {
-                    HeroCollectionCard(
-                        value = hero,
-                        onClick = { onSelect(hero, "$slot-hero") },
-                        sharedTransitionScope = sharedTransitionScope,
-                        animatedVisibilityScope = this,
-                        artworkSlot = "$slot-hero",
-                    )
+                // ⚠ 同 `CollectionRow`：占位高度打在 `AnimatedVisibility` 外面的 `Box` 上，
+                //   避免 exit dispose 后该 item 高度塌成 0、整排 section 上移。231dp 与标准卡一致。
+                Box(Modifier.animateItem().fillMaxWidth().height(231.dp)) {
+                    DiscoveryCardVisibility(
+                        collection = hero,
+                        selectedCollectionKey = selectedCollectionKey,
+                        modifier = Modifier.fillMaxWidth().height(231.dp),
+                    ) {
+                        HeroCollectionCard(
+                            value = hero,
+                            onClick = { onSelect(hero) },
+                            sharedTransitionScope = sharedTransitionScope,
+                            animatedVisibilityScope = this,
+                        )
+                    }
                 }
             }
         }
         items(values.drop(1), key = DiscoveryCollection::key) { collection ->
-            DiscoveryCardVisibility(
-                collection = collection,
-                slot = "$slot-${collection.key}",
-                selectedCollectionKey = selectedCollectionKey,
-            ) {
-                CollectionCard(
-                    value = collection,
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { onSelect(collection, "$slot-${collection.key}") },
-                    sharedTransitionScope = sharedTransitionScope,
-                    animatedVisibilityScope = this,
-                    artworkSlot = "$slot-${collection.key}",
-                )
+            // ⚠ 同 `CollectionRow`：占位高度打在 `AnimatedVisibility` 外面的 `Box` 上，
+            //   exit dispose 后该 item 仍占 254dp，下方 section 不再上跳（详见 `CollectionRow` 注释）。
+                Box(Modifier.animateItem().fillMaxWidth().height(254.dp)) {
+                DiscoveryCardVisibility(
+                    collection = collection,
+                    selectedCollectionKey = selectedCollectionKey,
+                    modifier = Modifier.fillMaxWidth().height(254.dp),
+                ) {
+                    CollectionCard(
+                        value = collection,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onSelect(collection) },
+                        sharedTransitionScope = sharedTransitionScope,
+                        animatedVisibilityScope = this,
+                    )
+                }
             }
         }
     }
@@ -1324,7 +1536,6 @@ private fun HeroCollectionCard(
     onClick: () -> Unit,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
-    artworkSlot: String = "hero",
 ) {
     Box(
         Modifier
@@ -1341,7 +1552,7 @@ private fun HeroCollectionCard(
                 .meloXDiscoverySharedArtwork(
                     sharedTransitionScope = sharedTransitionScope,
                     animatedVisibilityScope = animatedVisibilityScope,
-                    key = discoveryCollectionArtworkSharedKey(value, artworkSlot),
+                    key = discoveryCollectionArtworkSharedKey(value),
                 )
                 .fillMaxSize(),
         )
@@ -1361,11 +1572,12 @@ private fun CollectionCard(
     onClick: () -> Unit,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
-    artworkSlot: String = "card",
 ) {
     Column(
         modifier
             .clickable(onClick = onClick)
+            .fillMaxWidth()
+            .fillMaxHeight()
             .padding(8.dp),
     ) {
         val artworkShape = RoundedCornerShape(14.dp)
@@ -1377,7 +1589,7 @@ private fun CollectionCard(
                 .meloXDiscoverySharedArtwork(
                     sharedTransitionScope = sharedTransitionScope,
                     animatedVisibilityScope = animatedVisibilityScope,
-                    key = discoveryCollectionArtworkSharedKey(value, artworkSlot),
+                    key = discoveryCollectionArtworkSharedKey(value),
                 )
                 .fillMaxWidth()
                 .height(174.dp)
@@ -1390,24 +1602,36 @@ private fun CollectionCard(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        Text(
-            value.title,
-            modifier = Modifier.padding(top = 7.dp),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            fontSize = 15.sp,
-            lineHeight = 19.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        if (MeloXSettingsRuntime.showPlaylistPlayCount && value.playCount > 0L) {
-            val countContext = LocalContext.current
-            Text(stringResource(R.string.home_play_count, compactCount(countContext, value.playCount)), color = MaterialTheme.colorScheme.onBackground.copy(alpha = .42f), fontSize = 11.sp)
+        // 标题 + 播放量占满封面下的剩余高度：播放量用 `weight` 钉在卡片底部，
+        // 标题最多两行（超出在自身内省略号）。这样两行标题时播放量也不会溢出到卡片外、
+        // 被下一行卡片盖住（修复「播放量行下半被裁切」）。外层格子高度已从 231 提到
+        // 254，给两行标题 + 播放量留出整块空间，内容不再超出格子。
+        Column(Modifier.weight(1f)) {
+            Text(
+                value.title,
+                modifier = Modifier.padding(top = 7.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 15.sp,
+                lineHeight = 19.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            if (MeloXSettingsRuntime.showPlaylistPlayCount && value.playCount > 0L) {
+                Text(
+                    "${compactCount(value.playCount)} 次播放",
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = .42f),
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+            }
         }
     }
 }
 
-private fun discoveryCollectionArtworkSharedKey(collection: DiscoveryCollection, slot: String): String =
-    "discovery-collection-artwork-$slot-${collection.key}"
+private fun discoveryCollectionArtworkSharedKey(collection: DiscoveryCollection): String =
+    "discovery-collection-artwork-${collection.key}"
 
 /**
  * 把列表卡片封面挂到宿主顶层的 SharedTransitionLayout 上，使首页/发现页
@@ -1428,6 +1652,9 @@ private fun Modifier.meloXDiscoverySharedArtwork(
         this@meloXDiscoverySharedArtwork.sharedElement(
             sharedContentState = rememberSharedContentState(key = key),
             animatedVisibilityScope = animatedVisibilityScope,
+            // ⚠ 必须显式传：默认是渐近弹簧，会「追动靶」并在整页滑入结束的瞬间被硬切补齐
+            //   —— 用户报的「最后一帧横移调整位置」。见 [MeloXPageBoundsTransform] 的完整推导。
+            boundsTransform = MeloXPageBoundsTransform,
             // 过渡期间封面留在共享 overlay 层，避免被列表/详情的裁剪吃掉。
             renderInOverlayDuringTransition = true,
             zIndexInOverlay = 1f,
@@ -1435,9 +1662,9 @@ private fun Modifier.meloXDiscoverySharedArtwork(
     }
 }
 
-private fun compactCount(context: android.content.Context, value: Long): String = when {
-    value >= 100_000_000L -> context.getString(R.string.home_count_hundred_million, value / 100_000_000.0)
-    value >= 10_000L -> context.getString(R.string.home_count_ten_thousand, value / 10_000.0)
+private fun compactCount(value: Long): String = when {
+    value >= 100_000_000L -> "%.1f亿".format(value / 100_000_000.0)
+    value >= 10_000L -> "%.1f万".format(value / 10_000.0)
     else -> value.toString()
 }
 
@@ -1511,22 +1738,29 @@ private fun DiscoveryCollectionDetail(
                 val ranking = (collection as DiscoveryCollection.ProviderRanking).ranking
                 val provider = MeloXMusicProviders.create(context).require(ranking.id.source)
                 val capability = provider as? RankingCapability
-                    ?: throw IllegalStateException(context.getString(R.string.home_ranking_unavailable, ranking.id.source.displayName))
+                    ?: throw IllegalStateException("${ranking.id.source.displayName} 当前不提供排行榜详情")
                 capability.rankingTracks(ranking, page = 1, pageSize = 150)
                     .items.map { DiscoveryTrack.Provider(it) }
             }
         }.onSuccess { tracks = it }
-            .onFailure { error = it.message ?: context.getString(R.string.home_content_failed) }
+            .onFailure { error = it.message ?: "内容加载失败" }
     }
 
+// 状态栏避让改放 contentPadding（打在 LazyColumn 的 modifier 上会把内容裁在状态栏下缘）
+    val statusBarTop = rememberMeloXStableStatusBarHeight()
     // ProviderRanking is the only detail that does not delegate to
     // MeloXUnifiedPlaylistDetailScreen (which paints an opaque background), and the
     // overlay host is intentionally transparent so the gesture-back slide reveals
     // the page underneath. Without a background here the chart content renders
     // straight on top of the home/discovery page.
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 146.dp),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        contentPadding = PaddingValues(
+            start = 20.dp,
+            end = 20.dp,
+            top = 18.dp + statusBarTop,
+            bottom = 146.dp,
+        ),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -1609,8 +1843,18 @@ private fun playDiscoveryQueue(
 
 @Composable
 private fun EmptyOrLoading(loading: Boolean, error: String?) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        if (loading) CircularProgressIndicator(color = Accent)
-        else Text(error ?: stringResource(R.string.melox_state_empty), color = MaterialTheme.colorScheme.onBackground.copy(alpha = .5f))
+    // ⚠必须用「可滚动的」LazyColumn，不能是纯 Box：PullToRefreshBox 只能从子滚动容器的
+    // overscroll 里拿到下拉手势，纯 Box 完全不可滚动 ⇒ 空态/失败态下拉彻底失效，用户
+    // 连「拉一下重试」都做不到（看起来就是「下拉没反应」）。内容不足一屏时 LazyColumn
+    // 仍会把多余的滚动量交给父级，所以这只是恢复可下拉性，视觉与原来一致（居中）。
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        item {
+            if (loading) CircularProgressIndicator(color = Accent)
+            else Text(error ?: stringResource(R.string.melox_state_empty), color = MaterialTheme.colorScheme.onBackground.copy(alpha = .5f))
+        }
     }
 }

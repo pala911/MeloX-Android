@@ -1,7 +1,12 @@
 package com.lladlam.melox.core.lyrics
 
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -30,14 +35,36 @@ class AmlldbLyricsClient(
         TtmlLyricsParser.parse(body, script)
     }
 
-    private fun fetch(query: AmlldbLyricQuery): String? {
-        runCatching { fetchOfficial(query) }.getOrNull()?.let { return it }
-        query.rawPaths().forEach { path ->
-            rawMirrors.forEach { mirror ->
-                runCatching { fetchRaw("$mirror$path") }.getOrNull()?.let { return it }
+    /**
+     * Races the official API together with every reachable raw mirror and keeps
+     * the first usable TTML. Mirrors flap in and out of service, so a serial
+     * fallback either stalls on dead hosts or lands on a slow one; racing bounds
+     * the wait by the fastest healthy source instead of the sum of the failing
+     * ones.
+     *
+     * Runs on [raceScope] rather than the caller's scope on purpose: see its
+     * docs. The result channel is closed once every attempt has settled, so a
+     * total miss resolves to `null` instead of suspending forever.
+     */
+    private suspend fun fetch(query: AmlldbLyricQuery): String? {
+        val attempts = buildList<() -> String?> {
+            query.rawPaths().forEach { path ->
+                rawMirrors.forEach { mirror -> add { fetchRaw(mirror + path) } }
+            }
+            add { fetchOfficial(query) }
+        }
+        if (attempts.isEmpty()) return null
+
+        val result = Channel<String>(Channel.CONFLATED)
+        val settled = AtomicInteger(0)
+        attempts.forEach { block ->
+            raceScope.launch {
+                runCatching { block() }.getOrNull()?.let { result.trySend(it) }
+                if (settled.incrementAndGet() == attempts.size) result.close()
             }
         }
-        return null
+
+        return result.receiveCatching().getOrNull()
     }
 
     private fun fetchOfficial(query: AmlldbLyricQuery): String? {
@@ -77,6 +104,16 @@ class AmlldbLyricsClient(
         body.isNotBlank() && body.trim() != "歌词不存在" && body.contains("http://www.w3.org/ns/ttml")
 
     private companion object {
+        /**
+         * Owns the racing lookups, deliberately detached from the caller. The
+         * lyric clients block on OkHttp and ignore coroutine cancellation, so a
+         * structured scope would make every caller wait for the slowest losing
+         * request and defeat the race. The leaked work is bounded: each request
+         * is a single HTTP call that always terminates, and the caller stops
+         * waiting as soon as one succeeds.
+         */
+        val raceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         val rawMirrors = listOf(
             "https://amll.mirror.dimeta.top/api/db/",
             "https://amll-ttml-db.gbclstudio.cn/",

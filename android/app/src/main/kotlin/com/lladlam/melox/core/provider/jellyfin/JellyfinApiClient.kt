@@ -137,20 +137,23 @@ class JellyfinApiClient(
 private object PrivateCleartextPolicy {
     fun allow(host: String) {
         if (NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted(host)) return
-        val holder = Class.forName("libcore.net.NetworkSecurityPolicy")
-        val instance = holder.getDeclaredField("INSTANCE").apply { isAccessible = true }
-        val previous = instance.get(null)
-        val open = Class.forName("android.security.FrameworkNetworkSecurityPolicy")
-            .getConstructor(Boolean::class.javaPrimitiveType)
-            .newInstance(true)
-        instance.set(null, open)
-        try {
+        // ⚠ 跨设备崩溃加固（2026-10-08）：下面这段反射走隐藏内部类
+        //   `libcore.net.NetworkSecurityPolicy` / `android.security.FrameworkNetworkSecurityPolicy`，
+        //   Android 9+（落在 minSdk=26 范围内）已限制非 SDK 反射，任一环节都会抛异常。
+        //   包进 runCatching：失败只是「本次不走明文例外」——该 LAN 连接可能连不上，
+        //   但绝不能把整个请求炸成崩溃。LAN Jellyfin 这类功能是用户主动开启的，
+        //   在受限 ROM 上静默降级比闪退更合理。
+        runCatching {
+            val holder = Class.forName("libcore.net.NetworkSecurityPolicy")
+            val instance = holder.getDeclaredField("INSTANCE").apply { isAccessible = true }
+            val previous = instance.get(null)
+            val open = Class.forName("android.security.FrameworkNetworkSecurityPolicy")
+                .getConstructor(Boolean::class.javaPrimitiveType)
+                .newInstance(true)
+            instance.set(null, open)
             if (!NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted(host)) {
                 instance.set(null, previous)
             }
-        } catch (error: Throwable) {
-            instance.set(null, previous)
-            throw error
         }
     }
 }

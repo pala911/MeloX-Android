@@ -11,6 +11,7 @@ import org.json.JSONObject
 /** Persistent metadata cache with one network refresh per cold-start process. */
 class NeteaseLibraryCache(context: Context) {
     private val directory = File(context.applicationContext.filesDir, "netease_library_cache")
+    internal val cacheDir: File get() = directory
 
     suspend fun loadSnapshot(userId: Long): NeteaseLibrarySnapshot? = readJson(
         file = File(directory, "library_$userId.json"),
@@ -105,28 +106,40 @@ class NeteaseLibraryCache(context: Context) {
         private val refreshedHomes = mutableSetOf<String>()
         private val refreshedExplore = mutableSetOf<String>()
 
-        /** Returns true only for the first automatic refresh in this app process. */
+        // Cold-start refresh gate: returns true only for the first automatic refresh
+        // in this process AND only when the on-disk cache is stale. This stops the app
+        // from re-pulling the network every time the system kills and revives it while
+        // backgrounded (the "restart / reload on return" problem), while still refreshing
+        // genuinely stale data. FRESH_WINDOW_MS is a balance: short enough that returning
+        // from background never forces a reload, long enough that abandoned caches refresh.
         @Synchronized
-        fun beginLibraryColdStartRefresh(userId: Long): Boolean =
-            boundedAdd(refreshedLibraries, userId)
-
-        /** Each opened playlist is refreshed at most once in this app process. */
-        @Synchronized
-        fun beginPlaylistColdStartRefresh(playlistId: Long): Boolean =
-            boundedAdd(refreshedPlaylists, playlistId)
-
-        @Synchronized
-        fun beginHomeColdStartRefresh(cacheKey: String): Boolean = boundedAdd(refreshedHomes, cacheKey)
-
-        @Synchronized
-        fun beginExploreColdStartRefresh(category: String): Boolean = boundedAdd(refreshedExplore, category)
-
-        private fun <T> boundedAdd(values: MutableSet<T>, value: T): Boolean {
-            if (!values.add(value)) return false
-            while (values.size > MAX_REFRESH_KEYS) values.remove(values.first())
-            return true
+        fun beginLibraryColdStartRefresh(userId: Long, directory: File): Boolean {
+            if (!refreshedLibraries.add(userId)) return false
+            return isCacheStale(File(directory, "library_$userId.json"))
         }
 
+        @Synchronized
+        fun beginPlaylistColdStartRefresh(playlistId: Long, directory: File): Boolean {
+            if (!refreshedPlaylists.add(playlistId)) return false
+            return isCacheStale(File(directory, "playlist_$playlistId.json"))
+        }
+
+        @Synchronized
+        fun beginHomeColdStartRefresh(cacheKey: String, directory: File): Boolean {
+            if (!refreshedHomes.add(cacheKey)) return false
+            return isCacheStale(File(directory, "home_${safeCacheKey(cacheKey)}.json"))
+        }
+
+        @Synchronized
+        fun beginExploreColdStartRefresh(category: String, directory: File): Boolean {
+            if (!refreshedExplore.add(category)) return false
+            return isCacheStale(File(directory, "explore_${category.hashCode()}.json"))
+        }
+
+        private fun isCacheStale(file: File): Boolean =
+            !(file.isFile && System.currentTimeMillis() - file.lastModified() < FRESH_WINDOW_MS)
+
+        private const val FRESH_WINDOW_MS = 30L * 60L * 1000L
         private const val MAX_CACHE_FILES = 128
         private const val MAX_CACHE_BYTES = 32L * 1024L * 1024L
         private const val MAX_CACHE_AGE_MS = 30L * 24L * 60L * 60L * 1_000L

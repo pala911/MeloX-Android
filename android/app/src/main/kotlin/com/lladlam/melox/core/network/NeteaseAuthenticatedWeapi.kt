@@ -36,7 +36,10 @@ internal class NeteaseAuthenticatedWeapi(
     fun post(uri: String, data: JSONObject = JSONObject()): JSONObject {
         val rawCookie = cookieProvider()
         if (!NeteaseSessionStore.containsMusicU(rawCookie)) throw IOException("请先登录网易云音乐")
+        return postInternal(uri, data, rawCookie)
+    }
 
+    private fun postInternal(uri: String, data: JSONObject, rawCookie: String): JSONObject {
         var lastError: Throwable? = null
         repeat(3) { attempt ->
             try {
@@ -81,7 +84,8 @@ internal class NeteaseAuthenticatedWeapi(
                 throw IOException(
                     result.optString("message")
                         .ifBlank { result.optString("msg") }
-                        .ifBlank { "请求失败（$code）" },
+                        .ifBlank { "请求失败（$code）" } +
+                        " | ${body.take(300)}",
                 )
             }
             return result

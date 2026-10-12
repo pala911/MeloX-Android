@@ -198,12 +198,16 @@ class NeteaseCollectionDetailsClient(
                 artistsJson.optJSONObject(index)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add)
             }
         }.joinToString(" / ")
+        val artistId = if (artistsJson.length() > 0) artistsJson.optJSONObject(0)?.optLong("id")?.takeIf { it > 0 } else null
         val album = value.optJSONObject("al") ?: value.optJSONObject("album")
+        val albumId = album?.optLong("id")?.takeIf { it > 0 }
         return SearchSong(
             id = id,
             name = value.optString("name").ifBlank { "未知歌曲" },
             artists = artists.ifBlank { "未知歌手" },
             album = album?.optString("name").orEmpty(),
+            albumId = albumId,
+            artistId = artistId,
             artworkUrl = secure(
                 album?.optString("picUrl")?.takeIf(String::isNotBlank)
                     ?: album?.optString("blurPicUrl")?.takeIf(String::isNotBlank),

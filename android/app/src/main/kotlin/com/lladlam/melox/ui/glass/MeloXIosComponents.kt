@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,6 +40,13 @@ fun MeloXIosTopBar(
     contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp),
     navigation: (@Composable () -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {},
+    /**
+     * 标题字号。默认 [MeloXTypography.largeTitle]（34sp）—— 一级页面用。
+     *
+     * 深层级页面（如扫码登录）标题较长且不是页面主角，34sp 会显得过大并挤压返回键，
+     * 可降到 [MeloXTypography.title2]（22sp）。带默认值，已有调用点不受影响。
+     */
+    titleStyle: TextStyle = MeloXTypography.largeTitle,
 ) {
     Column(
         modifier = modifier
@@ -56,7 +64,7 @@ fun MeloXIosTopBar(
                 Text(
                     text = title,
                     modifier = Modifier.weight(1f).padding(start = 8.dp),
-                    style = MeloXTypography.largeTitle,
+                    style = titleStyle,
                     color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -73,7 +81,7 @@ fun MeloXIosTopBar(
             }
             Text(
                 text = title,
-                style = MeloXTypography.largeTitle,
+                style = titleStyle,
                 color = MaterialTheme.colorScheme.onBackground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

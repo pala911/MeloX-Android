@@ -18,6 +18,7 @@ object PlaybackTrackIdentity {
     const val ArtistExtra = "melox.track.artist"
     const val AlbumExtra = "melox.track.album"
     const val ArtworkExtra = "melox.track.artwork"
+    const val IsFavoriteExtra = "melox.track.is_favorite"
 
     fun encode(id: MusicResourceId): String =
         "$Prefix${id.source.storageValue}:${Uri.encode(id.value)}"

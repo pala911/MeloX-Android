@@ -40,6 +40,10 @@ import kotlinx.coroutines.launch
 class PublicInteractiveHighlight(
     private val animationScope: CoroutineScope,
     private val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset },
+    // 辉光强度（默认 = kyant0 官方原值）。底栏涂层厚（0.52）+ blur 仅 2dp，
+    // 官方 0.08/0.15 照上去几乎看不见（真机实测峰值仅 +67/255）⇒ 底栏调用点传更大的值。
+    private val panelGlowAlpha: Float = 0.08f,
+    private val focusGlowAlpha: Float = 0.15f,
 ) {
     private val pressSpec = spring<Float>(0.5f, 300f, 0.001f)
     private val positionSpec = spring(0.5f, 300f, Offset.VisibilityThreshold)
@@ -70,17 +74,17 @@ half4 main(float2 coord) {
         val progress = pressAnimation.value
         if (progress > 0f) {
             if (shader != null) {
-                drawRect(Color.White.copy(alpha = 0.08f * progress), blendMode = BlendMode.Plus)
+                drawRect(Color.White.copy(alpha = panelGlowAlpha * progress), blendMode = BlendMode.Plus)
                 shader.apply {
                     val focus = position(size, positionAnimation.value)
                     setFloatUniform("size", size.width, size.height)
-                    setColorUniform("color", Color.White.copy(alpha = 0.15f * progress))
+                    setColorUniform("color", Color.White.copy(alpha = focusGlowAlpha * progress))
                     setFloatUniform("radius", size.minDimension * 1.5f)
                     setFloatUniform("position", focus.x.fastCoerceIn(0f, size.width), focus.y.fastCoerceIn(0f, size.height))
                 }
                 drawRect(ShaderBrush(shader.asComposeShader()), blendMode = BlendMode.Plus)
             } else {
-                drawRect(Color.White.copy(alpha = 0.25f * progress), blendMode = BlendMode.Plus)
+                drawRect(Color.White.copy(alpha = (panelGlowAlpha + focusGlowAlpha) * progress), blendMode = BlendMode.Plus)
             }
         }
         drawContent()

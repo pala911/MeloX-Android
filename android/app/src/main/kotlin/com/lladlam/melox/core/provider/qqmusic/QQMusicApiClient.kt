@@ -192,6 +192,19 @@ class QQMusicApiClient(
         )
     }
 
+    /**
+     * RETIRED — do not wire this up again.
+     *
+     * `c.y.qq.com/soso/fcgi-bin/client_search_cp` answers HTTP 500 with an empty body
+     * for every request shape tested (2026-09-29: with/without UA, with/without Referer,
+     * bare URL, different keywords). This method is kept only so the legacy client stays
+     * self-contained; song search now goes through [QQMusicCatalogClient.searchTracks],
+     * which uses `musicu.fcg` / `SearchCgiService` instead.
+     */
+    @Deprecated(
+        message = "client_search_cp is dead upstream (HTTP 500); use QQMusicCatalogClient.searchTracks",
+        replaceWith = ReplaceWith("QQMusicCatalogClient(sessionProvider).searchTracks(query, page, pageSize)"),
+    )
     suspend fun searchSongs(
         query: String,
         page: Int = 1,
@@ -215,6 +228,14 @@ class QQMusicApiClient(
             referer = "https://y.qq.com",
             cookie = sessionProvider().cookie,
         )
+        val businessCode = response.optInt("code", 0)
+        if (businessCode != 0) {
+            throw IOException(
+                response.optString("message")
+                    .ifBlank { response.optString("msg") }
+                    .ifBlank { "QQ音乐搜索失败（$businessCode）" },
+            )
+        }
         val data = response.optJSONObject("data") ?: JSONObject()
         val songBlock = data.optJSONObject("song") ?: data
         val list = songBlock.optJSONArray("list") ?: JSONArray()

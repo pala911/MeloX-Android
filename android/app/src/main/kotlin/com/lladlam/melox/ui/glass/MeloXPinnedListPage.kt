@@ -8,16 +8,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -43,8 +39,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.layerBackdrop
+import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawPlainBackdrop
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.runtimeShaderEffect
 
@@ -81,14 +79,18 @@ fun MeloXPinnedListPage(
     }
     val pageBackdrop = rememberLayerBackdrop()
     val background = MaterialTheme.colorScheme.background
-    val statusBarHeight = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    // ⚠ 用**稳定**值（不随系统栏隐/显变化）。手动读 `WindowInsets.statusBars.asPaddingValues()`
+    //   **不受** `Modifier.consumeWindowInsets` 约束：沉浸 `hide()` 时归 0、退出 `show()` 时弹回
+    //   真实高度 ⇒ 内容顶部 padding 跳变 =「退出时页面下移」。见 rememberMeloXStableStatusBarHeight。
+    val statusBarHeight = rememberMeloXStableStatusBarHeight()
     val toolbarHeight = statusBarHeight + 62.dp
 
     Box(modifier.fillMaxSize().background(background)) {
         Box(Modifier.fillMaxSize().layerBackdrop(pageBackdrop)) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                // 触顶/触底橡胶回弹触感：列表到头、手指继续推时给一下轻 tick。
+                modifier = Modifier.fillMaxSize().meloXEdgeOverscrollHaptic(listState),
                 contentPadding = PaddingValues(
                     start = horizontalPadding,
                     top = toolbarHeight + 12.dp,
@@ -139,7 +141,9 @@ fun MeloXPinnedListPage(
         )
         CompositionLocalProvider(LocalMeloXBackdrop provides pageBackdrop) {
             Row(
-                Modifier.fillMaxWidth().statusBarsPadding().height(62.dp).padding(horizontal = 20.dp),
+                // ⚠ 与内容 padding 用**同一个**稳定值（不是 `statusBarsPadding()`），
+                //   否则工具栏吃可见值、内容吃稳定值 ⇒ 沉浸切换时两者错位、工具栏上下跳。
+                Modifier.fillMaxWidth().padding(top = statusBarHeight).height(62.dp).padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 MeloXGlassIconButton(MeloXSymbol.ChevronLeft, onNavigateBack, contentDescription = "返回")

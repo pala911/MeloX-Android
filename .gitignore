@@ -7,3 +7,8 @@ build/
 .gradle/
 *.hprof
 *.log
+
+# local-only artifacts
+.pr_worktree/
+keystore.properties
+.melox-build-count

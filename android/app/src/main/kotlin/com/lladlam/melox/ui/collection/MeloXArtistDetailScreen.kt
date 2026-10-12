@@ -1,13 +1,22 @@
 package com.lladlam.melox.ui.collection
 
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import kotlinx.coroutines.CancellationException
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,12 +26,24 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import com.lladlam.melox.ui.library.MeloXUnifiedAlbumDetailScreen
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,11 +58,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
 import com.lladlam.melox.R
 import com.lladlam.melox.core.account.NeteaseSessionStore
@@ -52,24 +73,24 @@ import com.lladlam.melox.core.network.NeteaseCollectionDetailsClient
 import com.lladlam.melox.core.network.NeteaseMusicOperationsClient
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.ui.MeloXBottomContentClearance
+import com.lladlam.melox.ui.glass.meloXLiquidButton
+import com.lladlam.melox.ui.glass.MeloXActionIcon
 import com.lladlam.melox.ui.glass.MeloXGlassButton
 import com.lladlam.melox.ui.glass.MeloXGlassButtonStyle
 import com.lladlam.melox.ui.glass.MeloXGlassIconButton
 import com.lladlam.melox.ui.glass.MeloXShapes
-import com.lladlam.melox.ui.glass.MeloXSwipeAction
-import com.lladlam.melox.ui.glass.MeloXSwipeActionRow
 import com.lladlam.melox.ui.glass.MeloXSymbol
+import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import com.lladlam.melox.ui.player.MeloXSongActionsOverlay
-import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
-import com.lladlam.melox.ui.settings.MeloXSwipeFullAction
+import com.lladlam.melox.ui.search.MeloXSearchLaunchBus
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MeloXArtistDetailScreen(id: Long, onBack: () -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext
     val client = remember(app) { NeteaseCollectionDetailsClient(cookieProvider = { NeteaseSessionStore.readCookie(app) }) }
-    val operations = remember(app) { NeteaseMusicOperationsClient(cookieProvider = { NeteaseSessionStore.readCookie(app) }) }
     val scope = rememberCoroutineScope()
     var detail by remember(id) { mutableStateOf<MeloXArtistDetail?>(null) }
     var loading by remember(id) { mutableStateOf(true) }
@@ -78,6 +99,51 @@ internal fun MeloXArtistDetailScreen(id: Long, onBack: () -> Unit) {
     var followBusy by remember(id) { mutableStateOf(false) }
     var selectedSong by remember(id) { mutableStateOf<SearchSong?>(null) }
     var allSongs by remember(id) { mutableStateOf<List<SearchSong>>(emptyList()) }
+    var showInfoSheet by remember { mutableStateOf(false) }
+    var expandedSection by remember { mutableStateOf<String?>(null) }
+    var selectedAlbumId by remember { mutableStateOf<Long?>(null) }
+
+    val expandedSectionBackProgress = remember { Animatable(0f) }
+    PredictiveBackHandler(enabled = expandedSection != null && selectedAlbumId == null) {
+        try {
+            it.collect { event -> expandedSectionBackProgress.snapTo(event.progress) }
+            expandedSectionBackProgress.animateTo(1f, tween(160))
+            expandedSection = null
+            expandedSectionBackProgress.snapTo(0f)
+        } catch (_: CancellationException) {
+            expandedSectionBackProgress.animateTo(0f)
+        }
+    }
+    BackHandler(enabled = expandedSection != null && selectedAlbumId == null) {
+        scope.launch {
+            if (expandedSectionBackProgress.value < 1f) {
+                expandedSectionBackProgress.animateTo(1f, tween(160))
+            }
+            expandedSection = null
+            expandedSectionBackProgress.snapTo(0f)
+        }
+    }
+
+    val selectedAlbumBackProgress = remember { Animatable(0f) }
+    PredictiveBackHandler(enabled = selectedAlbumId != null) {
+        try {
+            it.collect { event -> selectedAlbumBackProgress.snapTo(event.progress) }
+            selectedAlbumBackProgress.animateTo(1f, tween(160))
+            selectedAlbumId = null
+            selectedAlbumBackProgress.snapTo(0f)
+        } catch (_: CancellationException) {
+            selectedAlbumBackProgress.animateTo(0f)
+        }
+    }
+    BackHandler(enabled = selectedAlbumId != null) {
+        scope.launch {
+            if (selectedAlbumBackProgress.value < 1f) {
+                selectedAlbumBackProgress.animateTo(1f, tween(160))
+            }
+            selectedAlbumId = null
+            selectedAlbumBackProgress.snapTo(0f)
+        }
+    }
 
     LaunchedEffect(id, detail) {
         if (detail == null || allSongs.isNotEmpty()) return@LaunchedEffect
@@ -100,74 +166,138 @@ internal fun MeloXArtistDetailScreen(id: Long, onBack: () -> Unit) {
                 detail = it
                 followed = it.followed
             }
-            .onFailure { error = it.message ?: context.getString(R.string.artist_load_failed) }
+            .onFailure { error = it.message ?: "歌手加载失败" }
         loading = false
     }
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Box(Modifier.fillMaxSize()) {
+        BackHandler(enabled = selectedAlbumId != null || expandedSection != null) {
+            scope.launch {
+                if (selectedAlbumId != null) {
+                    if (selectedAlbumBackProgress.value < 1f) {
+                        selectedAlbumBackProgress.animateTo(1f, tween(160))
+                    }
+                    selectedAlbumId = null
+                    selectedAlbumBackProgress.snapTo(0f)
+                } else if (expandedSection != null) {
+                    if (expandedSectionBackProgress.value < 1f) {
+                        expandedSectionBackProgress.animateTo(1f, tween(160))
+                    }
+                    expandedSection = null
+                    expandedSectionBackProgress.snapTo(0f)
+                }
+            }
+        }
+
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = MeloXBottomContentClearance),
+            contentPadding = PaddingValues(bottom = MeloXBottomContentClearance + 80.dp), // Extra padding for mini player
         ) {
             detail?.let { artist ->
                 item(key = "artist-hero") {
-                    ArtistHero(
-                        artist = artist,
-                        followed = followed,
-                        followBusy = followBusy,
-                        onFollow = {
-                            val target = followed != true
-                            followBusy = true
-                            scope.launch {
-                                runCatching { client.setArtistFollowed(id, target) }
-                                    .onSuccess { followed = target }
-                                    .onFailure { error = it.message ?: context.getString(R.string.artist_follow_failed) }
-                                followBusy = false
-                            }
-                        },
-                    )
+                    ArtistHero(artist = artist)
                 }
-                item(key = "songs-title") { ArtistSectionTitle(stringResource(R.string.artist_hot_songs)) }
-                items(artist.hotSongs.take(100), key = { "artist-song-${it.id}" }) { song ->
-                    ArtistSongRow(
-                        song = song,
-                        onPlay = { PlaybackCommands.playQueue(context, artist.hotSongs, song.id) },
-                        onMore = { selectedSong = song },
-                        onLike = {
-                            scope.launch {
-                                runCatching { operations.setSongLiked(song.id, true) }
-                                    .onFailure { error = it.message ?: context.getString(R.string.artist_library_failed) }
-                            }
-                        },
-                    )
-                }
-                val fullList = allSongs.ifEmpty { artist.hotSongs }
-                if (allSongs.isNotEmpty()) {
-                    item(key = "all-songs-title") { ArtistSectionTitle(stringResource(R.string.artist_all_songs)) }
-                    items(allSongs, key = { "artist-song-all-${it.id}" }) { song ->
-                        ArtistSongRow(
-                            song = song,
-                            onPlay = { PlaybackCommands.playQueue(context, allSongs, song.id) },
-                            onMore = { selectedSong = song },
-                            onLike = {
-                                scope.launch {
-                                    runCatching { operations.setSongLiked(song.id, true) }
-                                        .onFailure { error = it.message ?: context.getString(R.string.artist_library_failed) }
-                                }
-                            },
-                        )
+
+                if (artist.hotSongs.isNotEmpty()) {
+                    item(key = "songs-title") {
+                        ArtistSectionTitle("歌曲排行", onClick = null) // 热门歌曲一般横滑就够了，这里先不加全列表跳转
                     }
-                }
-                if (artist.albums.isNotEmpty()) {
-                    item(key = "albums-title") { ArtistSectionTitle(stringResource(R.string.artist_albums)) }
-                    item(key = "albums") {
+                    item(key = "hot-songs-matrix") {
+                        val chunks = artist.hotSongs.take(20).chunked(5)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
                         ) {
-                            items(artist.albums, key = { "artist-album-${it.id}" }) { album ->
-                                ArtistAlbumCard(album) { MeloXCollectionDetailActivity.launchAlbum(context, album) }
+                            items(chunks.size, key = { it }) { columnIndex ->
+                                val chunk = chunks[columnIndex]
+                                Column(Modifier.fillParentMaxWidth(0.9f)) {
+                                    for (song in chunk) {
+                                        ArtistTopSongRow(
+                                            song = song,
+                                            onPlay = { PlaybackCommands.playQueue(context, artist.hotSongs, song.id) },
+                                            onMore = { selectedSong = song }
+                                        )
+                                    }
+                                }
                             }
+                        }
+                    }
+                }
+
+                if (artist.albums.isNotEmpty()) {
+                    val isLive: (MeloXAlbumSummary) -> Boolean = { it.type == "Live" || (it.type == "专辑" && (it.name.contains("Live", ignoreCase = true) || it.name.contains("演唱会") || it.name.contains("巡回"))) }
+                    val isCollab: (MeloXAlbumSummary) -> Boolean = { it.artistText.contains(" / ") }
+
+                    val studioAlbums = artist.albums.filter { it.type == "专辑" && !isLive(it) && !isCollab(it) }
+                    val epsAndSingles = artist.albums.filter { (it.type == "EP" || it.type == "Single") && !isLive(it) && !isCollab(it) }
+                    val collabs = artist.albums.filter { it.type == "专辑" && isCollab(it) && !isLive(it) }
+                    val compilations = artist.albums.filter { isLive(it) || (it.type != "专辑" && it.type != "EP" && it.type != "Single" && !isCollab(it)) }
+
+                    if (studioAlbums.isNotEmpty()) {
+                        item(key = "studio-albums-title") {
+                            ArtistSectionTitle("专辑", onClick = { expandedSection = "专辑" })
+                        }
+                        item(key = "studio-albums") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(studioAlbums.take(7), key = { "artist-album-${it.id}" }) { album ->
+                                    ArtistAlbumCard(album) { selectedAlbumId = album.id }
+                                }
+                            }
+                            Spacer(Modifier.height(16.dp))
+                        }
+                    }
+
+                    if (epsAndSingles.isNotEmpty()) {
+                        item(key = "eps-albums-title") {
+                            ArtistSectionTitle("单曲与 EP", onClick = { expandedSection = "单曲与 EP" })
+                        }
+                        item(key = "eps-albums") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(epsAndSingles.take(7), key = { "artist-album-${it.id}" }) { album ->
+                                    ArtistAlbumCard(album) { selectedAlbumId = album.id }
+                                }
+                            }
+                            Spacer(Modifier.height(16.dp))
+                        }
+                    }
+
+                    if (collabs.isNotEmpty()) {
+                        item(key = "collab-albums-title") {
+                            ArtistSectionTitle("多人合作专辑", onClick = { expandedSection = "多人合作专辑" })
+                        }
+                        item(key = "collab-albums") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(collabs.take(7), key = { "artist-album-${it.id}" }) { album ->
+                                    ArtistAlbumCard(album) { selectedAlbumId = album.id }
+                                }
+                            }
+                            Spacer(Modifier.height(16.dp))
+                        }
+                    }
+
+                    if (compilations.isNotEmpty()) {
+                        item(key = "compilations-title") {
+                            ArtistSectionTitle("现场与精选集", onClick = { expandedSection = "现场与精选集" })
+                        }
+                        item(key = "compilations") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(compilations.take(7), key = { "artist-album-${it.id}" }) { album ->
+                                    ArtistAlbumCard(album) { selectedAlbumId = album.id }
+                                }
+                            }
+                            Spacer(Modifier.height(16.dp))
                         }
                     }
                 }
@@ -183,8 +313,115 @@ internal fun MeloXArtistDetailScreen(id: Long, onBack: () -> Unit) {
             }
         }
 
-        Box(Modifier.statusBarsPadding().padding(start = 20.dp, top = 9.dp)) {
-            MeloXGlassIconButton(MeloXSymbol.ChevronLeft, onBack, contentDescription = stringResource(R.string.action_back))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 9.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Box(Modifier.size(44.dp).meloXLiquidButton(shape = CircleShape).clickable(onClick = onBack, interactionSource = remember { MutableInteractionSource() }, indication = null), contentAlignment = Alignment.Center) {
+                MeloXActionIcon("‹", Modifier.size(20.dp), MaterialTheme.colorScheme.onSurface)
+            }
+            Box(Modifier.size(44.dp).meloXLiquidButton(shape = CircleShape).clickable(onClick = { showInfoSheet = true }, interactionSource = remember { MutableInteractionSource() }, indication = null), contentAlignment = Alignment.Center) {
+                MeloXActionIcon("•••", Modifier.size(20.dp), MaterialTheme.colorScheme.onSurface)
+            }
+        }
+
+        // Full screen overlay for expanded albums section
+        if (expandedSection != null && detail != null) {
+            val albumsToShow = when (expandedSection) {
+                "专辑" -> detail!!.albums.filter { it.type == "专辑" && !(it.name.contains("Live", ignoreCase = true) || it.name.contains("演唱会") || it.name.contains("巡回")) && !it.artistText.contains(" / ") }
+                "单曲与 EP" -> detail!!.albums.filter { (it.type == "EP" || it.type == "Single") && !it.artistText.contains(" / ") }
+                "多人合作专辑" -> detail!!.albums.filter { it.type == "专辑" && it.artistText.contains(" / ") && !(it.name.contains("Live", ignoreCase = true) || it.name.contains("演唱会") || it.name.contains("巡回")) }
+                "现场与精选集" -> detail!!.albums.filter { it.type == "Live" || (it.type == "专辑" && (it.name.contains("Live", ignoreCase = true) || it.name.contains("演唱会") || it.name.contains("巡回"))) || (it.type != "专辑" && it.type != "EP" && it.type != "Single" && !it.artistText.contains(" / ")) }
+                else -> emptyList()
+            }
+
+            // BackHandler is handled at root box
+
+            val displayExpandedSection = remember { mutableStateOf(expandedSection) }
+            if (expandedSection != null) displayExpandedSection.value = expandedSection
+
+            if (expandedSection != null || expandedSectionBackProgress.value > 0f) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
+                    .background(MaterialTheme.colorScheme.background)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                    .graphicsLayer {
+                        translationX = size.width * expandedSectionBackProgress.value
+                        val scale = 1f - 0.08f * expandedSectionBackProgress.value
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                    }
+            ) {
+            Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                Row(
+                    Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MeloXGlassIconButton(MeloXSymbol.ChevronLeft, onClick = {
+                        scope.launch {
+                            if (expandedSectionBackProgress.value < 1f) {
+                                expandedSectionBackProgress.animateTo(1f, tween(160))
+                            }
+                            expandedSection = null
+                            expandedSectionBackProgress.snapTo(0f)
+                        }
+                    })
+                    Spacer(Modifier.width(12.dp))
+                    Text(displayExpandedSection.value.orEmpty(), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(20.dp, 8.dp, 20.dp, MeloXBottomContentClearance + 80.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    items(albumsToShow, key = { "expanded-album-${it.id}" }) { album ->
+                        ArtistAlbumCard(album, fillWidth = true) { selectedAlbumId = album.id }
+                    }
+                }
+            }
+        }
+        }
+    }
+
+        val displaySelectedAlbumId = remember { mutableStateOf(selectedAlbumId) }
+        if (selectedAlbumId != null) displaySelectedAlbumId.value = selectedAlbumId
+
+        if (selectedAlbumId != null || selectedAlbumBackProgress.value > 0f) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .zIndex(20f)
+                    .background(MaterialTheme.colorScheme.background)
+                    .graphicsLayer {
+                        translationX = size.width * selectedAlbumBackProgress.value
+                        val scale = 1f - 0.08f * selectedAlbumBackProgress.value
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                    }
+            ) {
+                displaySelectedAlbumId.value?.let { albumId ->
+                    MeloXUnifiedAlbumDetailScreen(
+                        albumId = albumId,
+                        onBack = {
+                            scope.launch {
+                                if (selectedAlbumBackProgress.value < 1f) {
+                                    selectedAlbumBackProgress.animateTo(1f, tween(160))
+                                }
+                                selectedAlbumId = null
+                                selectedAlbumBackProgress.snapTo(0f)
+                            }
+                        }
+                    )
+                }
+            }
         }
 
         selectedSong?.let { song ->
@@ -195,17 +432,30 @@ internal fun MeloXArtistDetailScreen(id: Long, onBack: () -> Unit) {
                 onDismiss = { selectedSong = null },
             )
         }
+    } // End of root Box
+
+    if (showInfoSheet && detail != null) {
+        ArtistInfoSheet(
+            artist = detail!!,
+            followed = followed,
+            followBusy = followBusy,
+            onFollow = {
+                val target = followed != true
+                followBusy = true
+                scope.launch {
+                    runCatching { client.setArtistFollowed(id, target) }
+                        .onSuccess { followed = target }
+                        .onFailure { error = it.message ?: "关注操作失败" }
+                    followBusy = false
+                }
+            },
+            onDismiss = { showInfoSheet = false }
+        )
     }
 }
 
 @Composable
-private fun ArtistHero(
-    artist: MeloXArtistDetail,
-    followed: Boolean?,
-    followBusy: Boolean,
-    onFollow: () -> Unit,
-) {
-    var expanded by remember(artist.id) { mutableStateOf(false) }
+private fun ArtistHero(artist: MeloXArtistDetail) {
     val background = MaterialTheme.colorScheme.background
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.fillMaxWidth().height(320.dp)) {
@@ -230,7 +480,7 @@ private fun ArtistHero(
             ) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     AsyncImage(
-                        model = artist.artworkUrl,
+                        model = optimized500Artwork(artist.artworkUrl),
                         contentDescription = null,
                         modifier = Modifier.size(64.dp).clip(CircleShape),
                         contentScale = ContentScale.Crop,
@@ -242,14 +492,44 @@ private fun ArtistHero(
                         }
                     }
                 }
-                Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    ArtistMetric(artist.musicSize, stringResource(R.string.artist_songs))
-                    ArtistMetric(artist.albumSize, stringResource(R.string.artist_albums))
-                    ArtistMetric(artist.mvSize, stringResource(R.string.artist_mv))
-                }
             }
         }
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ArtistInfoSheet(
+    artist: MeloXArtistDetail,
+    followed: Boolean?,
+    followBusy: Boolean,
+    onFollow: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(top = 24.dp, bottom = 48.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Text(artist.name, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+
+            Row(Modifier.padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                ArtistMetric(artist.musicSize, "单曲")
+                ArtistMetric(artist.albumSize, "专辑")
+                ArtistMetric(artist.mvSize, "MV")
+            }
+
+            Spacer(Modifier.height(24.dp))
+
             followed?.let {
                 MeloXGlassButton(
                     onClick = onFollow,
@@ -257,22 +537,16 @@ private fun ArtistHero(
                     enabled = !followBusy,
                     style = if (it) MeloXGlassButtonStyle.BorderedProminent else MeloXGlassButtonStyle.Bordered,
                     shape = MeloXShapes.capsule,
-                ) { Text(if (it) stringResource(R.string.artist_following) else stringResource(R.string.artist_follow), fontWeight = FontWeight.SemiBold) }
+                ) { Text(if (it) "已关注" else "关注", fontWeight = FontWeight.SemiBold) }
+                Spacer(Modifier.height(24.dp))
             }
+
             artist.description?.takeIf(String::isNotBlank)?.let { description ->
                 Text(
                     description,
-                    modifier = Modifier.padding(top = 14.dp).clickable { expanded = !expanded },
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = .58f),
-                    maxLines = if (expanded) Int.MAX_VALUE else 3,
-                    overflow = TextOverflow.Ellipsis,
-                    lineHeight = 20.sp,
-                )
-                Text(
-                    if (expanded) stringResource(R.string.artist_collapse) else stringResource(R.string.artist_expand),
-                    modifier = Modifier.padding(top = 4.dp).clickable { expanded = !expanded },
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = 22.sp,
+                    fontSize = 15.sp,
                 )
             }
         }
@@ -288,45 +562,80 @@ private fun ArtistMetric(value: Int, label: String) {
 }
 
 @Composable
-private fun ArtistSectionTitle(title: String) {
-    Text(title, modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 8.dp), fontSize = 22.sp, fontWeight = FontWeight.Bold)
-}
-
-@Composable
-private fun ArtistSongRow(song: SearchSong, onPlay: () -> Unit, onMore: () -> Unit, onLike: () -> Unit) {
-    val context = LocalContext.current
-    MeloXSwipeActionRow(
-        startActions = listOf(
-            MeloXSwipeAction(stringResource(R.string.player_play_next), MeloXSymbol.Next, Color(0xFF8E5AF7)) { PlaybackCommands.playNext(context, song) },
-            MeloXSwipeAction(stringResource(R.string.artist_play_later), MeloXSymbol.Queue, Color(0xFFFF9F0A)) { PlaybackCommands.addToQueue(context, song) },
-        ),
-        endActions = listOf(MeloXSwipeAction(stringResource(R.string.artist_add_library), MeloXSymbol.Heart, Color(0xFFFF3B30), onLike)),
-        startFullSwipeActionIndex = if (MeloXSettingsRuntime.swipeFullAction == MeloXSwipeFullAction.AddToQueue) 1 else 0,
-        onClick = onPlay,
-        onLongClick = onMore,
-        modifier = Modifier.padding(horizontal = 12.dp),
+private fun ArtistSectionTitle(title: String, onClick: (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                enabled = onClick != null,
+                onClick = { onClick?.invoke() },
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            )
+            .padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(song.artworkUrl, null, contentScale = ContentScale.Crop, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(9.dp)))
-            Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                Text(song.name, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(song.artists, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+        Text(title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        if (onClick != null) {
+            MeloXSymbolIcon(
+                symbol = MeloXSymbol.ChevronRight,
+                modifier = Modifier.padding(start = 6.dp).size(20.dp),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+            )
         }
     }
 }
 
 @Composable
-private fun ArtistAlbumCard(album: MeloXAlbumSummary, onClick: () -> Unit) {
-    Column(Modifier.width(116.dp).clickable(onClick = onClick)) {
+private fun ArtistTopSongRow(song: SearchSong, onPlay: () -> Unit, onMore: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPlay)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AsyncImage(song.artworkUrl, null, contentScale = ContentScale.Crop, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(9.dp)))
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(song.name, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(song.artists, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        MeloXSymbolIcon(
+            symbol = MeloXSymbol.MoreVertical,
+            modifier = Modifier
+                .size(32.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onMore
+                )
+                .padding(4.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+private fun optimized500Artwork(url: String?): String? {
+    val source = url?.takeIf(String::isNotBlank) ?: return null
+    if (!source.contains(".music.126.net")) return source
+    val separator = if (source.contains('?')) '&' else '?'
+    return if (source.contains("param=")) source else "$source${separator}param=500y500"
+}
+
+@Composable
+private fun ArtistAlbumCard(album: MeloXAlbumSummary, fillWidth: Boolean = false, onClick: () -> Unit) {
+    val modifier = if (fillWidth) Modifier.fillMaxWidth() else Modifier.width(116.dp)
+    val imageModifier = if (fillWidth) Modifier.fillMaxWidth().aspectRatio(1f) else Modifier.size(116.dp)
+
+    Column(modifier.clickable(onClick = onClick)) {
         AsyncImage(
-            model = album.artworkUrl,
+            model = optimized500Artwork(album.artworkUrl),
             contentDescription = album.name,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.size(116.dp).clip(RoundedCornerShape(10.dp)),
+            modifier = imageModifier.clip(RoundedCornerShape(10.dp)),
         )
         Spacer(Modifier.height(7.dp))
-        Text(album.name, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(album.name, fontWeight = FontWeight.Medium, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 18.sp)
         Text(album.artistText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

@@ -71,6 +71,8 @@ data class LyricsDocument(
     val quality: LyricQuality = LyricQuality.Fallback,
     /** Whether line-timed lyrics may be expanded into synthetic per-grapheme timing. */
     val pseudoTimingAllowed: Boolean = true,
+    /** Local model provenance; generated upgrades may finish after the AMLL early-update window. */
+    val autoSyncModelKey: String? = null,
 ) {
     fun highlightedIndex(positionMs: Long, strategy: LyricHighlightStrategy = LyricHighlightStrategy.LineStart): Int? {
         if (lines.isEmpty()) return null
@@ -295,19 +297,24 @@ object NeteaseLyricParser {
         val offset = estimateSecondaryOffset(primary, candidates)
         val adjusted = candidates.map { it.shiftBy(-offset) }
         val result = MutableList<LyricLine?>(primary.size) { null }
-        var cursor = 0
-        for ((index, target) in primary.withIndex()) {
-            while (cursor + 1 < adjusted.size &&
-                kotlin.math.abs(adjusted[cursor + 1].timeMs - target.timeMs) <=
-                kotlin.math.abs(adjusted[cursor].timeMs - target.timeMs)
-            ) {
-                cursor++
+        // Merge the two time-ordered tracks. Either side can contain lines the
+        // other does not (credit headers, instrumentals, untranslated verses),
+        // so advance only the side that is behind. The former monotonic cursor
+        // advanced on every primary line, which permanently pushed the whole
+        // annotation track behind after a single unmatched line.
+        var target = 0
+        var candidate = 0
+        while (target < primary.size && candidate < adjusted.size) {
+            val delta = adjusted[candidate].timeMs - primary[target].timeMs
+            when {
+                delta > ANNOTATION_TOLERANCE_MS -> target++
+                delta < -ANNOTATION_TOLERANCE_MS -> candidate++
+                else -> {
+                    result[target] = adjusted[candidate]
+                    target++
+                    candidate++
+                }
             }
-            val candidate = adjusted[cursor]
-            if (kotlin.math.abs(candidate.timeMs - target.timeMs) <= ANNOTATION_TOLERANCE_MS) {
-                result[index] = candidate
-            }
-            if (cursor < adjusted.lastIndex) cursor++
         }
         return result
     }
@@ -319,11 +326,19 @@ object NeteaseLyricParser {
         val differences = if (primary.size == candidates.size) {
             primary.indices.map { candidates[it].timeMs - primary[it].timeMs }
         } else {
-            primary.mapNotNull { target ->
-                candidates.minByOrNull { kotlin.math.abs(it.timeMs - target.timeMs) }
-                    ?.let { candidate ->
-                        (candidate.timeMs - target.timeMs).takeIf { kotlin.math.abs(it) <= 5_000L }
-                    }
+            // Only mutually-nearest pairs count. A leading header line without a
+            // translation would otherwise pair with the first real annotation
+            // and skew the median away from the true offset.
+            primary.mapIndexedNotNull { targetIndex, target ->
+                val candidateIndex = candidates.indices.minByOrNull {
+                    kotlin.math.abs(candidates[it].timeMs - target.timeMs)
+                } ?: return@mapIndexedNotNull null
+                val reciprocalIndex = primary.indices.minByOrNull {
+                    kotlin.math.abs(primary[it].timeMs - candidates[candidateIndex].timeMs)
+                } ?: return@mapIndexedNotNull null
+                if (reciprocalIndex != targetIndex) return@mapIndexedNotNull null
+                (candidates[candidateIndex].timeMs - target.timeMs)
+                    .takeIf { kotlin.math.abs(it) <= 5_000L }
             }
         }.sorted()
         return differences.getOrNull(differences.size / 2) ?: 0L

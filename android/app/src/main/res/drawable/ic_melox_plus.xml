@@ -1,0 +1,37 @@
+<!--
+  SF Symbols `plus`（U+10017C）—— 从 sf_pro_subset.ttf 的 glyf 表 1:1 提取的矢量。
+
+  两份独立轮廓（都是实体，无绕向问题）：
+    轮廓 0  竖直棒  bbox=(255,-103)-(1905,1547)  font units  (width=1650, height=1650)
+    轮廓 1  水平棒  bbox=(255,633)-(1905,812)    font units  (width=1650, height=179)
+
+  坐标换算：viewport = 24，scale = 24/2048 = 1/85.333；y 轴翻转 `y' = 24 - y*scale`。
+
+  为什么换成矢量 —— `SfGlyphIcon` 用 `Paint.getTextBounds` + `drawText` 定位，
+  不同 Android 版本 / Skia 版本 / 字体 hinting 设置下，同一 glyph 的
+  `bounds.top` 与 `bounds.bottom` 会差 1~2 像素，导致 baseline 计算漂移，
+  视觉表现为「加号在不同机子上偏下 2~4dp」（用户 2026-09-26 反馈的机型差异）。
+  改用矢量与 `Settings`（品牌齿轮）/`Microphone` 走同一条兜底路径，渲染不再依赖
+  字体度量，跨设备一致。
+
+  尺寸对齐 —— 与 `MicrophoneVectorIcon` 同一套换算：
+    字体墨迹高 = 1650/2048 em，本矢量墨迹高 = 18.29/24 viewport 单位
+    ⇒ 渲染尺寸 = iconSize × 1650/2048 × 24/18.29
+    默认 iconSize=24.sp ⇒ 渲染尺寸 ≈ 25.37dp，与原文字渲染 1:1。
+    ⚠ 必须 requiredSize 而不是 size —— `size()` 会被父 20/22dp 图标盒压扁，
+      把墨迹缩掉 ~25%（跟 mic 的教训一样）。
+  ⚠ fillType 必须是 nonZero —— 该 glyph 无嵌套孔，nonZero 与 evenOdd 结果相同，
+    但沿用品牌一致的写法；换 evenOdd 也会画对，但语义不清。
+  ⚠ alpha 走 Modifier.alpha() 而不是带 alpha 的 tint，避免多路径叠加处的
+    ColorFilter.tint 二次混合（mic 那条已踩过）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#000000"
+        android:fillType="nonZero"
+        android:pathData="M13.71,24.16 Q12.66,25.21 11.61,24.16 L11.61,6.91 Q12.66,5.87 13.71,6.91 L13.71,24.16 Z M4.03,16.58 Q2.99,15.54 4.03,14.48 L21.28,14.48 Q22.32,15.54 21.28,16.58 L4.03,16.58 Z" />
+</vector>

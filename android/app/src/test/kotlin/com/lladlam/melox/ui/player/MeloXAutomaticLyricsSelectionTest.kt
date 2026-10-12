@@ -130,20 +130,28 @@ class MeloXAutomaticLyricsSelectionTest {
     }
 
     @Test
-    fun routesAreAmlLThenQQThenNeteaseThenCurrentProvider() {
+    fun routesPreferCurrentProviderThenAmlLQQNetease() {
         MusicSource.entries.forEach { source ->
             val routes = automaticLyricSourcesFor(source)
-            assertEquals(LyricAutoSource.AmlL, routes.first())
+            assertEquals(LyricAutoSource.Current, routes.first())
             assertEquals(routes.distinct(), routes)
             when (source) {
                 MusicSource.QQMusic -> {
-                    assertEquals(listOf(LyricAutoSource.AmlL, LyricAutoSource.Current, LyricAutoSource.Netease), routes)
+                    assertEquals(listOf(LyricAutoSource.Current, LyricAutoSource.AmlL, LyricAutoSource.Netease), routes)
                 }
                 MusicSource.Netease -> {
-                    assertEquals(listOf(LyricAutoSource.AmlL, LyricAutoSource.QQMusic, LyricAutoSource.Current), routes)
+                    assertEquals(listOf(LyricAutoSource.Current, LyricAutoSource.AmlL, LyricAutoSource.QQMusic), routes)
                 }
                 else -> {
-                    assertEquals(listOf(LyricAutoSource.AmlL, LyricAutoSource.QQMusic, LyricAutoSource.Netease, LyricAutoSource.Current), routes)
+                    assertEquals(
+                        listOf(
+                            LyricAutoSource.Current,
+                            LyricAutoSource.AmlL,
+                            LyricAutoSource.QQMusic,
+                            LyricAutoSource.Netease,
+                        ),
+                        routes,
+                    )
                 }
             }
         }

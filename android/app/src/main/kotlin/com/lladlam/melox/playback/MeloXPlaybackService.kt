@@ -27,13 +27,19 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import androidx.core.app.NotificationCompat
 import com.lladlam.melox.MainActivity
 import com.lladlam.melox.MeloXAppVisibility
 import com.lladlam.melox.core.account.NeteaseSessionStore
+import com.lladlam.melox.core.audio.MeloXPlaybackUnavailableException
+import com.lladlam.melox.core.audio.MusicQualityPreferences
 import com.lladlam.melox.core.audio.MusicQualityRuntime
 import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.download.MeloXDownloadStore
@@ -46,10 +52,14 @@ import com.lladlam.melox.core.lyrics.LyricTimelineProcessor
 import com.lladlam.melox.core.lyrics.LyricsDocument
 import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicPage
+import com.lladlam.melox.core.music.model.MusicArtistRef
 import com.lladlam.melox.core.music.model.MusicPlaylistSummary
 import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.model.MusicSource
+import com.lladlam.melox.core.music.model.MusicTrack
+import com.lladlam.melox.core.music.model.ProviderTrackMetadata
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigPolicy
+import com.lladlam.melox.core.music.provider.FavoriteCapability
 import com.lladlam.melox.core.music.provider.MeloXMusicProviders
 import com.lladlam.melox.core.music.provider.PlaylistCapability
 import com.lladlam.melox.core.music.provider.UserLibraryCapability
@@ -68,7 +78,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -89,6 +98,16 @@ class MeloXPlaybackService : MediaSessionService() {
     private lateinit var equalizerController: MeloXEqualizerController
     private lateinit var playbackHistoryReporter: MeloXPlaybackHistoryReporter
     private var historySongId: Long? = null
+    /**
+     * 已经**真正出过声**并被记进历史/自动缓存计数的曲目。
+     *
+     * ⚠ 播放历史不能再在 `onMediaItemTransition` 里记（2026-09-28 修）：
+     *   切到一首无音源的 VIP 歌时 transition 照样触发，于是「播过」被写进历史，
+     *   而这首歌连一个字节的音频都没出来。改成进 `STATE_READY` 且真的在播时才落库。
+     */
+    private var startedSongId: Long? = null
+    /** 连续跳过「无音源」曲目的次数，用来防止整队都无音源时无限打转。 */
+    private var unavailableSkipStreak = 0
     private val listenedTimeTracker = MeloXListenedTimeTracker()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
@@ -123,7 +142,6 @@ class MeloXPlaybackService : MediaSessionService() {
     private var analysisForegroundStarted = false
     private var backgroundAnalysisJob: Job? = null
     private var backgroundAnalysisScheduledId: String? = null
-    private var prefetchJob: Job? = null
     private var smartQueueJob: Job? = null
     private var smartQueueSourceId: String? = null
     private var smartQueueGeneration = -1L
@@ -144,25 +162,49 @@ class MeloXPlaybackService : MediaSessionService() {
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             val active = player
+            if (active != null && !MeloXNetworkAvailability.isOnline(this@MeloXPlaybackService)) {
+                if (skipToNextDownloaded(active)) {
+                    Log.i(TAG, "Offline playback skipped unavailable item after player error")
+                    return
+                }
+            }
             Log.e(TAG, "Playback failed: code=${error.errorCodeName}, message=${error.message}", error)
-            if (active == null) return
-            if (!MeloXNetworkAvailability.isOnline(this@MeloXPlaybackService) && skipToNextDownloaded(active)) {
-                Log.i(TAG, "Offline playback skipped unavailable item after player error")
+            // ── 无音源（VIP / 会员 / 版权 / 地区 / 拿不到链接）────────────────
+            // ⚠ 旧行为：**在线时什么都不做**，播放器就此卡在 STATE_IDLE + 错误态。
+            //   于是迷你栏滑过去后，`MeloXIOSMiniPlayer` 的 1.5s 兜底把内容弹回原来
+            //   那首 ⇒ 用户看到「怎么滑，一段时间后都会变回原来的歌曲」；而
+            //   `onMediaItemTransition` 早就把这首没出声的歌写进了历史/推荐记录。
+            //   这类错误**重试没有意义**（再试一万次也没有链接），正确做法是向前跳过。
+            if (active == null || !isUnavailableSourceError(error)) {
+                // 非音源类失败（网络抖动 / 解析超时 / 解码失败）以前同样是静默的，
+                // 用户点完歌看不到任何动静。这里给一句兜底提示。
+                MeloXPlaybackNotice.show(
+                    this@MeloXPlaybackService,
+                    MeloXPlaybackNotice.describe(
+                        error,
+                        offline = !MeloXNetworkAvailability.isOnline(this@MeloXPlaybackService),
+                    ),
+                )
                 return
             }
-            if (active.hasNextMediaItem()) {
-                active.seekToNextMediaItem()
-                active.prepare()
-                active.play()
-                return
+            val title = active.currentMediaItem?.mediaMetadata?.title?.toString().orEmpty()
+            val skipped = skipForwardFromUnavailable(active)
+            Log.i(TAG, "Unavailable source: ${error.message}, skipped=$skipped")
+            // 跳不过去（单曲循环 / 整队都无音源）时也必须出声，否则又是零反馈。
+            val message = when {
+                title.isBlank() -> if (skipped) "当前歌曲暂无可播放音源，已跳过" else "当前歌曲暂无可播放音源"
+                skipped -> "《$title》暂无可播放音源，已跳过"
+                else -> "《$title》暂无可播放音源"
             }
-            active.prepare()
+            MeloXPlaybackNotice.show(this@MeloXPlaybackService, message)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             listenedTimeTracker.onPlayingChanged(SystemClock.elapsedRealtime(), isPlaying)
-            if (!isPlaying) persistQueueIfEnabled()
             Log.d(TAG, "isPlaying=$isPlaying, ongoing=${isPlaybackOngoing()}")
+            // 与 STATE_READY 那条路径互补：无缝切歌（新歌已预加载、不经过 BUFFERING）
+            // 时 `onPlaybackStateChanged` 可能根本不触发，这里兜住。
+            if (isPlaying) player?.let(::markSongActuallyPlayed)
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -174,6 +216,9 @@ class MeloXPlaybackService : MediaSessionService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             val active = player ?: return
+            if (playbackState == Player.STATE_READY && active.isPlaying) {
+                markSongActuallyPlayed(active)
+            }
             if (playbackState == Player.STATE_ENDED) {
                 historySongId?.let {
                     playbackHistoryReporter.recordDuration(
@@ -207,16 +252,17 @@ class MeloXPlaybackService : MediaSessionService() {
             if (transitionedId != previousHistoryId) {
                 historySongId = transitionedId
                 listenedTimeTracker.reset(SystemClock.elapsedRealtime(), player?.isPlaying == true)
-                transitionedId?.let(playbackHistoryReporter::recordStart)
+                // ⚠ 这里**不再** recordStart / recordPlayback（2026-09-28 修）：
+                //   transition 只说明「切过去了」，不说明「出声了」。无音源的歌同样
+                //   会走到这里，旧实现于是把它记进了历史与自动缓存计数。
+                //   落库推迟到 `onPlaybackStateChanged(STATE_READY)` → `markSongActuallyPlayed`。
             }
             MeloXAudioReactiveRuntime.select(mediaItem?.mediaId)
-            mediaItem?.let(downloadStore::recordPlayback)
             mediaItem?.let(::scheduleBackgroundAnalysis)
             // Smart Queue starts with one visible item and appends exactly one
             // analyzed match at a time. It must also run for the initial item,
             // not only after a Media3 automatic transition.
             mediaItem?.let { scheduleSmartQueueNext(it.mediaId) }
-            persistQueueIfEnabled()
             val active = player
             if (transitionedId != systemLyricsSongId) {
                 active?.let(::restoreSystemLyricsMetadata)
@@ -243,6 +289,8 @@ class MeloXPlaybackService : MediaSessionService() {
             // deck if the outgoing deck reaches its boundary a few milliseconds
             // before the monitor promotes the already-playing incoming deck.
             if (mixStartedAt == 0L && hasPreparedMix()) cancelPreparedMix()
+            // 切歌 ⇒ 当前索引变了，立即持久化索引（断点续播依赖它）。
+            requestQueuePersist(force = true)
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
@@ -263,6 +311,9 @@ class MeloXPlaybackService : MediaSessionService() {
                     cancelPreparedMix()
                 }
             }
+            // 队列结构变了（playQueue 全量入队 / moveMediaItem 重排 / 增删）→ 立即持久化，
+            // 这样即使进程随后被系统杀掉，冷启动也能恢复整条队列而不是空的。
+            requestQueuePersist(force = true)
         }
     }
 
@@ -296,6 +347,35 @@ class MeloXPlaybackService : MediaSessionService() {
                 }
             }
         }
+
+        /**
+         * Handles favorite custom commands coming from external controllers.
+         * vivo 原子随身听 and other system music panels look for FAVORITE-family
+         * actions to render a system-level favorite button on the walkman card.
+         * We register several ids in parallel because there is no public vivo
+         * spec; the well-known AOSP id plus the Google Play Music legacy id plus
+         * a vivo-private fallback cover every documented consumer today.
+         */
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            command: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            when (command.customAction) {
+                ACTION_CUSTOM_FAVORITE,
+                ACTION_CUSTOM_LIKE,
+                ACTION_CUSTOM_GPM_FAVORITE,
+                ACTION_CUSTOM_VIVO_FAVORITE -> {
+                    Log.i(TAG, "System FAVORITE custom command from ${controller.packageName}")
+                    serviceScope.launch {
+                        handleSystemFavoriteToggle(outcome = { Log.i(TAG, "FAVORITE outcome: $it") })
+                    }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+            }
+            return super.onCustomCommand(session, controller, command, args)
+        }
     }
 
     private fun prefetchFollowing(active: ExoPlayer) {
@@ -305,10 +385,8 @@ class MeloXPlaybackService : MediaSessionService() {
         // needed by Smart analysis when it examines the outgoing tail later.
         val following = (current until minOf(current + PREFETCH_TRACK_COUNT + 1, active.mediaItemCount))
             .map(active::getMediaItemAt)
-        prefetchJob?.cancel()
-        prefetchJob = serviceScope.launch(Dispatchers.IO) {
+        serviceScope.launch(Dispatchers.IO) {
             following.forEach { item ->
-                if (!isActive) return@launch
                 runCatching { mediaPrefetcher.cache(item) }
                     .onSuccess { Log.i(TAG, "Playback cache ready: ${item.mediaId}") }
                     .onFailure { Log.d(TAG, "Playback cache skipped for ${item.mediaId}: ${it.message}") }
@@ -438,16 +516,12 @@ class MeloXPlaybackService : MediaSessionService() {
             },
         )
         val cookieProvider = { com.lladlam.melox.core.music.provider.PlaybackAccountStore.neteaseCookie(this@MeloXPlaybackService) }
-        val lxUserPlayback = LxUserPlaybackResolver(this)
-        val chkszPlayback = ChkszPlaybackResolver(this)
         playbackResolver = NeteasePlaybackResolver(
             cookieProvider = cookieProvider,
             client = NeteaseSearchClient(cookieProvider = cookieProvider),
             localSourceProvider = downloadStore::localPlaybackUri,
             providerLocalSourceProvider = providerDownloadStore::localPlaybackUri,
             crossProviderFallback = crossProviderFallback,
-            chkszPlayback = chkszPlayback,
-            lxUserPlayback = lxUserPlayback,
             providerPlaybackEnabled = { source ->
                 MeloXRemoteConfigPolicy.providerPlaybackEnabled(this@MeloXPlaybackService, source)
             },
@@ -470,6 +544,38 @@ class MeloXPlaybackService : MediaSessionService() {
             dataSourceFactory = cached,
             cache = playbackCache,
         )
+        // AutoSync aligns lyrics against the same cached bytes the analysis
+        // pipeline already materialises. The resolver stays lazy: it only runs
+        // when the lyric loader actually decides to generate a timeline.
+        com.lladlam.melox.core.autosync.AutoSyncPlaybackBridge.isCurrentTrack = { expected ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                val id = PlaybackTrackIdentity.fromMediaItem(player?.currentMediaItem)
+                id != null && "${id.source.storageValue}:${id.value}" == expected
+            }
+        }
+        com.lladlam.melox.core.autosync.AutoSyncPlaybackBridge.audioResolver = { expected ->
+            // AutoSync runs on an IO coroutine, but ExoPlayer only allows
+            // `currentMediaItem` on its application thread. Reading it off-thread
+            // throws, and the throw was swallowed upstream — which looked exactly
+            // like "AutoSync never ran". Hop to main for the read only; the
+            // (potentially long) materialise stays on the caller's dispatcher.
+            val item = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                player?.currentMediaItem
+            }
+            val id = PlaybackTrackIdentity.fromMediaItem(item)
+            if (item == null || id == null || "${id.source.storageValue}:${id.value}" != expected) {
+                null
+            } else {
+                // Never decode the user's playback stream: a hi-res item is tens
+                // of MB and takes minutes to decode, while alignment only needs
+                // 16 kHz mono. Downgrade to the standard analysis source exactly
+                // like the auto-mix pipeline does before materialising anything.
+                val analysisItem = item.copyWithStandardAnalysisUri()
+                mediaPrefetcher.materialize(analysisItem).takeIf {
+                    com.lladlam.melox.core.autosync.AutoSyncPlaybackBridge.isCurrentTrack?.invoke(expected) == true
+                }
+            }
+        }
         mediaSourceFactory = DefaultMediaSourceFactory(this).setDataSourceFactory(cached)
 
         val active = buildPlayer(managesAudioFocus = shouldManageAudioFocus())
@@ -488,7 +594,9 @@ class MeloXPlaybackService : MediaSessionService() {
             .setSessionActivity(sessionActivity)
             .setCallback(sessionCallback)
             .build()
+        publishSystemFavoriteCustomActions()
         handler.post { restorePersistedQueue(active) }
+        handler.postDelayed(queuePersistRunnable, QUEUE_PERSIST_INTERVAL_MS)
         createLyricsNotificationChannel()
         handler.post(modeMonitor)
         handler.postDelayed({
@@ -683,10 +791,25 @@ class MeloXPlaybackService : MediaSessionService() {
         if (smartQueueGeneration != snapshot.generation) {
             smartQueueJob?.cancel()
             smartQueueGeneration = snapshot.generation
+            // 限额：只分析「当前这首 + 后面最靠前的 N 首」候选。analyzeSmartQueueItem 每首都要
+            // 把整曲按标准音质 materialize 落盘再算 BPM——不限额的话，播一个几百首的歌单等于把
+            // 整个歌单再下载分析一遍，且候选里还混着 startIndex 之前的历史条目（永远不会轮到）。
+            // 没分析的条目留在时间线里按原顺序播（bestAnalyzedMatch 只认 analyses 里的条目），
+            // 表现是 DJ 衔接在 N 首之后退化为原顺序，队列面板照常是满列表。
+            val limit = currentAutoMixSettings().smartQueueAnalysisLimit
+            val targets = if (limit < 0) snapshot.futureItems else snapshot.futureItems.take(limit)
+            val analysisTargets = targets.mapTo(mutableSetOf()) { it.mediaId }
+            analysisTargets += currentItem.mediaId
+            MeloXSmartQueueBuilder.setAnalysisTargets(snapshot.generation, analysisTargets)
+            Log.i(
+                TAG,
+                "Smart Queue analysis limited: ${analysisTargets.size} track(s) analyzed " +
+                    "of ${snapshot.items.size} remaining candidates (limit=$limit)",
+            )
             smartQueueJob = serviceScope.launch(Dispatchers.IO) {
                 val limiter = Semaphore(SMART_QUEUE_ANALYSIS_CONCURRENCY)
                 coroutineScope {
-                    (listOf(currentItem) + snapshot.items)
+                    (listOf(currentItem) + targets)
                         .distinctBy(MediaItem::mediaId)
                         .forEachIndexed { index, item ->
                             launch {
@@ -725,15 +848,6 @@ class MeloXPlaybackService : MediaSessionService() {
         }
         smartQueueSourceId = sourceId
         commitSmartQueueChain(snapshot.generation, sourceId)
-        val duration = active.duration
-        if (!active.hasNextMediaItem() && duration != C.TIME_UNSET && duration > 0L &&
-            duration - active.currentPosition <= 30_000L && mixStartedAt == 0L
-        ) {
-            val selected = MeloXSmartQueueBuilder.emergencyCandidate(snapshot.generation) ?: return
-            val consumed = MeloXSmartQueueBuilder.consume(snapshot.generation, selected.mediaId) ?: return
-            active.addMediaItem(consumed)
-            Log.w(TAG, "Smart Queue emergency append: source=$sourceId target=${consumed.mediaId}, remaining=${duration - active.currentPosition}, reason=no scored chain available")
-        }
     }
 
     private fun commitSmartQueueChain(expectedGeneration: Long, initialSourceId: String) {
@@ -741,20 +855,52 @@ class MeloXPlaybackService : MediaSessionService() {
         if (!MeloXPlaybackModePreferences.smartQueue(this) || !MeloXPlaybackModePreferences.autoMix(this)) return
         if (MeloXSmartQueueBuilder.snapshot().generation != expectedGeneration) return
         if (active.mediaItemCount == 0 || mixStartedAt > 0L) return
-        var sourceId = active.getMediaItemAt(active.mediaItemCount - 1).mediaId
-        while (true) {
+
+        // 整首歌单**已经**在时间线里（playQueue 全量 setMediaItems），这里只做重排：
+        // 每次都把匹配搬进「上一首之后」，而不是往末尾堆——堆末尾的话播放仍按原顺序
+        // 走，智能队列等于没生效。不再 addMediaItem：那会把候选扣在池外，队列面板
+        // （按 mediaItemCount 建）看着就是空的。
+        // 断点续排：`tailMediaId()` 是消费顺序的最后一首，从它的当前位置继续延伸；
+        // 若用户手动跳到链之后，就丢弃旧链尾，从当前播放项重新起链。
+        val current = active.currentMediaItemIndex.coerceIn(0, active.mediaItemCount - 1)
+        val tailId = MeloXSmartQueueBuilder.tailMediaId()
+        val tailPosition = tailId?.let { id ->
+            (0 until active.mediaItemCount).indexOfFirst { active.getMediaItemAt(it).mediaId == id }
+        }?.takeIf { it >= 0 } ?: current
+        val chainStart = tailPosition.coerceAtLeast(current)
+        var sourceId = active.getMediaItemAt(chainStart).mediaId
+        var insertAt = chainStart + 1
+
+        while (insertAt <= active.mediaItemCount - 1) {
             val match = MeloXSmartQueueBuilder.bestAnalyzedMatch(expectedGeneration, sourceId) ?: break
             val consumed = MeloXSmartQueueBuilder.consume(expectedGeneration, match.item.mediaId) ?: break
-            active.addMediaItem(consumed)
-            if (preparedMixSourceId != null) incomingPlayer?.addMediaItem(consumed)
+            // 当前播放项在 begin() 时就已计入 consumedIds，候选里不会出现 ⇒ from != current。
+            val from = (0 until active.mediaItemCount).indexOfFirst {
+                active.getMediaItemAt(it).mediaId == consumed.mediaId
+            }
+            if (from < 0 || from == insertAt) break
+            active.moveMediaItem(from, insertAt)
+            // 混音目标 deck 是 prepareIncoming 整份拷贝的，镜像同一次搬移，交接后顺序一致。
+            val incoming = incomingPlayer
+            if (preparedMixSourceId != null && incoming != null) {
+                runCatching {
+                    val at = (0 until incoming.mediaItemCount).indexOfFirst {
+                        incoming.getMediaItemAt(it).mediaId == consumed.mediaId
+                    }
+                    if (at >= 0 && insertAt <= incoming.mediaItemCount - 1 && at != insertAt) {
+                        incoming.moveMediaItem(at, insertAt)
+                    }
+                }
+            }
             Log.i(
                 TAG,
-                "Smart Queue appended ${match.reason} match immediately: ${consumed.mediaId}, " +
+                "Smart Queue reordered ${match.reason} match: ${consumed.mediaId}, " +
                     "source=$sourceId bpm=${"%.1f".format(match.analysis.bpm)}, " +
                     "tempoDistance=${"%.1f".format(match.tempoDistance)}, " +
                     "confidence=${"%.3f".format(match.analysis.confidence)}",
             )
             sourceId = consumed.mediaId
+            insertAt++
         }
     }
 
@@ -1154,10 +1300,8 @@ class MeloXPlaybackService : MediaSessionService() {
         if (!metadataEnabled && !effectiveNotification && !VivoAtomicIslandBridge.isSupported()) {
             restoreSystemLyricsMetadata(active)
             (getSystemService(NotificationManager::class.java)).cancel(LYRICS_NOTIFICATION_ID)
-            HyperOsFocusBridge.clearSuperIsland(this)
             return
         }
-        if (!hyperIslandEnabled) HyperOsFocusBridge.clearSuperIsland(this)
         if (systemLyricsSongId != songId) resetSystemLyrics(currentItem)
         if (systemLyricsDocument == null && systemLyricsJob?.isActive != true) loadSystemLyrics(songId, currentItem)
         val document = systemLyricsDocument ?: return
@@ -1261,6 +1405,7 @@ class MeloXPlaybackService : MediaSessionService() {
     }
 
     private fun createLyricsNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(
@@ -1586,13 +1731,16 @@ class MeloXPlaybackService : MediaSessionService() {
         active.replaceMediaItem(index, localItem)
     }
 
-    private fun downloaded(mediaId: String): Boolean {
-        mediaId.toLongOrNull()?.takeIf { downloadStore.contains(it) }?.let { return true }
-        val id = PlaybackTrackIdentity.decode(mediaId) ?: return false
-        return providerDownloadStore.isDownloaded(id)
-    }
+    private fun skipToNextDownloaded(active: ExoPlayer): Boolean =
+        skipToNextMatching(active) { item ->
+            item.mediaId.toLongOrNull()?.let(downloadStore::contains) == true
+        }
 
-    private fun skipToNextDownloaded(active: ExoPlayer): Boolean {
+    /**
+     * 向前（列表循环时允许回卷到队首）跳到第一首满足 [accept] 的曲目并立刻起播。
+     * ⚠ **只向前，绝不回退到上一首。**
+     */
+    private fun skipToNextMatching(active: ExoPlayer, accept: (MediaItem) -> Boolean): Boolean {
         val current = active.currentMediaItemIndex
         if (current !in 0 until active.mediaItemCount) return false
         val forward = ((current + 1) until active.mediaItemCount).toList()
@@ -1601,14 +1749,58 @@ class MeloXPlaybackService : MediaSessionService() {
         } else {
             emptyList()
         }
-        val target = (forward + wrapped).firstOrNull { index ->
-            downloaded(active.getMediaItemAt(index).mediaId)
-        } ?: return false
+        val target = (forward + wrapped).firstOrNull { index -> accept(active.getMediaItemAt(index)) }
+            ?: return false
         cancelPreparedMix()
         active.seekToDefaultPosition(target)
         if (active.playbackState == Player.STATE_IDLE) active.prepare()
         active.play()
         return true
+    }
+
+    /** 无音源专用：跳到**任意**下一首（单曲循环下不跳，否则会原地打转）。 */
+    private fun skipForwardFromUnavailable(active: ExoPlayer): Boolean {
+        // 单曲循环：Media3 眼里「下一首」就是自己 ⇒ 跳过去还是这首，只会无限打转。
+        if (active.repeatMode == Player.REPEAT_MODE_ONE) return false
+        // 整队都无音源 ⇒ 别再跳了，否则 error → skip → error 会一直转下去。
+        // 连续跳过上限 = 队列长度（跳完一圈还没播起来，就说明确实一首都播不了）。
+        if (unavailableSkipStreak >= active.mediaItemCount.coerceAtLeast(1)) {
+            Log.w(TAG, "Skipped $unavailableSkipStreak unavailable items in a row; stop to avoid a loop")
+            unavailableSkipStreak = 0
+            return false
+        }
+        unavailableSkipStreak++
+        return skipToNextMatching(active) { true }
+    }
+
+    private fun isUnavailableSourceError(error: PlaybackException): Boolean {
+        var cursor: Throwable? = error
+        var depth = 0
+        while (cursor != null && depth++ < 8) {
+            if (cursor is MeloXPlaybackUnavailableException) return true
+            cursor = cursor.cause
+        }
+        return false
+    }
+
+    /**
+     * 这首歌**真的出声了** —— 「播过一首歌」的唯一合法落库点。
+     *
+     * 播放历史（网易云 weblog）与自动缓存计数都只在这里写，不再写在
+     * `onMediaItemTransition`：无音源的歌照样会触发 transition，却永远不会出声。
+     * [startedSongId] 做去重，暂停/恢复、单曲循环重播都不会重复记。
+     */
+    private fun markSongActuallyPlayed(active: Player) {
+        unavailableSkipStreak = 0
+        val item = active.currentMediaItem ?: return
+        val id = item.mediaId.toLongOrNull() ?: return
+        if (id == startedSongId) return
+        startedSongId = id
+        // transition 漏设 / 顺序异常时兜住，保证 recordDuration 记到的是同一首。
+        if (historySongId != id) historySongId = id
+        playbackHistoryReporter.recordStart(id)
+        downloadStore.recordPlayback(item)
+        Log.d(TAG, "Playback actually started for mediaId=${item.mediaId}")
     }
 
     private fun hasPreparedMix(): Boolean = preparedMixSourceId != null || mixStartedAt > 0L
@@ -1686,19 +1878,40 @@ class MeloXPlaybackService : MediaSessionService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
-        Log.d(TAG, "Controller connected: ${controllerInfo.packageName}")
-        val allowed = controllerInfo.packageName == packageName ||
-            controllerInfo.packageName == "com.google.android.projection.gearhead" ||
-            controllerInfo.packageName == "com.android.bluetooth"
+        val pkg = controllerInfo.packageName
+        val uid = controllerInfo.uid
+        // External media controllers that are safe to hand the session to:
+        //  - Self package (in-app UI)
+        //  - Google Car / Bluetooth (universal media consumers)
+        //  - System UI (lockscreen card, notification, quick settings)
+        //  - vivo 原子随身听 (OriginOS walkman card, wear, system music panel)
+        //  - Any process in the system uid range [1000, 2000)
+        // Everything else is denied to avoid accidental cross-app leakage.
+        val isSystemMediaController = pkg == "com.android.systemui" ||
+            pkg == "com.android.bluetooth" ||
+            pkg == "com.google.android.projection.gearhead"
+        val isVivoSystem = pkg == "com.vivo.music" ||
+            pkg == "com.vivo.wearmanager" ||
+            pkg.startsWith("com.vivo.music") ||
+            pkg.startsWith("com.vivo.atomic") ||
+            pkg.startsWith("com.iqoo.music")
+        val allowed = pkg == packageName ||
+            isSystemMediaController ||
+            isVivoSystem ||
+            uid in 1000 until 2000
+        Log.d(TAG, "Controller connected: $pkg (uid=$uid, allowed=$allowed)")
         return mediaSession.takeIf { allowed }
     }
 
     override fun onDestroy() {
-        persistQueueIfEnabled()
+        com.lladlam.melox.core.autosync.AutoSyncPlaybackBridge.audioResolver = null
+        com.lladlam.melox.core.autosync.AutoSyncPlaybackBridge.isCurrentTrack = { false }
+        persistQueueIfEnabled(immediate = true)
         historySongId?.let { playbackHistoryReporter.recordDuration(it, elapsedMs = listenedTimeTracker.elapsedMs(SystemClock.elapsedRealtime())) }
         historySongId = null
         playbackHistoryReporter.close()
         handler.removeCallbacks(modeMonitor)
+        handler.removeCallbacks(queuePersistRunnable)
         recommendationJob?.cancel()
         playlistAnalysisJob?.cancel()
         backgroundAnalysisJob?.cancel()
@@ -1721,13 +1934,46 @@ class MeloXPlaybackService : MediaSessionService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        persistQueueIfEnabled()
+        persistQueueIfEnabled(immediate = true)
         super.onTaskRemoved(rootIntent)
     }
 
-    private fun persistQueueIfEnabled() {
+    private fun persistQueueIfEnabled(immediate: Boolean = false) {
         if (!MeloXSettingsPreferences.boolean(this, "playback_save_queue", true)) return
-        player?.let { MeloXPlaybackQueueStore.save(this, it) }
+        player?.let { MeloXPlaybackQueueStore.save(this, it, flush = immediate) }
+    }
+
+    /**
+     * 可靠持久化队列：除 `onDestroy`/`onTaskRemoved` 外，在**时间线变化**
+     * （`playQueue` 一次性 setMediaItems 后立刻触发）和**切歌**
+     * （`onMediaItemTransition`）立即落盘，并辅以播放中的周期写（覆盖进度断点）。
+     *
+     * 旧实现只在 `onDestroy` 写：vivo 杀进程（OOM / 划后台 / 重启）不保证
+     * `onDestroy` 跑 ⇒ `melox_playback_queue` 长期为空 ⇒ 冷启动 `restorePersistedQueue`
+     * 读到 null，待播放列表为空（或只剩 UI 侧 `restoreLastPlaybackIfNeeded` 塞的 1 首）。
+     *
+     * `handler` 是主线程 Looper，写 prefs 走 `apply()`（非 flush）避免卡 UI；
+     * `onDestroy`/`onTaskRemoved` 走 `immediate=true` 的 `commit()` 保证退出前落盘。
+     */
+    private var lastQueuePersistElapsedMs = 0L
+    private val QUEUE_PERSIST_INTERVAL_MS = 10_000L
+    private val queuePersistRunnable = object : Runnable {
+        override fun run() {
+            val active = player
+            if (active != null && active.isPlaying && active.mediaItemCount > 0) {
+                requestQueuePersist(force = false)
+            }
+            handler.postDelayed(this, QUEUE_PERSIST_INTERVAL_MS)
+        }
+    }
+
+    private fun requestQueuePersist(force: Boolean) {
+        val active = player ?: return
+        if (active.mediaItemCount == 0) return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastQueuePersistElapsedMs < QUEUE_PERSIST_INTERVAL_MS) return
+        lastQueuePersistElapsedMs = now
+        handler.post { persistQueueIfEnabled(immediate = false) }
     }
 
     private fun persistQueuePositionIfEnabled(active: ExoPlayer) {
@@ -1750,11 +1996,132 @@ class MeloXPlaybackService : MediaSessionService() {
         Log.i(TAG, "Restored persisted playback queue: ${saved.items.size} items, index=${saved.index}")
     }
 
+    /**
+     * Expose FAVORITE-family custom actions on the MediaSession so external
+     * system controllers (vivo 原子随身听, Wear, lockscreen, Android Auto) can
+     * discover a favorite action.
+     *
+     * We publish multiple ids in parallel because vivo's walkman spec is not
+     * publicly documented; covering the AOSP convention, the legacy Google
+     * Play Music convention, and a vivo-private fallback maximizes the odds
+     * the panel recognizes the action on any given ROM revision.
+     */
+    private fun publishSystemFavoriteCustomActions() {
+        runCatching {
+            val session = mediaSession ?: return
+            val buttons = listOf(
+                CommandButton.Builder()
+                    .setSessionCommand(SessionCommand(ACTION_CUSTOM_FAVORITE, Bundle()))
+                    .setDisplayName("收藏")
+                    .setIconResId(android.R.drawable.ic_menu_gallery)
+                    .build(),
+                CommandButton.Builder()
+                    .setSessionCommand(SessionCommand(ACTION_CUSTOM_GPM_FAVORITE, Bundle()))
+                    .setDisplayName("收藏")
+                    .setIconResId(android.R.drawable.ic_menu_gallery)
+                    .build(),
+            )
+            session.setCustomLayout(buttons)
+            Log.i(TAG, "Published ${buttons.size} custom actions on MediaSession")
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to publish system favorite custom actions", error)
+        }
+    }
+
+    /**
+     * Handle a favorite custom command dispatched by an external system
+     * controller (vivo 原子随身听 etc.). Toggles the favorite state of the
+     * currently playing track against the provider that actually owns it.
+     *
+     * This is intentionally narrow:
+     *  - Only tracks that carry a resolvable [PlaybackTrackIdentity] (i.e.
+     *    provider-backed MediaItems) participate.
+     *  - Only providers that implement [FavoriteCapability] participate.
+     *  - NetEase legacy tracks (mediaId = numeric id) are silently ignored;
+     *    those tracks don't flow through the provider FavoriteCapability path.
+     *  - On failure, the caller gets a SessionResult(RESULT_SUCCESS) anyway
+     *    because external controllers generally can't display a rich error,
+     *    and we want to avoid a confusing failure toast from system UI.
+     */
+    private suspend fun handleSystemFavoriteToggle(outcome: (String) -> Unit = {}) {
+        val active = player ?: return outcome("no player")
+        val item = active.currentMediaItem ?: return outcome("no current item")
+        val identity = PlaybackTrackIdentity.fromMediaItem(item) ?: return outcome("unresolvable identity")
+        val registry = ProviderPlaybackRuntime.registryOrNull() ?: return outcome("no provider registry")
+        val provider = registry[identity.source]
+        val favoriteCapability = provider as? FavoriteCapability ?: return outcome("provider has no FavoriteCapability: ${identity.source.displayName}")
+
+        val currentExtras = item.mediaMetadata.extras
+        val currentlyFavorite = currentExtras?.getBoolean(PlaybackTrackIdentity.IsFavoriteExtra, false) ?: false
+        val targetFavorite = !currentlyFavorite
+        val actionTrack = buildMusicTrackFromMediaItem(item, identity)
+
+        runCatching {
+            favoriteCapability.setFavorite(actionTrack, targetFavorite)
+        }.onSuccess {
+            val updatedExtras = Bundle(currentExtras).apply {
+                putBoolean(PlaybackTrackIdentity.IsFavoriteExtra, targetFavorite)
+            }
+            val updatedItem = item.buildUpon()
+                .setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(updatedExtras).build())
+                .build()
+            runCatching {
+                active.replaceMediaItem(active.currentMediaItemIndex, updatedItem)
+            }.onFailure { metaError ->
+                Log.w(TAG, "Failed to refresh MediaItem extras after favorite toggle", metaError)
+            }
+            Log.i(TAG, "System favorite toggled for ${identity.source.displayName}:${identity.value} -> $targetFavorite")
+            outcome("favorited=${targetFavorite}")
+        }.onFailure { error ->
+            Log.w(TAG, "System favorite toggle failed for ${identity.source.displayName}:${identity.value}", error)
+            outcome("failed: ${error.message}")
+        }
+    }
+
+    private fun buildMusicTrackFromMediaItem(item: MediaItem, identity: MusicResourceId): MusicTrack {
+        val extras = item.mediaMetadata.extras
+        val title = extras?.getString(PlaybackTrackIdentity.TitleExtra)
+            ?.takeIf { it.isNotBlank() }
+            ?: item.mediaMetadata.title?.toString().orEmpty()
+        val artist = extras?.getString(PlaybackTrackIdentity.ArtistExtra)
+            ?.takeIf { it.isNotBlank() }
+            ?: item.mediaMetadata.artist?.toString().orEmpty()
+        val album = extras?.getString(PlaybackTrackIdentity.AlbumExtra)
+            ?.takeIf { it.isNotBlank() }
+        val artwork = extras?.getString(PlaybackTrackIdentity.ArtworkExtra)
+            ?.takeIf { it.isNotBlank() }
+        val durationMs = extras?.getLong(PlaybackTrackIdentity.DurationMsExtra, 0L)
+            ?.takeIf { it > 0L }
+        return MusicTrack(
+            id = identity,
+            title = title.ifBlank { "未知歌曲" },
+            artists = listOf(MusicArtistRef(name = artist.ifBlank { "未知歌手" })),
+            artworkUrl = artwork,
+            durationMs = durationMs,
+            providerMetadata = when (identity.source) {
+                MusicSource.Kugou -> ProviderTrackMetadata.Kugou(hash = identity.value)
+                MusicSource.Kuwo -> ProviderTrackMetadata.Kuwo(mid = identity.value.toLongOrNull() ?: 0L)
+                MusicSource.Spotify -> ProviderTrackMetadata.Spotify(trackId = identity.value)
+                MusicSource.Jellyfin -> ProviderTrackMetadata.Empty
+                else -> ProviderTrackMetadata.Empty
+            },
+        )
+    }
+
     companion object {
         const val ACTION_ANALYZE_PLAYLIST = "com.lladlam.melox.action.ANALYZE_PLAYLIST"
         const val EXTRA_ANALYSIS_SOURCE = "analysis_source"
         const val EXTRA_ANALYSIS_PLAYLIST_ID = "analysis_playlist_id"
         const val TAG = "YSYYPlayback"
+        // Well-known custom action ids used by system music controllers.
+        // android.media.action.FAVORITE is the AOSP convention; com.google
+        // .android.music.FAVORITE is the legacy Google Play Music convention;
+        // the vivo-private one is a defensive fallback because vivo's
+        // 原子随身听 spec is not publicly documented.
+        const val ACTION_CUSTOM_FAVORITE = "android.media.action.FAVORITE"
+        const val ACTION_CUSTOM_LIKE = "android.media.action.LIKE"
+        const val ACTION_CUSTOM_GPM_FAVORITE = "com.google.android.music.FAVORITE"
+        const val ACTION_CUSTOM_VIVO_FAVORITE = "com.vivo.media.action.FAVORITE"
         const val AUTOPLAY_PRELOAD_MS = 60_000L
         const val AUTOPLAY_RETRY_MS = 15_000L
         const val PREFETCH_TRACK_COUNT = 3

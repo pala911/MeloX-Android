@@ -11,21 +11,20 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Only used by the explicit 增量更新 action: rebuild the published APK from
+         the installed one plus a BSDIFF40 patch and hand it to the installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
-
-    <queries>
-        <package android:name="moe.shizuku.privileged.api" />
-    </queries>
 
     <application
         android:name=".MeloXApplication"
@@ -38,30 +37,69 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MeloX">
+
+        <!-- 冷启动性能：emoji2 是传递依赖（Compose Material3 带进来的）
+             androidx.startup 初始化项。它在每次启动的主线程上跑
+             EmojiCompat.MetadataRepo.create()，实测 ~165ms（atrace 确认），
+             是本 App 最大的纯主线程启动阻塞。源码全程未使用 EmojiCompat /
+             EmojiTextView API（Compose 的 emoji 走系统字体渲染），
+             故直接从 InitializationProvider 摘掉，功能无损。
+             若日后需要 emoji2，删掉这个 meta-data 覆盖即可恢复。 -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:node="remove" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <activity android:name=".ui.account.MeloXAccountActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
-        <activity android:name=".ui.provider.MeloXProviderServicesActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
-        <!-- Upstream 0.6.2 removed SpotifyCallbackActivity (OAuth now completes
-             without a dedicated callback activity); its manifest entry goes too.
-        -->
-        <activity android:name=".ui.collection.MeloXCollectionDetailActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
-        <activity android:name=".ui.song.MeloXSongWikiActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
+        <!-- 整页推入/退回的页面 Activity：不锁方向（跟随系统默认）。
+
+             ⚠⚠ 2026-10-02：主题由 `Theme.MeloX.TransparentActivity` 换成
+             `Theme.MeloX.Page`（**不透明窗口**）。半透明窗口在系统里拿不到 ROM 原生的
+             Activity 转场（新页自右侧滑入 + 旧页视差），只能靠 App 在 Compose 里自研一遍；
+             改成不透明 + 不覆盖 `windowAnimationStyle` 后，转场完全由 WindowManager 驱动
+             ⇒ 天然位置/速度连续（可连续打断）、天然带系统屏幕圆角、天然支持预测式返回。 -->
+        <activity android:name=".ui.account.MeloXAccountActivity" android:exported="false" android:theme="@style/Theme.MeloX.Page" />
+        <activity android:name=".ui.account.MeloXNeteaseLoginActivity" android:exported="false" android:theme="@style/Theme.MeloX.Page" />
+        <activity android:name=".ui.provider.MeloXProviderServicesActivity" android:exported="false" android:theme="@style/Theme.MeloX.Page" />
+        <activity android:name=".ui.settings.MeloXSettingsDetailActivity" android:exported="false" android:theme="@style/Theme.MeloX.Page" />
+        <!-- SpotifyCallbackActivity 已随上游 0.6.2 移除：登录改走 loopback
+             （bed4a62 已删除 SpotifyCallbackActivity.kt，此处声明必须一并去掉）。 -->
+        <activity android:name=".ui.collection.MeloXCollectionDetailActivity" android:exported="false" android:theme="@style/Theme.MeloX.Page" />
+        <activity android:name=".ui.song.MeloXSongWikiActivity" android:exported="false" android:theme="@style/Theme.MeloX.Page" />
+        <!-- 对话框式 Activity（整屏只弹一个 AlertDialog、页面本体为空）⇒ 必须半透明让下层
+             App 透出来当背景，保持 TransparentActivity；不要跟着上面那批换 Page 主题。 -->
         <activity android:name=".ui.player.MeloXListenTogetherInviteActivity" android:exported="false" android:theme="@style/Theme.MeloX.TransparentActivity" />
-        <activity android:name=".ui.sharing.MeloXNeteaseResourceShareActivity" android:exported="true" android:theme="@style/Theme.MeloX.TransparentActivity">
+        <activity android:name=".ui.sharing.MeloXNeteaseResourceShareActivity" android:exported="true" android:theme="@style/Theme.MeloX.Page">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!-- ONNX Runtime registers its telemetry as a ContentProvider that runs on
+             every cold start, collects a device id and calls a native hook that
+             is absent from the Android build (UnsatisfiedLinkError in logcat).
+             AutoSync inference is fully offline and local, so the provider is
+             removed outright rather than merely muting its log. -->
+        <provider
+            android:name="ai.onnxruntime.TelemetryInitializer"
+            android:authorities="${applicationId}.onnxruntime_telemetry_initializer"
+            tools:node="remove" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -104,6 +142,7 @@
                 android:value="Shows the currently playing lyric in a user-enabled overlay." />
         </service>
 
+        <!-- 小米超级岛：服务类已随 b67a94c 摘入，此处补声明（暂未在播放服务里接线）。 -->
         <service
             android:name=".platform.xiaomi.XiaomiSuperIslandLyricService"
             android:exported="false"
@@ -113,12 +152,12 @@
                 android:value="Live rendering of lyrics for Xiaomi Super Island" />
         </service>
 
-        <!-- Upstream 0.6.1 declares ShizukuKeepAliveService as a <service> here, but
-             the class extends Binder and is bound at runtime through
-             Shizuku.bindUserService — it is not an Android service. Lint rejects the
-             declaration in a release build (lintVitalRelease) because the class has no
-             no-arg constructor and does not extend android.app.Service. Upstream CI only
-             runs assembleDebug, so it never sees this. Keep the entry out. -->
+        <!-- Shizuku starts this binder in its own process. It is not an app Service,
+             so the empty-constructor and Service-subclass checks do not apply. -->
+        <service
+            android:name=".platform.xiaomi.ShizukuKeepAliveService"
+            android:exported="true"
+            tools:ignore="Instantiatable" />
         <meta-data android:name="lyricon_module" android:value="true" />
         <meta-data android:name="lyricon_module_author" android:value="lladlam" />
         <meta-data

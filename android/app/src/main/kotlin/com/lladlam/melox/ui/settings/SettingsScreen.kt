@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -27,7 +28,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -36,12 +36,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,22 +62,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.lladlam.melox.ui.animation.meloXPageEnter
-import com.lladlam.melox.ui.animation.meloXPageExit
+import com.lladlam.melox.ui.animation.MeloXPageSpec
+import com.lladlam.melox.ui.MeloXInterruptiblePage
+import com.lladlam.melox.ui.meloXPageRecede
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationCompat
@@ -91,6 +89,12 @@ import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.provider.MeloXMusicProviders
 import com.lladlam.melox.core.music.provider.UserLibraryCapability
 import com.lladlam.melox.core.library.NeteaseLibraryClient
+import com.lladlam.melox.core.provider.qqmusic.QQMusicSessionStore
+import com.lladlam.melox.core.provider.kugou.KugouSessionStore
+import com.lladlam.melox.ui.account.QQMusicLoginScreen
+import com.lladlam.melox.ui.account.KugouLoginScreen
+import com.lladlam.melox.ui.account.MeloXNeteaseLoginActivity
+import com.lladlam.melox.playback.ProviderPlaybackQualityRuntime
 import com.lladlam.melox.playback.CrossProviderPlaybackPreferences
 import com.lladlam.melox.core.audio.MusicQuality
 import com.lladlam.melox.core.audio.MusicQualityPreferences
@@ -122,6 +126,8 @@ import com.lladlam.melox.platform.floating.MeloXFloatingLyricsService
 import com.lladlam.melox.platform.xiaomi.HyperOsFocusBridge
 import com.lladlam.melox.ui.MeloXBottomContentClearance
 import com.lladlam.melox.ui.MeloXPinkCat
+import com.lladlam.melox.ui.hotStringResource
+import com.lladlam.melox.ui.hotText
 import com.lladlam.melox.ui.glass.MeloXActionIcon
 import com.lladlam.melox.ui.glass.MeloXGlassTextField
 import com.lladlam.melox.ui.glass.MeloXGlassDialog
@@ -136,12 +142,14 @@ import com.lladlam.melox.ui.glass.MeloXIosGroupedList
 import com.lladlam.melox.ui.glass.MeloXIosListRow
 import com.lladlam.melox.ui.glass.MeloXIosTopBar
 import com.lladlam.melox.ui.glass.MeloXPinnedListPage
+import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
 import com.lladlam.melox.ui.glass.MeloXSymbol
 import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import com.lladlam.melox.ui.glass.MeloXSymbolVariant
 import com.lladlam.melox.ui.glass.MeloXSystemColors
 import com.lladlam.melox.ui.glass.meloXContentSurface
 import com.lladlam.melox.ui.glass.meloXLiquidButton
+import com.lladlam.melox.ui.legal.MELOX_LEGAL_VERSION
 import com.lladlam.melox.ui.legal.MeloXLegalLinks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -150,54 +158,80 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 
-private enum class SettingsRoute(val titleRes: Int) {
-    Playback(R.string.settings_route_playback),
-    PlayerAppearance(R.string.settings_route_appearance),
-    Lyrics(R.string.settings_route_lyrics),
-    SystemPlayback(R.string.settings_route_system_playback),
-    SkylineLyrics(R.string.settings_route_skyline),
-    FloatingLyrics(R.string.settings_route_floating),
-    ContentFeatures(R.string.settings_route_features),
-    Recognition(R.string.settings_route_recognition),
-    Messages(R.string.settings_route_messages),
-    ListenTogether(R.string.settings_route_listen_together),
-    Content(R.string.settings_route_content),
-    Storage(R.string.settings_route_storage),
-    TabLayout(R.string.settings_route_tabs),
-    General(R.string.settings_route_general),
-    Privacy(R.string.settings_route_privacy),
+// ⚠ 必须 public：`MeloXSettingsDetailActivity.launch(context, route, source)` 是 public 的
+//   Activity 入口，签名里出现 internal 类型会直接编译不过（public 函数暴露 internal 类型）。
+enum class SettingsRoute(val title: String) {
+    Playback("播放"),
+    PlayerAppearance("外观"),
+    Lyrics("歌词"),
+    SystemPlayback("系统歌词显示"),
+    SkylineLyrics("全屏天际歌词"),
+    FloatingLyrics("悬浮窗歌词"),
+    ContentFeatures("功能模块"),
+    Blocklist("屏蔽管理"),
+    Recognition("听歌识曲"),
+    Messages("私信与站内分享"),
+    ListenTogether("一起听"),
+    Content("内容"),
+    Storage("存储管理"),
+    TabLayout("页面与标签栏"),
+    General("通用"),
+    RemoteConfig("远程兼容性配置"),
+    About("关于 MeloX"),
+    Legal("隐私政策与免责声明"),
+    Privacy("隐私与本地算法"),
+    Developer("开发者选项"),
+    Experimental("测试功能尝鲜"),
 }
 
 private data class SettingsItem(
     val route: SettingsRoute,
-    val subtitleRes: Int,
+    val subtitle: String,
     val symbol: String,
-    val keywordsRes: Int,
+    val keywords: String,
 )
 
-private data class SettingsSection(val titleRes: Int, val items: List<SettingsItem>)
+private data class SettingsSection(val title: String, val items: List<SettingsItem>)
 
 private val SettingsSections = listOf(
-    SettingsSection(R.string.settings_section_app, listOf(
-        SettingsItem(SettingsRoute.General, R.string.settings_sub_general, "⚙", R.string.settings_kw_general),
-        SettingsItem(SettingsRoute.PlayerAppearance, R.string.settings_sub_appearance, "✦", R.string.settings_kw_appearance),
-        SettingsItem(SettingsRoute.Content, R.string.settings_sub_content, "▦", R.string.settings_kw_content),
-        SettingsItem(SettingsRoute.Playback, R.string.settings_sub_playback, "♫", R.string.settings_kw_playback),
-        SettingsItem(SettingsRoute.Lyrics, R.string.settings_sub_lyrics, "❞", R.string.settings_kw_lyrics),
-        SettingsItem(SettingsRoute.Storage, R.string.settings_sub_storage, "▰", R.string.settings_kw_storage),
+    SettingsSection("应用", listOf(
+        SettingsItem(SettingsRoute.General, "主题、启动行为与链接处理", "⚙", "主题 浅色 深色 跟随系统 默认页面 剪贴板"),
+        SettingsItem(SettingsRoute.PlayerAppearance, "背景、封面动画与屏幕常亮", "✦", "模糊 色彩 饱和度 封面 自动锁屏"),
+        SettingsItem(SettingsRoute.Content, "地区、歌单信息和发现内容", "▦", "华语 欧美 韩国 日本 播放量 内容"),
+        SettingsItem(SettingsRoute.Playback, "音质、播放行为与自动混音", "♫", "高品质 无损 上一首 页面记忆 心动模式 交叉淡化 播放"),
+        SettingsItem(SettingsRoute.Lyrics, "翻译、罗马音、逐字与歌词交互", "❞", "Apple Music EVA 文字PV 字体 YRC 翻译 罗马音 歌词"),
+        SettingsItem(SettingsRoute.Storage, "空间统计、下载与缓存清理", "▰", "下载 存储 缓存 清理 数据库"),
     )),
-    SettingsSection(R.string.settings_section_more, listOf(
-        SettingsItem(SettingsRoute.ContentFeatures, R.string.settings_sub_features, "☷", R.string.settings_kw_features),
-        SettingsItem(SettingsRoute.Recognition, R.string.settings_sub_recognition, "⌁", R.string.settings_kw_recognition),
-        SettingsItem(SettingsRoute.Messages, R.string.settings_sub_messages, "✉", R.string.settings_kw_messages),
-        SettingsItem(SettingsRoute.ListenTogether, R.string.settings_sub_listen_together, "◎", R.string.settings_kw_listen_together),
-        SettingsItem(SettingsRoute.TabLayout, R.string.settings_sub_tabs, "▥", R.string.settings_kw_tabs),
-        SettingsItem(SettingsRoute.SystemPlayback, R.string.settings_sub_system_playback, "▣", R.string.settings_kw_system_playback),
-        SettingsItem(SettingsRoute.SkylineLyrics, R.string.settings_sub_skyline, "▱", R.string.settings_kw_skyline),
-        SettingsItem(SettingsRoute.FloatingLyrics, R.string.settings_sub_floating, "▤", R.string.settings_kw_floating),
+    SettingsSection("扩展", listOf(
+        SettingsItem(SettingsRoute.ContentFeatures, "播客、云盘、最近播放等模块", "☷", "播客 广播 云盘 最近播放 下载"),
+        SettingsItem(SettingsRoute.Recognition, "麦克风音频指纹与持续识别", "⌁", "听歌识曲 麦克风 指纹 Shazam 持续识别"),
+        SettingsItem(SettingsRoute.Messages, "联系人、会话历史与文字私信", "✉", "私信 联系人 会话 分享 网易云"),
+        SettingsItem(SettingsRoute.ListenTogether, "创建、加入和管理网易云一起听房间", "◎", "一起听 房间 邀请 同步"),
+        SettingsItem(SettingsRoute.TabLayout, "首页、标签栏与音乐库页面", "▥", "首页 标签栏 排序 推荐 歌单 历史"),
+        SettingsItem(SettingsRoute.SystemPlayback, "通知、锁屏和系统媒体信息", "▣", "控制中心 通知 锁屏 Media3"),
+        SettingsItem(SettingsRoute.FloatingLyrics, "Android 悬浮歌词能力与权限", "▤", "画中画 悬浮窗 其他应用"),
+    )),
+    SettingsSection("其他", listOf(
+        // 本地 fork 按用户要求删掉了整个「关于」分组（RemoteConfig / About / Legal），
+        // 对应的 SettingsDetailScreen 分支也一并移除 —— 保留菜单项会让点击落到空白页。
+        SettingsItem(SettingsRoute.Developer, "播放器诊断与迁移状态", "⌘", "BeatNet 节拍 调试 日志"),
+        SettingsItem(SettingsRoute.Experimental, "预览尚未稳定的新功能", "✦", "实验 测试 歌词 强绑定"),
     )),
 )
 
+/**
+ * 设置**主页**（列表 + 搜索）。
+ *
+ * ⚠⚠ 2026-10-02：详情页**不再**在这里以覆盖层形式推出，改成启动
+ * [MeloXSettingsDetailActivity]（真实 Activity）⇒ 整页推入/退回的转场由平台负责。
+ * 原先那套（`MeloXInterruptiblePage` + `AnimatedContent` 弹簧位移 + `meloXPageRecede`
+ * 让列表页退让 + 自研 `PredictiveBackHandler` + 延后一帧可见）**整块删掉**，原因见
+ * `ui/MeloXPageTransitions.kt` 里 `MeloXPageHost` 的说明：应用内重放系统已经做得更好的事，
+ * 结果是转场被组合/绘制帧牵连，快速连续打断必然顿挫。
+ *
+ * ⚠ 深链（原来靠 `initialRouteRequest` 传进来的那些）现在同样直接启动
+ * [MeloXSettingsDetailActivity]，见 `MeloXApp` 里 `settingsRouteRequest` 的两个调用点。
+ */
 @Composable
 fun SettingsScreen(
     session: NeteaseSessionStore,
@@ -206,20 +240,11 @@ fun SettingsScreen(
     onOpenAccount: (() -> Unit)? = null,
     onOpenServices: (() -> Unit)? = null,
     onOpenMessages: (() -> Unit)? = null,
-    initialRouteRequest: String? = null,
-    onInitialRouteConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    var route by remember { mutableStateOf<SettingsRoute?>(null) }
-    // Retain the detail content while its exit animation runs. `route?.let {}` would
-    // blank the page the moment Back is pressed, so the slide-out animated an empty box
-    // (gesture back only looked fine because it drives backProgress before closing).
-    var detailRoute by remember { mutableStateOf<SettingsRoute?>(null) }
-    if (route != null) detailRoute = route
-    val backProgress = remember { Animatable(0f) }
     var search by remember { mutableStateOf("") }
-    // Keep the root ScrollState alive while a detail route is displayed.
-    // Creating it inside the root-only branch reset Settings to y=0 on Back.
+    // 设置主页的滚动位置：详情页现在是另一个 Activity，本组合在它盖住期间仍然存活，
+    // 退回时列表位置自然保持（`rememberScrollState` 由 `rememberSaveable` 兜底）。
     val rootScrollState = rememberScrollState()
 
     LaunchedEffect(Unit) { MeloXSettingsPreferences.initialize(context) }
@@ -228,91 +253,30 @@ fun SettingsScreen(
             LocalRecommendationEngine.start(context)
         }
     }
-    LaunchedEffect(initialRouteRequest) {
-        initialRouteRequest?.let { requested ->
-            route = SettingsRoute.entries.firstOrNull { it.name == requested }
-            onInitialRouteConsumed()
-        }
-    }
     LaunchedEffect(session.cookie) {
         if (session.isLoggedIn) session.refreshProfile()
     }
 
-    PredictiveBackHandler(enabled = route != null) {
-        try {
-            it.collect { event -> backProgress.snapTo(event.progress) }
-            // Close first, then finish the slide: the exit transition starts from the
-            // gesture position while the remaining offset plays out. Resetting the
-            // progress after closing would snap the already off-screen page back to
-            // the center for one exit-animation pass - a visible "reappear" on
-            // gesture back (same fix as the search detail page).
-            route = null
-            backProgress.animateTo(1f, tween(160))
-        } catch (_: CancellationException) {
-            backProgress.animateTo(0f)
-        }
-    }
-    // Gesture back leaves the offset at 1 (page fully off-screen). Reset it on the
-    // next open, otherwise the new detail page enters still shifted off-screen.
-    LaunchedEffect(route) { if (route != null) backProgress.snapTo(0f) }
-
-    AnimatedVisibility(
-        visible = route != null,
-        enter = meloXPageEnter(fromRight = true),
-        exit = meloXPageExit(toRight = true),
-        modifier = Modifier.fillMaxSize().zIndex(1f),
-    ) {
-        detailRoute?.let { selectedRoute ->
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = size.width * backProgress.value
-                        val scale = 1f - 0.08f * backProgress.value
-                        scaleX = scale
-                        scaleY = scale
-                        transformOrigin = TransformOrigin(0f, 0.5f)
-                    },
-            ) {
-                SettingsDetailScreen(route = selectedRoute, source = source, session = session, onBack = { route = null })
-            }
-        }
-    }
-    AnimatedVisibility(
-        // Keep the destination underneath the detail page so predictive back
-        // reveals real Settings content instead of the Scaffold background.
-        visible = true,
-        enter = meloXPageEnter(fromRight = false),
-        exit = meloXPageExit(toRight = false),
-        modifier = Modifier
-            .fillMaxSize()
-            .zIndex(0f)
-            .then(if (route != null) Modifier.clearAndSetSemantics { } else Modifier),
-    ) {
     val normalized = search.trim().lowercase()
-    val visibleSections = buildList {
-        for (section in SettingsSections) {
-            val filtered = buildList {
-                for (item in section.items) {
-                    val haystack = listOf(
-                        stringResource(item.route.titleRes),
-                        stringResource(item.subtitleRes),
-                        stringResource(item.keywordsRes),
-                    ).joinToString(" ").lowercase()
-                    if (normalized.isBlank() || haystack.contains(normalized)) add(item)
-                }
-            }
-            if (filtered.isNotEmpty()) add(SettingsSection(section.titleRes, filtered))
+    val visibleSections = SettingsSections.mapNotNull { section ->
+        val filtered = section.items.filter { item ->
+            normalized.isBlank() || listOf(item.route.title, item.subtitle, item.keywords)
+                .joinToString(" ").lowercase().contains(normalized)
         }
+        filtered.takeIf { it.isNotEmpty() }?.let { SettingsSection(section.title, it) }
     }
 
+    // ⚠ 2026-09-29：状态栏避让必须放在 `verticalScroll` **之后**（即滚动内容的内边距里）。
+    //   原来 `.statusBarsPadding()` 打在 `verticalScroll` 之前 ⇒ 滚动视口被压到状态栏下缘
+    //   (41dp)，滚上去的内容一律在 y=41dp 被裁掉、**永远进不了状态栏/挖孔区域**。
+    //   改成内边距后静止态位置不变（18+41），滚动时头部从状态栏底下穿出。
+    val statusBarTop = rememberMeloXStableStatusBarHeight()
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
             .verticalScroll(rootScrollState)
             .padding(horizontal = 20.dp)
-            .padding(top = 18.dp, bottom = MeloXBottomContentClearance),
+            .padding(top = 18.dp + statusBarTop, bottom = MeloXBottomContentClearance),
     ) {
         MeloXIosTopBar(
             title = stringResource(R.string.tab_settings),
@@ -323,7 +287,7 @@ fun SettingsScreen(
         SettingsSearchField(value = search, onValueChange = { search = it })
         Spacer(Modifier.height(20.dp))
 
-        if (normalized.isBlank() || stringResource(R.string.settings_account_keywords).lowercase().contains(normalized)) {
+        if (normalized.isBlank() || stringResource(R.string.settings_account_keywords).contains(normalized)) {
             SettingsAccountCard(
                 session = session,
                 onLogin = onLogin,
@@ -335,7 +299,7 @@ fun SettingsScreen(
 
         visibleSections.forEach { section ->
             Text(
-                stringResource(section.titleRes),
+                section.title,
                 modifier = Modifier.padding(start = 8.dp, bottom = 8.dp, top = 8.dp),
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.48f),
                 fontSize = 13.sp,
@@ -345,7 +309,9 @@ fun SettingsScreen(
                 if (selected == SettingsRoute.Messages && onOpenMessages != null) {
                     onOpenMessages()
                 } else {
-                    route = selected
+                    // 详情页是**独立 Activity** ⇒ 整页推入转场由平台负责（可连续打断、
+                    // 带系统屏幕圆角、支持预测式返回）。见 [MeloXSettingsDetailActivity]。
+                    MeloXSettingsDetailActivity.launch(context, selected, source)
                 }
             }
             Spacer(Modifier.height(22.dp))
@@ -366,7 +332,6 @@ fun SettingsScreen(
                 SettingsDangerButton(stringResource(R.string.settings_sign_out)) { session.clear() }
             }
         }
-    }
     }
 }
 
@@ -452,7 +417,7 @@ private fun SettingsSectionCard(section: SettingsSection, onOpen: (SettingsRoute
     MeloXIosGroupedList(surfaceColor = MaterialTheme.colorScheme.surface) {
         section.items.forEach { item ->
             MeloXIosListRow(
-                title = stringResource(item.route.titleRes),
+                title = item.route.title,
                 leading = {
                     Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
                         MeloXActionIcon(item.symbol, Modifier.size(22.dp), accent)
@@ -467,10 +432,10 @@ private fun SettingsSectionCard(section: SettingsSection, onOpen: (SettingsRoute
 }
 
 @Composable
-private fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, session: NeteaseSessionStore, onBack: () -> Unit) {
+internal fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, session: NeteaseSessionStore, onBack: () -> Unit) {
     val context = LocalContext.current
     MeloXPinnedListPage(
-        title = stringResource(route.titleRes),
+        title = route.title,
         onNavigateBack = onBack,
         bottomPadding = MeloXBottomContentClearance,
     ) {
@@ -481,10 +446,9 @@ private fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, sess
                     SettingsRoute.PlayerAppearance -> PlayerAppearanceSettings(context)
                     SettingsRoute.Lyrics -> LyricsSettings(context)
                     SettingsRoute.SystemPlayback -> SystemPlaybackSettings(context)
-                    SettingsRoute.SkylineLyrics -> SkylineLyricsSettings(context)
                     SettingsRoute.FloatingLyrics -> FloatingLyricsSettings(context)
                     SettingsRoute.ContentFeatures -> ContentFeatureSettings(context)
-                    SettingsRoute.Recognition -> RecognitionSettings(context)
+                    SettingsRoute.Recognition -> MeloXRecognitionPanel(context)
                     SettingsRoute.Messages -> MessagesSettings(context)
                     SettingsRoute.ListenTogether -> ListenTogetherSettings(context)
                     SettingsRoute.Content -> ContentSettings(context)
@@ -492,9 +456,140 @@ private fun SettingsDetailScreen(route: SettingsRoute, source: MusicSource, sess
                     SettingsRoute.TabLayout -> TabLayoutSettings(context)
                     SettingsRoute.General -> GeneralSettings(context)
                     SettingsRoute.Privacy -> PrivacySettings(context)
+                    SettingsRoute.Developer -> DeveloperSettings()
+                    SettingsRoute.Experimental -> ExperimentalSettings(context, source, session)
+                    else -> {}
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LegalSettings(context: android.content.Context) {
+    var selectedDocument by remember { mutableStateOf<MeloXLegalDocument?>(null) }
+    var cloudControlEnabled by remember { mutableStateOf(MeloXRemoteConfigConsent.enabled(context)) }
+    var showCloudControlConsent by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val consentVersion = remember {
+        MeloXSettingsPreferences.string(context, "legal_consent_version")
+    }
+
+    SettingsGlassGroup {
+        Column(Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.settings_legal_documents), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "当前文本版本：$MELOX_LEGAL_VERSION",
+                modifier = Modifier.padding(top = 7.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+            )
+            Text(
+                text = if (consentVersion.isBlank()) {
+                    stringResource(R.string.settings_legal_no_consent)
+                } else {
+                    "已同意版本：$consentVersion"
+                },
+                modifier = Modifier.padding(top = 3.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f),
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    MeloXIosGroupedList(surfaceColor = MaterialTheme.colorScheme.surface) {
+        MeloXIosListRow(
+            title = stringResource(R.string.legal_privacy),
+            leading = {
+                MeloXSymbolIcon(
+                    MeloXSymbol.Info,
+                    Modifier.size(24.dp),
+                    MeloXSystemColors.Blue,
+                )
+            },
+            onClick = { selectedDocument = MeloXLegalDocument.PrivacyPolicy },
+            showTopSeparator = false,
+        )
+        MeloXIosListRow(
+            title = stringResource(R.string.settings_legal_disclaimer),
+            leading = {
+                MeloXSymbolIcon(
+                    MeloXSymbol.Book,
+                    Modifier.size(24.dp),
+                    MeloXSystemColors.Blue,
+                )
+            },
+            onClick = { selectedDocument = MeloXLegalDocument.Disclaimer },
+            showTopSeparator = true,
+        )
+        MeloXIosListRow(
+            title = stringResource(R.string.legal_cloud),
+            leading = {
+                MeloXSymbolIcon(
+                    MeloXSymbol.Info,
+                    Modifier.size(24.dp),
+                    MeloXSystemColors.Blue,
+                )
+            },
+            onClick = { selectedDocument = MeloXLegalDocument.CloudControlPrivacy },
+            showTopSeparator = true,
+        )
+        MeloXIosListRow(
+            title = stringResource(R.string.settings_legal_third_party),
+            leading = {
+                MeloXSymbolIcon(
+                    MeloXSymbol.Book,
+                    Modifier.size(24.dp),
+                    MeloXSystemColors.Blue,
+                )
+            },
+            onClick = { selectedDocument = MeloXLegalDocument.ThirdPartyMusicSources },
+            showTopSeparator = true,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsGlassGroup {
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_legal_remote_toggle),
+            value = cloudControlEnabled,
+            note = stringResource(R.string.settings_legal_remote_note),
+            grouped = true,
+        ) { requested ->
+            if (requested) {
+                showCloudControlConsent = true
+            } else {
+                MeloXRemoteConfigConsent.reject(context)
+                cloudControlEnabled = false
+                scope.launch { MeloXRemoteConfigRuntime.clearCache(context) }
+            }
+        }
+    }
+    Text(
+        stringResource(R.string.settings_legal_remote_footer),
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp),
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
+    )
+
+    selectedDocument?.let { document ->
+        MeloXLegalDocumentDialog(
+            document = document,
+            onDismiss = { selectedDocument = null },
+        )
+    }
+    if (showCloudControlConsent) {
+        MeloXCloudControlConsentDialog(
+            onReject = { showCloudControlConsent = false },
+            onAccept = {
+                MeloXRemoteConfigConsent.accept(context)
+                MeloXRemoteConfigRuntime.initializeAndRefresh(context, BuildConfig.VERSION_CODE, force = true)
+                cloudControlEnabled = true
+                showCloudControlConsent = false
+            },
+        )
     }
 }
 
@@ -545,13 +640,13 @@ private fun PrivacySettings(context: android.content.Context) {
         Column(Modifier.padding(16.dp)) {
             Text(stringResource(R.string.settings_privacy_status), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                if (progress.isFullAnalysis) stringResource(R.string.settings_privacy_full_analysis, progress.stage, progress.processed, progress.total)
-                else stringResource(R.string.settings_privacy_quick_update, progress.stage),
+                if (progress.isFullAnalysis) "后台全量分析：${progress.stage} · ${progress.processed}/${progress.total}"
+                else "快速更新：${progress.stage}",
                 modifier = Modifier.padding(top = 8.dp),
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
             )
-            Text(stringResource(R.string.settings_privacy_backend, progress.modelBackend), modifier = Modifier.padding(top = 4.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f))
+            Text("模型后端：${progress.modelBackend}", modifier = Modifier.padding(top = 4.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f))
             progress.message?.let { Text(it, modifier = Modifier.padding(top = 5.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f)) }
         }
     }
@@ -563,7 +658,7 @@ private fun PrivacySettings(context: android.content.Context) {
             Text(stringResource(R.string.settings_privacy_policy_title), style = MaterialTheme.typography.titleMedium)
             Text(stringResource(R.string.settings_privacy_policy_body), modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp, lineHeight = 19.sp)
             Spacer(Modifier.height(16.dp))
-            SettingsActionButton(if (secondsLeft > 0) stringResource(R.string.settings_privacy_wait, secondsLeft) else stringResource(R.string.legal_agree_enable)) {
+            SettingsActionButton(if (secondsLeft > 0) "请阅读后等待 ${secondsLeft} 秒" else stringResource(R.string.legal_agree_enable)) {
                 if (secondsLeft == 0) {
                     consent = true; showPolicy = false
                     LocalRecommendationStore.setPersonalizationConsent(context, true)
@@ -601,7 +696,6 @@ private fun SystemPlaybackSettings(context: android.content.Context) {
         MeloXSettingsPreferences.setBoolean(context, "lyrics_notifications_enabled", granted)
     }
 
-    val protocol = remember { HyperOsFocusBridge.protocol(context) }
     SettingsGlassGroup {
         SettingsExternalToggleRow(
             title = stringResource(R.string.settings_system_lyrics),
@@ -612,6 +706,7 @@ private fun SystemPlaybackSettings(context: android.content.Context) {
             systemLyrics = it
             MeloXSettingsPreferences.setBoolean(context, "system_lyrics_enabled", it)
         }
+        val protocol = remember { HyperOsFocusBridge.protocol(context) }
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_system_title_format),
             selected = MeloXSettingsRuntime.systemLyricTitleMode,
@@ -648,12 +743,6 @@ private fun SystemPlaybackSettings(context: android.content.Context) {
             MeloXSettingsPreferences.setBoolean(context, "hyperos_super_island_enabled", enabled)
         }
     }
-    if (protocol == HyperOsFocusBridge.Protocol.HyperOs3) {
-        Spacer(Modifier.height(10.dp))
-        SettingsActionButton(stringResource(R.string.settings_shizuku_permission)) {
-            HyperOsFocusBridge.requestShizukuPermission(context)
-        }
-    }
     Spacer(Modifier.height(10.dp))
     SettingsGlassGroup {
         SettingsToggleRow(context, stringResource(R.string.settings_notify_next_line), "lyrics_notification_next_line", false, grouped = true)
@@ -673,17 +762,235 @@ private fun SystemPlaybackSettings(context: android.content.Context) {
     )
     SettingsActionButton(stringResource(R.string.settings_notify_test)) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("ysyy_lyrics", context.getString(R.string.settings_notify_channel_lyrics), NotificationManager.IMPORTANCE_LOW))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel("ysyy_lyrics", context.getString(R.string.settings_notify_channel_lyrics), NotificationManager.IMPORTANCE_LOW))
+        }
         manager.notify(
             10_043,
             NotificationCompat.Builder(context, "ysyy_lyrics")
                 .setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentTitle(context.getString(R.string.settings_notify_test_title))
-                .setContentText(context.getString(R.string.settings_notify_test_text))
-                .setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(R.string.settings_notify_test_big)))
+                .setContentTitle("这是测试歌词")
+                .setContentText("YSYY · 通知模板预览")
+                .setStyle(NotificationCompat.BigTextStyle().bigText("这是测试歌词\n下一句歌词预览"))
                 .setSilent(true)
                 .build(),
         )
+    }
+}
+
+@Composable
+private fun ExperimentalSettings(context: android.content.Context, source: MusicSource, session: NeteaseSessionStore) {
+    var playbackEnabled by remember { mutableStateOf(PlaybackAccountStore.isEnabled(context)) }
+    var showQQLogin by remember { mutableStateOf(false) }
+    var showKugouLogin by remember { mutableStateOf(false) }
+    var showClearPlaybackConfirmation by remember { mutableStateOf(false) }
+    var showClearLyricBindingsConfirmation by remember { mutableStateOf(false) }
+    var showClearBilibiliAssociationsConfirmation by remember { mutableStateOf(false) }
+    var bilibiliLyricAlignment by remember(source) {
+        mutableStateOf(MeloXSettingsPreferences.boolean(context, "bilibili_lyric_audio_alignment", false))
+    }
+    var refreshRevision by remember { mutableIntStateOf(0) }
+    var autoSyncEnabled by remember(source) {
+        mutableStateOf(MeloXSettingsRuntime.autoSyncWordLyricsEnabled)
+    }
+    SettingsGlassGroup {
+        SettingsExternalToggleRow(
+            title = hotStringResource(R.string.settings_autosync_word),
+            value = autoSyncEnabled,
+            note = hotStringResource(R.string.settings_autosync_word_note),
+            grouped = true,
+        ) { enabled ->
+            autoSyncEnabled = enabled
+            MeloXSettingsPreferences.setBoolean(context, "autosync_word_lyrics_enabled", enabled)
+        }
+    }
+    if (autoSyncEnabled) {
+        SettingsGlassGroup { AutoSyncModelPanel(context) }
+        Spacer(Modifier.height(10.dp))
+    }
+
+    val neteaseLoginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == Activity.RESULT_OK) refreshRevision++
+    }
+
+    if (source == MusicSource.Bilibili) {
+        SettingsGlassGroup {
+            SettingsExternalToggleRow(
+                title = stringResource(R.string.settings_bilibili_align),
+                value = bilibiliLyricAlignment,
+                grouped = true,
+            ) { enabled ->
+                bilibiliLyricAlignment = enabled
+                MeloXSettingsPreferences.setBoolean(context, "bilibili_lyric_audio_alignment", enabled)
+            }
+        }
+        SettingsInfoCard(stringResource(R.string.settings_bilibili_align_warning))
+        Spacer(Modifier.height(10.dp))
+        SettingsActionButton(stringResource(R.string.settings_bilibili_clear)) { showClearBilibiliAssociationsConfirmation = true }
+        Spacer(Modifier.height(10.dp))
+    }
+
+    if (showClearBilibiliAssociationsConfirmation) {
+        MeloXGlassDialog(visible = true, onDismiss = { showClearBilibiliAssociationsConfirmation = false }) {
+            Text(stringResource(R.string.settings_bilibili_clear_title), style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.settings_bilibili_clear_body), Modifier.padding(top = 8.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showClearBilibiliAssociationsConfirmation = false }
+                SettingsActionButton(stringResource(R.string.provider_clear), Modifier.weight(1f)) {
+                    BilibiliPlaybackAssociationStore.clear(context)
+                    showClearBilibiliAssociationsConfirmation = false
+                }
+            }
+        }
+    }
+
+    if (showQQLogin) {
+        Dialog(
+            onDismissRequest = { showQQLogin = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            QQMusicLoginScreen(
+                onDismiss = { showQQLogin = false },
+                onLoggedIn = { showQQLogin = false; refreshRevision++ },
+                targetSlot = PlaybackAccountSlot.Playback,
+            )
+        }
+    }
+    if (showKugouLogin) {
+        Dialog(
+            onDismissRequest = { showKugouLogin = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            KugouLoginScreen(
+                onDismiss = { showKugouLogin = false },
+                onLoggedIn = { showKugouLogin = false; refreshRevision++ },
+                targetSlot = PlaybackAccountSlot.Playback,
+            )
+        }
+    }
+
+    SettingsGlassGroup {
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_playback_second_account),
+            value = playbackEnabled,
+            grouped = true,
+        ) { enabled ->
+            playbackEnabled = enabled
+            PlaybackAccountStore.setEnabled(context, enabled)
+            if (!enabled) ProviderPlaybackQualityRuntime.clear()
+        }
+    }
+    if (playbackEnabled) {
+        Spacer(Modifier.height(10.dp))
+        SettingsGlassGroup {
+            SettingsInfoCard(stringResource(R.string.settings_playback_second_account_note))
+        }
+        Spacer(Modifier.height(10.dp))
+
+        val neteaseCookie = remember(refreshRevision) { NeteaseSessionStore.readPlaybackCookie(context) }
+        val qqLoggedIn = remember(refreshRevision) { QQMusicSessionStore.read(context, playback = true).isLoggedIn }
+        val kugouLoggedIn = remember(refreshRevision) { KugouSessionStore.read(context, playback = true).isLoggedIn }
+
+        SettingsGlassGroup {
+            MeloXIosListRow(
+                title = stringResource(R.string.account_netease),
+                subtitle = if (NeteaseSessionStore.containsMusicU(neteaseCookie)) stringResource(R.string.provider_logged_in) else stringResource(R.string.provider_not_signed_in),
+                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.primary) },
+                onClick = { neteaseLoginLauncher.launch(MeloXNeteaseLoginActivity.createIntent(context, PlaybackAccountSlot.Playback)) },
+                showTopSeparator = false,
+            )
+            MeloXIosListRow(
+                title = stringResource(R.string.settings_qq_music),
+                subtitle = if (qqLoggedIn) stringResource(R.string.provider_logged_in) else stringResource(R.string.provider_not_signed_in),
+                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.primary) },
+                onClick = { showQQLogin = true },
+            )
+            MeloXIosListRow(
+                title = stringResource(R.string.settings_kugou),
+                subtitle = if (kugouLoggedIn) stringResource(R.string.provider_logged_in) else stringResource(R.string.provider_not_signed_in),
+                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.primary) },
+                onClick = { showKugouLogin = true },
+            )
+            MeloXIosListRow(
+                title = stringResource(R.string.settings_apple_music),
+                subtitle = stringResource(R.string.settings_apple_second_account),
+                leading = { MeloXSymbolIcon(MeloXSymbol.MusicNote, Modifier.size(24.dp), MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)) },
+                onClick = null,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        SettingsDangerButton(stringResource(R.string.settings_clear_second_accounts)) { showClearPlaybackConfirmation = true }
+        MeloXGlassDialog(
+            visible = showClearPlaybackConfirmation,
+            onDismiss = { showClearPlaybackConfirmation = false },
+        ) {
+            Text(stringResource(R.string.settings_clear_second_accounts_title), style = MaterialTheme.typography.titleMedium)
+            Text(
+                stringResource(R.string.settings_clear_second_accounts_body),
+                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showClearPlaybackConfirmation = false }
+                SettingsActionButton(stringResource(R.string.provider_clear), Modifier.weight(1f)) {
+                    PlaybackAccountStore.clear(context)
+                    ProviderPlaybackQualityRuntime.clear()
+                    refreshRevision++
+                    showClearPlaybackConfirmation = false
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    if (!MeloXSettingsRuntime.automaticLyricSelectionEnabled) {
+        SettingsInfoCard(stringResource(R.string.settings_auto_lyrics_required))
+        return
+    }
+    var enabled by remember {
+        mutableStateOf(MeloXSettingsPreferences.boolean(context, "experimental_lyric_strong_binding", false))
+    }
+    SettingsGlassGroup {
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_lyric_binding),
+            value = enabled,
+            grouped = true,
+        ) { value ->
+            enabled = value
+            MeloXSettingsPreferences.setBoolean(context, "experimental_lyric_strong_binding", value)
+            if (!value) com.lladlam.melox.core.lyrics.LyricBindingStore.clear(context)
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsDangerButton(stringResource(R.string.settings_clear_lyric_bindings)) {
+        showClearLyricBindingsConfirmation = true
+    }
+    MeloXGlassDialog(
+        visible = showClearLyricBindingsConfirmation,
+        onDismiss = { showClearLyricBindingsConfirmation = false },
+    ) {
+        Text(stringResource(R.string.settings_clear_lyric_bindings_title), style = MaterialTheme.typography.titleMedium)
+        Text(
+            stringResource(R.string.settings_clear_lyric_bindings_body),
+            modifier = Modifier.padding(top = 8.dp),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) {
+                showClearLyricBindingsConfirmation = false
+            }
+            SettingsDangerButton(stringResource(R.string.provider_clear), Modifier.weight(1f)) {
+                com.lladlam.melox.core.lyrics.LyricBindingStore.clear(context)
+                showClearLyricBindingsConfirmation = false
+            }
+        }
     }
 }
 
@@ -709,98 +1016,16 @@ private fun NotificationTemplateField(
 }
 
 @Composable
-private fun SkylineLyricsSettings(context: android.content.Context) {
-    var enabled by remember { mutableStateOf(MeloXSettingsRuntime.skylineEnabled) }
-    SettingsGlassGroup {
-        SettingsExternalToggleRow(
-            title = stringResource(R.string.settings_skyline_auto),
-            value = enabled,
-            note = stringResource(R.string.settings_skyline_auto_note),
-            grouped = true,
-        ) {
-            enabled = it
-            MeloXSettingsPreferences.setBoolean(context, "lyrics_skyline_enabled", it)
-        }
-        SettingsToggleRow(context, stringResource(R.string.settings_skyline_song_info), "lyrics_skyline_song_info", true, grouped = true)
-        SettingsToggleRow(context, stringResource(R.string.settings_skyline_keep_awake), "lyrics_skyline_keep_awake", true, stringResource(R.string.settings_skyline_keep_awake_note), grouped = true)
-        LyricsChoiceSetting(
-            context,
-            stringResource(R.string.settings_skyline_ambient_count),
-            "lyrics_skyline_ambient_lines",
-            2,
-            listOf(0, 1, 2, 3, 4),
-            grouped = true,
-        ) { if (it == 0) context.getString(R.string.settings_skyline_off) else context.getString(R.string.settings_skyline_lines, it) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsGlassGroup {
-        LyricsChoiceSetting(context, stringResource(R.string.settings_skyline_max_chars), "lyrics_skyline_ambient_max_characters", 4, listOf(1, 2, 3, 4), grouped = true) { context.getString(R.string.settings_skyline_chars, it) }
-        LyricsChoiceSetting(context, stringResource(R.string.settings_skyline_max_visible), "lyrics_skyline_ambient_max_visible", 16, listOf(4, 8, 12, 16, 20, 24), grouped = true) { context.getString(R.string.settings_skyline_groups, it) }
-    }
-    Spacer(Modifier.height(10.dp))
-    var currentFontSize by remember { mutableStateOf(MeloXSettingsRuntime.skylineCurrentFontSize) }
-    var currentScale by remember { mutableStateOf(MeloXSettingsRuntime.skylineCurrentMaximumScale) }
-    var currentWidth by remember { mutableStateOf(MeloXSettingsRuntime.skylineCurrentWidth) }
-    var nextFontSize by remember { mutableStateOf(MeloXSettingsRuntime.skylineNextFontSize) }
-    var nextOpacity by remember { mutableStateOf(MeloXSettingsRuntime.skylineNextOpacity) }
-    var currentSpacing by remember { mutableStateOf(MeloXSettingsRuntime.skylineCurrentSpacing) }
-    var ambientFontSize by remember { mutableStateOf(MeloXSettingsRuntime.skylineAmbientFontSize) }
-    var ambientOpacity by remember { mutableStateOf(MeloXSettingsRuntime.skylineAmbientOpacity) }
-    var ambientBlur by remember { mutableStateOf(MeloXSettingsRuntime.skylineAmbientBlur) }
-    var ambientTilt by remember { mutableStateOf(MeloXSettingsRuntime.skylineAmbientMaximumTilt) }
-    var ambientDrift by remember { mutableStateOf(MeloXSettingsRuntime.skylineAmbientDrift) }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_current_size), currentFontSize, 36f..84f, 47, { context.getString(R.string.settings_unit_sp, it.toInt()) }) {
-        currentFontSize = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_current_font_size", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_word_scale), currentScale, 1f..1.2f, 19, { context.getString(R.string.settings_unit_scale, it) }) {
-        currentScale = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_current_max_scale", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_center_width), currentWidth, .4f..82f / 100f, 20, { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }) {
-        currentWidth = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_current_width", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_next_size), nextFontSize, 14f..44f, 29, { context.getString(R.string.settings_unit_sp, it.toInt()) }) {
-        nextFontSize = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_next_font_size", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_next_brightness), nextOpacity, .2f..8f / 10f, 11, { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }) {
-        nextOpacity = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_next_opacity", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_center_spacing), currentSpacing, 4f..36f, 31, { context.getString(R.string.settings_unit_dp, it.toInt()) }) {
-        currentSpacing = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_current_spacing", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_bg_size), ambientFontSize, 24f..72f, 47, { context.getString(R.string.settings_unit_sp, it.toInt()) }) {
-        ambientFontSize = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_ambient_font_size", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_bg_brightness), ambientOpacity, .4f..1.8f, 13, { context.getString(R.string.settings_unit_times_1, it) }) {
-        ambientOpacity = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_ambient_opacity", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_bg_blur), ambientBlur, 0f..2f, 19, { context.getString(R.string.settings_unit_times_1, it) }) {
-        ambientBlur = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_ambient_blur", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_max_tilt), ambientTilt, 0f..20f, 19, { context.getString(R.string.settings_unit_degrees, it.toInt()) }) {
-        ambientTilt = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_ambient_max_tilt", it)
-    }
-    SettingsFloatSlider(stringResource(R.string.settings_skyline_drift), ambientDrift, 0f..2f, 19, { context.getString(R.string.settings_unit_times_1, it) }) {
-        ambientDrift = it; MeloXSettingsPreferences.setFloat(context, "lyrics_skyline_ambient_drift", it)
-    }
-    SettingsActionButton(stringResource(R.string.settings_skyline_reset)) {
-        listOf(
-            "lyrics_skyline_current_font_size" to 54f, "lyrics_skyline_current_max_scale" to 1.1f,
-            "lyrics_skyline_next_font_size" to 24f, "lyrics_skyline_current_spacing" to 14f,
-            "lyrics_skyline_current_width" to .64f, "lyrics_skyline_next_opacity" to .48f,
-            "lyrics_skyline_ambient_font_size" to 44f, "lyrics_skyline_ambient_opacity" to 1f,
-            "lyrics_skyline_ambient_blur" to 1f, "lyrics_skyline_ambient_max_tilt" to 8f,
-            "lyrics_skyline_ambient_drift" to 1f,
-        ).forEach { (key, value) -> MeloXSettingsPreferences.setFloat(context, key, value) }
-        MeloXSettingsPreferences.setInt(context, "lyrics_skyline_ambient_max_characters", 4)
-        MeloXSettingsPreferences.setInt(context, "lyrics_skyline_ambient_max_visible", 16)
-        currentFontSize = 54f; currentScale = 1.1f; nextFontSize = 24f; currentSpacing = 14f
-        currentWidth = .64f; nextOpacity = .48f; ambientFontSize = 44f; ambientOpacity = 1f
-        ambientBlur = 1f; ambientTilt = 8f; ambientDrift = 1f
-    }
-}
-
-@Composable
 private fun FloatingLyricsSettings(context: android.content.Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        Text(
+            text = stringResource(R.string.settings_floating_requires_android_8),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+            fontSize = 14.sp,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
+        )
+        return
+    }
     var enabled by remember { mutableStateOf(MeloXSettingsRuntime.floatingLyricsEnabled) }
     var permissionGranted by remember { mutableStateOf(AndroidSettings.canDrawOverlays(context)) }
 
@@ -860,7 +1085,7 @@ private fun FloatingLyricsSettings(context: android.content.Context) {
             18,
             listOf(14, 16, 18, 20, 24, 28),
             grouped = true,
-        ) { context.getString(R.string.settings_unit_sp, it) }
+        ) { "$it sp" }
         SettingsToggleRow(context, stringResource(R.string.settings_floating_contrast), "floating_lyrics_high_contrast", true, stringResource(R.string.settings_floating_contrast_note), grouped = true)
     }
 }
@@ -874,17 +1099,7 @@ private fun PlaybackSettings(context: android.content.Context) {
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_playback_quality),
             selected = quality,
-            items = MusicQuality.entries.map { entry ->
-                entry to stringResource(when (entry) {
-                    MusicQuality.Standard -> R.string.settings_quality_standard
-                    MusicQuality.High -> R.string.settings_quality_high
-                    MusicQuality.Lossless -> R.string.settings_quality_lossless
-                    MusicQuality.HiResolution -> R.string.settings_quality_hires
-                    MusicQuality.HighDefinitionSurround -> R.string.settings_quality_surround
-                    MusicQuality.ImmersiveSurround -> R.string.settings_quality_immersive
-                    MusicQuality.UltraClearMaster -> R.string.settings_quality_master
-                })
-            },
+            items = MusicQuality.entries.map { it to it.title },
             onSelected = { quality = it; PlaybackCommands.changeQuality(context, it) },
             grouped = true,
         )
@@ -925,15 +1140,7 @@ private fun PlaybackSettings(context: android.content.Context) {
             stringResource(R.string.settings_save_queue_on_exit),
             "playback_save_queue",
             true,
-            stringResource(R.string.settings_save_queue_on_exit_note),
-            grouped = true,
-        )
-        SettingsToggleRow(
-            context,
-            stringResource(R.string.settings_remember_last_song),
-            "playback_remember_last_song",
-            true,
-            stringResource(R.string.settings_remember_last_song_note),
+            "重新打开软件时恢复退出前的播放列表、当前歌曲和进度（暂停状态，不会自动播放）。",
             grouped = true,
         )
         SettingsToggleRow(context, stringResource(R.string.settings_heart_mode_on_launch), "playback_heart_mode_on_launch", false, grouped = true)
@@ -949,11 +1156,16 @@ private fun PlaybackSettings(context: android.content.Context) {
         LyricsChoiceSetting(
             context,
             stringResource(R.string.settings_player_transition_duration),
-            "player_transition_duration_ms",
-             360,
-             listOf(240, 300, 360, 460, 600),
+            // ⚠⚠ 2026-10-03：这一项不能直接用 `MeloXSettingsPreferences.int(context, key, default)`
+            //   —— 那是裸 `getInt`，**不做旧默认迁移**，而运行时的迁移在
+            //   `playerTransitionDurationMs()` 里 ⇒ 两条路径不同源。
+            //   正好会复现用户报障的「**不要实际变，设置显示没变**」（显示 360 / 实际 240）。
+            //   ⇒ 走专用读取函数：读 + 迁移 + 写回同一处，保证「显示 == 实际」。
+            key = MeloXSettingsPreferences.KEY_PLAYER_TRANSITION_DURATION_MS,
+            selectedProvider = { MeloXSettingsPreferences.playerTransitionDurationMs(context) },
+            values = listOf(240, 300, 360, 460, 600),
             grouped = true,
-        ) { context.getString(R.string.settings_duration_ms, it) }
+        ) { "${it}ms" }
     }
     Spacer(Modifier.height(10.dp))
     EqualizerSettings(context)
@@ -979,7 +1191,7 @@ private fun EqualizerSettings(context: android.content.Context) {
         MeloXEqualizerController.PRESETS.keys.forEach { value ->
             val label = mapOf(
                 "Flat" to stringResource(R.string.settings_eq_flat), "Bass" to stringResource(R.string.settings_eq_bass), "Vocal" to stringResource(R.string.settings_eq_vocal), "Treble" to stringResource(R.string.settings_eq_treble),
-                "Electronic" to stringResource(R.string.settings_eq_electronic), "Rock" to stringResource(R.string.settings_eq_rock), "Classical" to stringResource(R.string.settings_eq_classical), "Custom" to stringResource(R.string.settings_eq_custom),
+                "Electronic" to "电子", "Rock" to "摇滚", "Classical" to "古典", "Custom" to stringResource(R.string.settings_eq_custom),
             ).getValue(value)
             SettingsChoiceRow(label, preset == value) {
                 preset = value
@@ -996,8 +1208,7 @@ private fun EqualizerSettings(context: android.content.Context) {
                 }
                 SettingsFloatSlider(label, gain, -12f..12f, 47, { value ->
                     val rounded = kotlin.math.round(value * 2f) / 2f
-                    val format = if (rounded > 0f) R.string.settings_eq_gain_positive else R.string.settings_eq_gain_db
-                    context.getString(format, rounded)
+                    if (rounded > 0f) "+%.1f dB".format(rounded) else "%.1f dB".format(rounded)
                 }) { value ->
                     gain = kotlin.math.round(value * 2f) / 2f
                     MeloXSettingsPreferences.setFloat(context, "equalizer_custom_band_$index", gain)
@@ -1009,8 +1220,7 @@ private fun EqualizerSettings(context: android.content.Context) {
     Spacer(Modifier.height(8.dp))
     SettingsFloatSlider(stringResource(R.string.settings_eq_input_gain), preamp, -12f..12f, 47, { value ->
         val rounded = kotlin.math.round(value * 2f) / 2f
-        val format = if (rounded > 0f) R.string.settings_eq_gain_positive else R.string.settings_eq_gain_db
-        context.getString(format, rounded)
+        if (rounded > 0f) "+%.1f dB".format(rounded) else "%.1f dB".format(rounded)
     }) { value ->
         preamp = kotlin.math.round(value * 2f) / 2f
         MeloXSettingsPreferences.setFloat(context, "equalizer_preamp_db", preamp)
@@ -1082,6 +1292,22 @@ private fun AutoMixSettings(context: android.content.Context) {
                 MeloXPlaybackModePreferences.setAutoMixBoolean(context, "automix_skip_quiet_opening", it)
                 refresh()
             }
+            val limitOptions = listOf(
+                -1 to "不限",
+                20 to "前 20 首",
+                40 to "前 40 首",
+                60 to "前 60 首",
+                100 to "前 100 首",
+            )
+            MeloXSettingsDropdown(
+                title = "队列分析上限",
+                selected = limitOptions.minByOrNull {
+                    kotlin.math.abs(settings.smartQueueAnalysisLimit - it.first)
+                }?.first ?: 60,
+                items = limitOptions,
+                onSelected = { MeloXPlaybackModePreferences.setAutoMixInt(context, "automix_smart_queue_analysis_limit", it); refresh() },
+                grouped = true,
+            )
             SettingsExternalToggleRow(stringResource(R.string.settings_analyze_streaming), settings.analyzeStreaming, stringResource(R.string.settings_analyze_streaming_note), grouped = true) {
                 MeloXPlaybackModePreferences.setAutoMixBoolean(context, "automix_analyze_streaming", it)
                 refresh()
@@ -1089,14 +1315,14 @@ private fun AutoMixSettings(context: android.content.Context) {
             MeloXSettingsDropdown(
                 title = stringResource(R.string.settings_smart_transition_length),
                 selected = settings.transitionBars,
-                items = listOf(4, 8, 16).map { it to context.getString(R.string.settings_bars, it) },
+                items = listOf(4, 8, 16).map { it to "$it 小节" },
                 onSelected = { MeloXPlaybackModePreferences.setAutoMixInt(context, "automix_transition_bars", it); refresh() },
                 grouped = true,
             )
             MeloXSettingsDropdown(
                 title = stringResource(R.string.settings_tail_cut),
                 selected = settings.tailCutBars,
-                items = listOf(0 to stringResource(R.string.settings_tail_keep), 2 to context.getString(R.string.settings_tail_cut_bars, 2), 4 to context.getString(R.string.settings_tail_cut_bars, 4), 8 to context.getString(R.string.settings_tail_cut_bars, 8)),
+                items = listOf(0 to stringResource(R.string.settings_tail_keep), 2 to "提前 2 小节", 4 to "提前 4 小节", 8 to "提前 8 小节"),
                 onSelected = { MeloXPlaybackModePreferences.setAutoMixInt(context, "automix_tail_cut_bars", it); refresh() },
                 grouped = true,
             )
@@ -1113,7 +1339,7 @@ private fun AutoMixSettings(context: android.content.Context) {
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_crossfade_duration),
             selected = durationOptions.minByOrNull { kotlin.math.abs(settings.fixedDurationMs - it) } ?: 6_000L,
-            items = durationOptions.map { it to context.getString(R.string.settings_seconds, (it / 1_000).toInt()) },
+            items = durationOptions.map { it to "${it / 1_000} 秒" },
             onSelected = { MeloXPlaybackModePreferences.setAutoMixLong(context, "automix_fixed_duration_ms", it); refresh() },
             grouped = true,
         )
@@ -1121,7 +1347,7 @@ private fun AutoMixSettings(context: android.content.Context) {
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_preload_lead),
             selected = preloadOptions.minByOrNull { kotlin.math.abs(settings.preloadLeadMs - it) } ?: 60_000L,
-            items = preloadOptions.map { it to context.getString(R.string.settings_seconds, (it / 1_000).toInt()) },
+            items = preloadOptions.map { it to "${it / 1_000} 秒" },
             onSelected = { MeloXPlaybackModePreferences.setAutoMixLong(context, "automix_preload_lead_ms", it); refresh() },
             grouped = true,
         )
@@ -1218,7 +1444,7 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
     ) {
         when (com.lladlam.melox.ui.settings.MeloXPlayerShell.valueOf(it)) {
             com.lladlam.melox.ui.settings.MeloXPlayerShell.AppleMusic -> "Apple Music"
-            com.lladlam.melox.ui.settings.MeloXPlayerShell.Classic -> context.getString(R.string.settings_player_shell_classic)
+            com.lladlam.melox.ui.settings.MeloXPlayerShell.Classic -> "经典播放器（手机 / 平板 / 横屏）"
         }
     }
     Spacer(Modifier.height(10.dp))
@@ -1245,6 +1471,8 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
             },
             grouped = true,
         )
+        // 流光背景专属调参：只在「取色流动光影」模式下出现（上游 0.6.2 d9b0714，
+        // 标签按本地惯例写死中文，不走 stringResource）。
         if (MeloXSettingsRuntime.playerBackgroundMode == MeloXPlayerBackgroundMode.FlowingLight) {
             PreferenceFloatSlider(
                 context,
@@ -1261,7 +1489,7 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
                 1f,
                 0f..2f,
                 19,
-            ) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+            ) { "${(it * 100).toInt()}%" }
             PreferenceFloatSlider(
                 context,
                 stringResource(R.string.settings_flowing_brightness),
@@ -1269,16 +1497,16 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
                 1f,
                 .4f..1.6f,
                 11,
-            ) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+            ) { "${(it * 100).toInt()}%" }
         }
         SettingsToggleRow(context, stringResource(R.string.settings_flowing_backdrop), "player_flowing_backdrop", true, stringResource(R.string.settings_flowing_backdrop_note), grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_background_isolation), "player_background_isolation", true, stringResource(R.string.settings_background_isolation_note), grouped = true)
         LyricsChoiceSetting(context, stringResource(R.string.settings_background_fps), "lyrics_background_frame_rate", 24, listOf(15, 24, 30, 45, 60), grouped = true) { value ->
             when (value) {
-                15 -> context.getString(R.string.settings_fps_battery, 15)
-                24 -> context.getString(R.string.settings_fps_battery, 24)
-                30 -> context.getString(R.string.settings_fps_balanced, 30)
-                else -> context.getString(R.string.settings_fps_recommended, value)
+                15 -> "15 FPS · 省电"
+                24 -> "24 FPS · 省电"
+                30 -> "30 FPS · 均衡"
+                else -> "$value FPS · 推荐"
             }
         }
     }
@@ -1306,7 +1534,18 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
             stringResource(R.string.settings_immersive_playback),
             "immersive_playback",
             false,
-            stringResource(R.string.settings_immersive_playback_note),
+            "播放器全屏时自动隐藏顶部系统状态栏",
+            grouped = true,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsGlassGroup {
+        SettingsToggleRow(
+            context,
+            "深色模式保持暗色底栏",
+            "bottom_bar_lock_dark_in_dark_mode",
+            true,
+            "深色模式下底栏不再根据背后内容自适应翻成浅色；浅色模式不受影响。",
             grouped = true,
         )
     }
@@ -1321,7 +1560,7 @@ private fun LyricsSettings(context: android.content.Context) {
             title = stringResource(R.string.settings_lyrics_style),
             selected = lyricsStyle,
             items = listOf(
-                MeloXLyricsStyle.AppleMusic to "Apple Music",
+                MeloXLyricsStyle.AppleMusic to stringResource(R.string.settings_apple_music),
                 MeloXLyricsStyle.Eva to stringResource(R.string.settings_lyrics_style_eva),
                 MeloXLyricsStyle.TextPV to stringResource(R.string.settings_lyrics_style_text_pv),
             ),
@@ -1346,7 +1585,7 @@ private fun LyricsSettings(context: android.content.Context) {
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_long_press_share), "lyrics_long_press_share", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_interlude), "lyrics_interlude_countdown", true, stringResource(R.string.settings_lyrics_interlude_note), grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_auto_follow), "lyrics_auto_follow", true, grouped = true)
-        LyricsChoiceSetting(context, stringResource(R.string.settings_lyrics_follow_delay), "lyrics_follow_delay_ms", 3_000, listOf(1_500, 3_000, 5_000, 8_000), grouped = true) { context.getString(R.string.settings_seconds_float, it / 1_000f) }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_lyrics_follow_delay), "lyrics_follow_delay_ms", 3_000, listOf(1_500, 3_000, 5_000, 8_000), grouped = true) { "${it / 1_000f} 秒" }
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_reduce_motion), "lyrics_reduce_motion", false, stringResource(R.string.settings_lyrics_reduce_motion_note), grouped = true)
     }
     if (lyricsStyle == MeloXLyricsStyle.TextPV) {
@@ -1403,47 +1642,47 @@ private fun LyricsSettings(context: android.content.Context) {
     Spacer(Modifier.height(10.dp))
     SettingsGlassGroup {
         SettingsToggleRow(context, stringResource(R.string.settings_show_translation), "lyrics_translation", true, grouped = true)
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_translation_size), "lyrics_translation_font_scale", .65f, listOf(.5f, .55f, .6f, .65f, .7f, .75f, .8f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_translation_brightness), "lyrics_translation_opacity", .9f, listOf(.4f, .5f, .6f, .7f, .8f, .9f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_translation_size), "lyrics_translation_font_scale", .65f, listOf(.5f, .55f, .6f, .65f, .7f, .75f, .8f), grouped = true) { "${(it * 100).toInt()}%" }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_translation_brightness), "lyrics_translation_opacity", .9f, listOf(.4f, .5f, .6f, .7f, .8f, .9f), grouped = true) { "${(it * 100).toInt()}%" }
         LyricsStringChoiceSetting(
             context, stringResource(R.string.settings_translation_scope), "lyrics_translation_display_mode",
             MeloXLyricAnnotationDisplayMode.AllLines.name, MeloXLyricAnnotationDisplayMode.entries.map { it.name }, grouped = true,
-        ) { if (it == MeloXLyricAnnotationDisplayMode.FocusedLine.name) context.getString(R.string.settings_annotation_focused) else context.getString(R.string.settings_annotation_all) }
+        ) { if (it == MeloXLyricAnnotationDisplayMode.FocusedLine.name) "仅当前播放行" else "全部歌词行" }
         SettingsToggleRow(context, stringResource(R.string.settings_show_romanization), "lyrics_romanization", false, grouped = true)
         LyricsStringChoiceSetting(
             context, stringResource(R.string.settings_romanization_scope), "lyrics_romanization_display_mode",
             MeloXLyricAnnotationDisplayMode.FocusedLine.name, MeloXLyricAnnotationDisplayMode.entries.map { it.name }, grouped = true,
-        ) { if (it == MeloXLyricAnnotationDisplayMode.FocusedLine.name) context.getString(R.string.settings_annotation_focused) else context.getString(R.string.settings_annotation_all) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_romanization_size), "lyrics_romanization_font_scale", .65f, listOf(.5f, .55f, .6f, .65f, .7f, .75f, .8f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_romanization_brightness), "lyrics_romanization_opacity", .9f, listOf(.4f, .5f, .6f, .7f, .8f, .9f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+        ) { if (it == MeloXLyricAnnotationDisplayMode.FocusedLine.name) "仅当前播放行" else "全部歌词行" }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_romanization_size), "lyrics_romanization_font_scale", .65f, listOf(.5f, .55f, .6f, .65f, .7f, .75f, .8f), grouped = true) { "${(it * 100).toInt()}%" }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_romanization_brightness), "lyrics_romanization_opacity", .9f, listOf(.4f, .5f, .6f, .7f, .8f, .9f), grouped = true) { "${(it * 100).toInt()}%" }
     }
 
     // Group 3: 歌词提前量-提前量同时应用于逐字高亮-歌词刷新率-歌词字号-歌词字重-抬升方式
     Spacer(Modifier.height(10.dp))
     SettingsGlassGroup {
         LyricsChoiceSetting(context, stringResource(R.string.settings_lyrics_advance), "lyrics_advance_ms", 0, listOf(-1_000, -500, -200, 0, 200, 500, 1_000, 2_000, 5_000), grouped = true) { value ->
-            if (value == 0) context.getString(R.string.player_lyric_sync) else if (value > 0) context.getString(R.string.settings_lyrics_ahead_ms, value) else context.getString(R.string.settings_lyrics_behind_ms, -value)
+            if (value == 0) "同步" else if (value > 0) "提前 ${value}ms" else "延后 ${-value}ms"
         }
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_advance_words), "lyrics_advance_word_by_word", false, grouped = true)
-        LyricsChoiceSetting(context, stringResource(R.string.settings_lyrics_refresh_rate), "lyrics_refresh_rate", 60, listOf(30, 60, 90, 120), grouped = true) { context.getString(R.string.settings_fps, it) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_lyrics_font_size), "lyrics_font_scale", 1f, listOf(.85f, 1f, 1.12f, 1.25f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_lyrics_refresh_rate), "lyrics_refresh_rate", 60, listOf(30, 60, 90, 120), grouped = true) { "$it FPS" }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_lyrics_font_size), "lyrics_font_scale", 1f, listOf(.85f, 1f, 1.12f, 1.25f), grouped = true) { "${(it * 100).toInt()}%" }
         LyricsStringChoiceSetting(
             context, stringResource(R.string.settings_lyrics_font_weight), "lyrics_font_weight", MeloXLyricsFontWeight.Heavy.name,
             MeloXLyricsFontWeight.entries.map { it.name }, grouped = true,
         ) { value ->
             when (MeloXLyricsFontWeight.valueOf(value)) {
-                MeloXLyricsFontWeight.Light -> context.getString(R.string.settings_weight_light)
-                MeloXLyricsFontWeight.Regular -> context.getString(R.string.settings_weight_regular)
-                MeloXLyricsFontWeight.Medium -> context.getString(R.string.settings_weight_medium)
-                MeloXLyricsFontWeight.SemiBold -> context.getString(R.string.settings_weight_semibold)
-                MeloXLyricsFontWeight.Bold -> context.getString(R.string.settings_weight_bold)
-                MeloXLyricsFontWeight.Heavy -> context.getString(R.string.settings_weight_heavy)
+                MeloXLyricsFontWeight.Light -> "细体"
+                MeloXLyricsFontWeight.Regular -> "常规"
+                MeloXLyricsFontWeight.Medium -> "中等"
+                MeloXLyricsFontWeight.SemiBold -> "半粗体"
+                MeloXLyricsFontWeight.Bold -> "粗体"
+                MeloXLyricsFontWeight.Heavy -> "特粗体"
             }
         }
         LyricsStringChoiceSetting(
             context, stringResource(R.string.settings_lyrics_lift), "lyrics_lift_mode", MeloXLyricsGroupingMode.Character.name,
             MeloXLyricsGroupingMode.entries.map { it.name }, grouped = true,
-        ) { if (it == MeloXLyricsGroupingMode.Word.name) context.getString(R.string.settings_lift_word) else context.getString(R.string.settings_lift_character) }
+        ) { if (it == MeloXLyricsGroupingMode.Word.name) "按词抬升" else "按字抬升" }
     }
 
     // Group 4: 长音识别方式-逐字歌词光效-仅长音显示光晕-逐字光晕-长音延展-长音判定时长-行间距-远近模糊
@@ -1452,23 +1691,23 @@ private fun LyricsSettings(context: android.content.Context) {
         LyricsStringChoiceSetting(
             context, stringResource(R.string.settings_long_tone_detection), "lyrics_long_tone_detection", MeloXLyricsGroupingMode.Character.name,
             MeloXLyricsGroupingMode.entries.map { it.name }, grouped = true,
-        ) { if (it == MeloXLyricsGroupingMode.Word.name) context.getString(R.string.settings_detect_word) else context.getString(R.string.settings_detect_character) }
+        ) { if (it == MeloXLyricsGroupingMode.Word.name) "按词识别" else "按字识别" }
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_glow), "lyrics_glow_enabled", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_glow_long_tones_only), "lyrics_glow_long_tones_only", true, grouped = true)
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_glow_strength), "lyrics_glow_strength", 1f, listOf(0f, .6f, 1f, 1.4f), grouped = true) { if (it == 0f) context.getString(R.string.settings_skyline_off) else context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_long_tone_stretch), "lyrics_long_tone_strength", 1f, listOf(0f, .6f, 1f, 1.4f), grouped = true) { if (it == 0f) context.getString(R.string.settings_skyline_off) else context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsChoiceSetting(context, stringResource(R.string.settings_long_tone_threshold), "lyrics_long_tone_threshold_ms", 950, listOf(300, 500, 700, 950, 1_200, 1_500), grouped = true) { context.getString(R.string.settings_seconds_float, it / 1000f) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_line_spacing), "lyrics_spacing_scale", 1f, listOf(.8f, 1f, 1.2f, 1.4f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_depth_blur), "lyrics_blur_strength", 1f, listOf(0f, .5f, .8f, 1f), grouped = true) { if (it == 0f) context.getString(R.string.settings_skyline_off) else context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+        LyricsFloatChoiceSetting(context, "逐字光晕", "lyrics_glow_strength", 1f, listOf(0f, .6f, 1f, 1.4f), grouped = true) { if (it == 0f) "关闭" else "${(it * 100).toInt()}%" }
+        LyricsFloatChoiceSetting(context, "长音延展", "lyrics_long_tone_strength", 1f, listOf(0f, .6f, 1f, 1.4f), grouped = true) { if (it == 0f) "关闭" else "${(it * 100).toInt()}%" }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_long_tone_threshold), "lyrics_long_tone_threshold_ms", 950, listOf(300, 500, 700, 950, 1_200, 1_500), grouped = true) { "${it / 1000f} 秒" }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_line_spacing), "lyrics_spacing_scale", 1f, listOf(.8f, 1f, 1.2f, 1.4f), grouped = true) { "${(it * 100).toInt()}%" }
+        LyricsFloatChoiceSetting(context, "远近模糊", "lyrics_blur_strength", 1f, listOf(0f, .5f, .8f, 1f), grouped = true) { if (it == 0f) "关闭" else "${(it * 100).toInt()}%" }
     }
 
     // Group 5: 当前行放大-未播放文字亮度-控制栏自动隐藏-滚动隐藏UI阈值
     Spacer(Modifier.height(10.dp))
     SettingsGlassGroup {
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_focus_scale), "lyrics_focus_scale", 1.02f, listOf(1f, 1.02f, 1.04f, 1.08f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_inactive_opacity), "lyrics_inactive_opacity", .42f, listOf(.3f, .42f, .5f, .6f), grouped = true) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-        LyricsChoiceSetting(context, stringResource(R.string.settings_controls_auto_hide), "lyrics_interface_auto_hide_ms", 5_000, (3..15).map { it * 1_000 }, grouped = true) { context.getString(R.string.settings_seconds, it / 1_000) }
-        LyricsChoiceSetting(context, stringResource(R.string.settings_scroll_hide_threshold), "lyrics_scroll_hide_threshold_dp", 200, listOf(40, 80, 120, 160, 200, 240), grouped = true) { context.getString(R.string.settings_unit_dp, it) }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_focus_scale), "lyrics_focus_scale", 1.02f, listOf(1f, 1.02f, 1.04f, 1.08f), grouped = true) { "${(it * 100).toInt()}%" }
+        LyricsFloatChoiceSetting(context, stringResource(R.string.settings_inactive_opacity), "lyrics_inactive_opacity", .42f, listOf(.3f, .42f, .5f, .6f), grouped = true) { "${(it * 100).toInt()}%" }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_controls_auto_hide), "lyrics_interface_auto_hide_ms", 5_000, (3..15).map { it * 1_000 }, grouped = true) { "${it / 1_000} 秒" }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_scroll_hide_threshold), "lyrics_scroll_hide_threshold_dp", 200, listOf(40, 80, 120, 160, 200, 240), grouped = true) { "$it dp" }
     }
 
     // Group 6: 启用位移回弹-启用升格回弹-升格回弹时长-焦点回弹时长
@@ -1476,40 +1715,40 @@ private fun LyricsSettings(context: android.content.Context) {
     SettingsGlassGroup {
         SettingsToggleRow(context, stringResource(R.string.settings_cascade_bounce_enabled), "lyrics_cascade_bounce_enabled", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_scale_bounce_enabled), "lyrics_scale_bounce_enabled", true, grouped = true)
-        LyricsChoiceSetting(context, stringResource(R.string.settings_scale_bounce_duration), "lyrics_scale_bounce_duration_ms", 580, listOf(150, 250, 350, 450, 580, 700, 800), grouped = true) { context.getString(R.string.settings_duration_ms, it) }
-        LyricsChoiceSetting(context, stringResource(R.string.settings_focus_bounce_duration), "lyrics_focus_color_lead_ms", 0, listOf(-300, -200, -100, -50, 0, 50, 100, 200, 300), grouped = true) { if (it == 0) context.getString(R.string.player_lyric_sync) else context.getString(R.string.settings_signed_ms, it) }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_scale_bounce_duration), "lyrics_scale_bounce_duration_ms", 580, listOf(150, 250, 350, 450, 580, 700, 800), grouped = true) { "${it}ms" }
+        LyricsChoiceSetting(context, "焦点回弹时长", "lyrics_focus_color_lead_ms", 0, listOf(-300, -200, -100, -50, 0, 50, 100, 200, 300), grouped = true) { if (it == 0) "同步" else "${it}ms" }
     }
 
     // Group 7: 最大回弹弹性-回弹强度梯度-升格回弹弹性
     Spacer(Modifier.height(10.dp))
-    PreferenceFloatSlider(context, stringResource(R.string.settings_max_cascade_bounce), "lyrics_cascade_bounce", .26f, 0f..8f / 10f, 79) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_bounce_gradient), "lyrics_cascade_bounce_gradient", .85f, 0f..1f, 99) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_scale_bounce_amount), "lyrics_scale_bounce", .32f, 0f..5f / 10f, 49) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_max_cascade_bounce), "lyrics_cascade_bounce", .26f, 0f..8f / 10f, 79) { "${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_bounce_gradient), "lyrics_cascade_bounce_gradient", .85f, 0f..1f, 99) { "${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_scale_bounce_amount), "lyrics_scale_bounce", .32f, 0f..5f / 10f, 49) { "${(it * 100).toInt()}%" }
 
     // Group 8: 高光渐变宽度-渐变削减程度
     Spacer(Modifier.height(10.dp))
-    PreferenceFloatSlider(context, stringResource(R.string.settings_highlight_width), "lyrics_highlight_gradient_width", .7f, .4f..3f, 25) { context.getString(R.string.settings_char_widths, it) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_gradient_reduction), "lyrics_highlight_gradient_reduction", .65f, 0f..1f, 19) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_highlight_width), "lyrics_highlight_gradient_width", .7f, .4f..3f, 25) { "%.1f 字宽".format(it) }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_gradient_reduction), "lyrics_highlight_gradient_reduction", .65f, 0f..1f, 19) { "${(it * 100).toInt()}%" }
 
     // Group 9: 焦点垂直位置-默认逐句模糊加强-隐藏UI逐句模糊加强-非焦点歌词变暗
     Spacer(Modifier.height(10.dp))
-    PreferenceFloatSlider(context, stringResource(R.string.settings_focus_position), "lyrics_focus_position", .25f, .05f..8f / 10f, 74) { context.getString(R.string.settings_focus_from_top, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_distance_blur), "lyrics_distance_blur_scale", 1.05f, 0f..1.5f, 29) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_hidden_blur), "lyrics_hidden_blur_scale", .85f, 0f..1.5f, 29) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_dim_amount), "lyrics_dim_amount", 1f, 0f..1f, 49) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_focus_position), "lyrics_focus_position", .25f, .05f..8f / 10f, 74) { "距顶部 ${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_distance_blur), "lyrics_distance_blur_scale", 1.05f, 0f..1.5f, 29) { "${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_hidden_blur), "lyrics_hidden_blur_scale", .85f, 0f..1.5f, 29) { "${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_dim_amount), "lyrics_dim_amount", 1f, 0f..1f, 49) { "${(it * 100).toInt()}%" }
 
     // Group 10: 基础拖尾延迟-逐句拖尾增量-后续歌词启动延迟-拖尾追赶节奏-追赶速度梯度-位移收束时长
     Spacer(Modifier.height(10.dp))
-    PreferenceFloatSlider(context, stringResource(R.string.settings_cascade_delay), "lyrics_cascade_delay_ms", 21f, 0f..100f, 99) { context.getString(R.string.settings_milliseconds, it.toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_cascade_delay_increase), "lyrics_cascade_delay_increase_ms", 5f, 0f..100f, 99) { context.getString(R.string.settings_ms_per_line, it.toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_following_delay), "lyrics_cascade_following_delay_ms", 30f, 0f..200f, 199) { context.getString(R.string.settings_milliseconds, it.toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_catch_up_ratio), "lyrics_cascade_catch_up_ratio", .97f, .5f..1f, 49) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_chase_gradient), "lyrics_cascade_chase_gradient", .70f, 0f..1f, 99) { context.getString(R.string.settings_unit_percent, (it * 100).toInt()) }
-    PreferenceFloatSlider(context, stringResource(R.string.settings_cascade_duration), "lyrics_cascade_duration_ms", 740f, 200f..1_200f, 99) { context.getString(R.string.settings_seconds_2f, it / 1_000f) }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_cascade_delay), "lyrics_cascade_delay_ms", 21f, 0f..100f, 99) { "${it.toInt()} ms" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_cascade_delay_increase), "lyrics_cascade_delay_increase_ms", 5f, 0f..100f, 99) { "${it.toInt()} ms/句" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_following_delay), "lyrics_cascade_following_delay_ms", 30f, 0f..200f, 199) { "${it.toInt()} ms" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_catch_up_ratio), "lyrics_cascade_catch_up_ratio", .97f, .5f..1f, 49) { "${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_chase_gradient), "lyrics_cascade_chase_gradient", .70f, 0f..1f, 99) { "${(it * 100).toInt()}%" }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_cascade_duration), "lyrics_cascade_duration_ms", 740f, 200f..1_200f, 99) { "%.2f 秒".format(it / 1_000f) }
 
     // Group 11: 瞬移阈值
     Spacer(Modifier.height(10.dp))
-    PreferenceFloatSlider(context, stringResource(R.string.settings_snap_threshold), "lyrics_snap_threshold_ms", 260f, 50f..500f, 89) { context.getString(R.string.settings_milliseconds, it.toInt()) }
+    PreferenceFloatSlider(context, stringResource(R.string.settings_snap_threshold), "lyrics_snap_threshold_ms", 260f, 50f..500f, 89) { "${it.toInt()} ms" }
 }
 
 @Composable
@@ -1548,10 +1787,42 @@ private fun LyricsChoiceSetting(
     values: List<Int>,
     grouped: Boolean = false,
     label: (Int) -> String,
+) = LyricsChoiceSetting(
+    context = context,
+    title = title,
+    key = key,
+    selectedProvider = { MeloXSettingsPreferences.int(context, key, default) },
+    values = values,
+    grouped = grouped,
+    label = label,
+)
+
+/**
+ * `selectedProvider` 重载（2026-10-03）。
+ *
+ * ⚠ 为什么要它：原先本函数内部固定用 `MeloXSettingsPreferences.int(context, key, default)`
+ *   读取选中项，而 `int()` 是**裸 `getInt`、不做任何迁移**。
+ *   当某项setting 的默认值需要跨版本迁移时（`player_transition_duration_ms`
+ *   默认经历过 `360 → 240`（v1，已废弃）与 `240 → 360`（v2，当前）两轮），
+ *   运行时的迁移在别处、设置页这条路径不迁移 ⇒
+ *   **「实际时长已变、设置显示没变」**（用户报障原话）。
+ *   ⇒ 让调用方注入 `selectedProvider`，把「读到的值」与「显示的值」**锁成同一个来源**。
+ */
+@Composable
+private fun LyricsChoiceSetting(
+    context: android.content.Context,
+    title: String,
+    key: String,
+    selectedProvider: () -> Int,
+    values: List<Int>,
+    grouped: Boolean = false,
+    label: (Int) -> String,
 ) {
     val groupRowIndex = LocalSettingsGroupRowIndex.current
     val effectiveShowTopSeparator = if (grouped) groupRowIndex.intValue++.let { it > 0 } else false
-    var selected by remember(key) { mutableStateOf(MeloXSettingsPreferences.int(context, key, default)) }
+    // ⚠ 不用 remember 缓存：`selectedProvider` 可能每次读取都做一次迁移+写回
+    //   （那正是我们要的：进设置页即完成迁移，显示立刻是新值）。
+    var selected by remember(key) { mutableStateOf(selectedProvider()) }
     MeloXSettingsDropdown(
         title = title,
         selected = selected,
@@ -1648,9 +1919,9 @@ private fun PreferenceFloatSlider(
 @Composable
 private fun ContentFeatureSettings(context: android.content.Context) {
     SettingsGlassGroup {
-        SettingsToggleRow(context, stringResource(R.string.settings_feature_podcasts), "feature_podcasts", true, grouped = true)
+        SettingsToggleRow(context, "播客", "feature_podcasts", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_feature_history), "feature_history", true, grouped = true)
-        SettingsToggleRow(context, stringResource(R.string.settings_feature_downloads), "feature_downloads", true, stringResource(R.string.settings_feature_downloads_note), grouped = true)
+        SettingsToggleRow(context, "下载", "feature_downloads", true, stringResource(R.string.settings_feature_downloads_note), grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_feature_cloud), "feature_cloud_music", true, stringResource(R.string.settings_feature_cloud_note), grouped = true)
     }
 }
@@ -1687,7 +1958,7 @@ private fun MessagesSettings(context: android.content.Context) {
             } else {
                 messages = ops.privateMessageHistory(contact.id)
             }
-        }.onFailure { error = it.message ?: context.getString(R.string.settings_messages_load_failed) }
+        }.onFailure { error = it.message ?: "私信读取失败" }
         busy = false
     }
 
@@ -1777,7 +2048,7 @@ private fun MessagesSettings(context: android.content.Context) {
                 scope.launch {
                     runCatching { ops.sendPrivateText(text, contact.id) }
                         .onSuccess { draft = ""; messages = ops.privateMessageHistory(contact.id) }
-                        .onFailure { error = it.message ?: context.getString(R.string.settings_messages_send_failed) }
+                        .onFailure { error = it.message ?: "发送失败" }
                     busy = false
                 }
             }.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1796,13 +2067,7 @@ private fun ContentSettings(context: android.content.Context) {
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_content_area),
             selected = area,
-            items = listOf(
-                "全部" to stringResource(R.string.settings_content_area_all),
-                "华语" to stringResource(R.string.settings_content_area_chinese),
-                "欧美" to stringResource(R.string.settings_content_area_western),
-                "日本" to stringResource(R.string.settings_content_area_japan),
-                "韩国" to stringResource(R.string.settings_content_area_korea),
-            ),
+            items = listOf("全部" to "全部", "华语" to "华语", "欧美" to "欧美", "日本" to "日本", "韩国" to "韩国"),
             onSelected = { area = it; MeloXSettingsPreferences.setString(context, "music_area", it) },
             grouped = true,
         )
@@ -1897,7 +2162,7 @@ private fun ListenTogetherSettings(context: android.content.Context) {
                 scope.launch {
                     runCatching { ops.createListenTogetherRoom() }
                         .onSuccess { MeloXListenTogetherCoordinator.adoptRoom(app, it) }
-                        .onFailure { message = it.message ?: context.getString(R.string.settings_listen_create_failed) }
+                        .onFailure { message = it.message ?: "创建房间失败" }
                     busy = false
                 }
             }
@@ -1913,14 +2178,14 @@ private fun ListenTogetherSettings(context: android.content.Context) {
         SettingsActionButton(stringResource(R.string.settings_listen_join)) {
             val parsed = parseNeteaseListenTogetherInvitation(invitation)
             if (parsed == null) {
-                message = context.getString(R.string.settings_listen_invite_invalid)
+                message = "邀请链接缺少房间或邀请人信息"
             } else if (!busy) {
                 busy = true
                 message = null
                 scope.launch {
                     runCatching { ops.joinListenTogetherRoom(parsed.roomId, parsed.inviterId) }
                         .onSuccess { MeloXListenTogetherCoordinator.adoptRoom(app, it) }
-                        .onFailure { message = it.message ?: context.getString(R.string.settings_listen_join_failed) }
+                        .onFailure { message = it.message ?: "加入房间失败" }
                     busy = false
                 }
             }
@@ -1928,7 +2193,7 @@ private fun ListenTogetherSettings(context: android.content.Context) {
     } else {
         SettingsGlassGroup {
             MeloXIosListRow(stringResource(R.string.settings_listen_room), detail = room.id, showTopSeparator = false)
-            MeloXIosListRow(stringResource(R.string.settings_listen_members), detail = stringResource(R.string.settings_listen_member_count, room.users.size.coerceAtLeast(1)))
+            MeloXIosListRow(stringResource(R.string.settings_listen_members), detail = "${room.users.size.coerceAtLeast(1)} 人")
             room.users.forEach { user -> MeloXIosListRow(user.name) }
             MeloXIosListRow(
                 stringResource(R.string.settings_listen_connection),
@@ -1946,7 +2211,7 @@ private fun ListenTogetherSettings(context: android.content.Context) {
             context.startActivity(
                 Intent.createChooser(
                     Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url),
-                    context.getString(R.string.settings_listen_share_chooser),
+                    "分享一起听邀请",
                 ),
             )
         }
@@ -1957,7 +2222,7 @@ private fun ListenTogetherSettings(context: android.content.Context) {
                 scope.launch {
                     runCatching { ops.endListenTogetherRoom(room.id) }
                         .onSuccess { MeloXListenTogetherCoordinator.clearRoom(app) }
-                        .onFailure { message = it.message ?: context.getString(R.string.settings_listen_leave_failed) }
+                        .onFailure { message = it.message ?: "退出房间失败" }
                     busy = false
                 }
             }
@@ -2018,11 +2283,11 @@ private fun StorageSettings(context: android.content.Context) {
                 modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
             )
             Text(
-                stringResource(R.string.settings_storage_device, formatBytes(deviceUsed), formatBytes(usage.deviceAvailable)),
+                "设备已使用 ${formatBytes(deviceUsed)} · 可用 ${formatBytes(usage.deviceAvailable)}",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = .50f),
             )
-            Text(stringResource(R.string.settings_storage_reclaimable, formatBytes(usage.reclaimable)), fontSize = 12.sp)
+            Text("可重新生成的缓存：${formatBytes(usage.reclaimable)}", fontSize = 12.sp)
         }
     }
     Spacer(Modifier.height(18.dp))
@@ -2053,13 +2318,13 @@ private fun StorageSettings(context: android.content.Context) {
         }
     }
     if (autoCache) {
-        LyricsChoiceSetting(context, stringResource(R.string.settings_storage_threshold), "downloads_auto_cache_threshold", 3, listOf(2, 3, 5, 8, 10)) { context.getString(R.string.settings_storage_plays, it) }
+        LyricsChoiceSetting(context, stringResource(R.string.settings_storage_threshold), "downloads_auto_cache_threshold", 3, listOf(2, 3, 5, 8, 10)) { "$it 次" }
         var cacheQuality by remember { mutableStateOf(MeloXSettingsPreferences.string(context, "downloads_auto_cache_quality", MusicQuality.Standard.name)) }
         Text(stringResource(R.string.settings_storage_auto_quality), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f))
         Spacer(Modifier.height(8.dp))
         SettingsGlassGroup {
             MusicQuality.entries.forEach { value ->
-                SettingsChoiceRow(stringResource(value.localizedTitleRes()), cacheQuality == value.name) {
+                SettingsChoiceRow(value.title, cacheQuality == value.name) {
                     cacheQuality = value.name
                     MeloXSettingsPreferences.setString(context, "downloads_auto_cache_quality", value.name)
                 }
@@ -2077,9 +2342,9 @@ private fun StorageSettings(context: android.content.Context) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment=Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(active.song.name, maxLines=1, overflow=TextOverflow.Ellipsis)
-                        Text(active.fractionCompleted?.let { stringResource(R.string.settings_storage_download_progress, (it * 100).toInt(), stringResource(active.quality.localizedTitleRes())) } ?: stringResource(active.quality.localizedTitleRes()), color=MaterialTheme.colorScheme.onSurface.copy(alpha=.5f), fontSize=11.sp)
+                        Text(active.fractionCompleted?.let { "${(it*100).toInt()}% · ${active.quality.title}" } ?: active.quality.title, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.5f), fontSize=11.sp)
                     }
-                    Text(stringResource(R.string.settings_storage_cancel), color=MaterialTheme.colorScheme.error, modifier=Modifier.clickable { downloads.cancel(active.song.id) }.padding(8.dp))
+                    Text(stringResource(R.string.action_cancel), color=MaterialTheme.colorScheme.error, modifier=Modifier.clickable { downloads.cancel(active.song.id) }.padding(8.dp))
                 }
             }
         }
@@ -2096,14 +2361,9 @@ private fun StorageSettings(context: android.content.Context) {
         downloads.repairStorage { result ->
             maintenanceMessage = result.fold(
                 onSuccess = {
-                    context.getString(
-                        R.string.settings_storage_repair_done,
-                        it.missingRecordsRemoved,
-                        it.orphanFilesRemoved,
-                        formatBytes(it.recoveredBytes),
-                    )
+                    "已移除 ${it.missingRecordsRemoved} 条缺失记录、${it.orphanFilesRemoved} 个孤立文件，回收 ${formatBytes(it.recoveredBytes)}；索引已压缩。"
                 },
-                onFailure = { it.message ?: context.getString(R.string.settings_storage_repair_failed) },
+                onFailure = { it.message ?: "修复失败" },
             )
         }
     }
@@ -2134,7 +2394,7 @@ private fun StorageSettings(context: android.content.Context) {
                                 else -> context.cacheDir.resolve("automix_analysis").deleteRecursively()
                             }
                         }
-                        maintenanceMessage = context.getString(R.string.settings_storage_cleared)
+                        maintenanceMessage = "清理完成"
                         refresh()
                     }
                 }
@@ -2182,17 +2442,6 @@ private fun java.io.File.treeByteCount(): Long = when {
     else -> 0L
 }
 
-@androidx.annotation.StringRes
-private fun MusicQuality.localizedTitleRes(): Int = when (this) {
-    MusicQuality.Standard -> R.string.settings_quality_standard
-    MusicQuality.High -> R.string.settings_quality_high
-    MusicQuality.Lossless -> R.string.settings_quality_lossless
-    MusicQuality.HiResolution -> R.string.settings_quality_hires
-    MusicQuality.HighDefinitionSurround -> R.string.settings_quality_surround
-    MusicQuality.ImmersiveSurround -> R.string.settings_quality_immersive
-    MusicQuality.UltraClearMaster -> R.string.settings_quality_master
-}
-
 private fun formatBytes(bytes: Long): String = when {
     bytes >= 1024L * 1024L * 1024L -> "%.2f GB".format(bytes / 1024.0 / 1024.0 / 1024.0)
     bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
@@ -2208,14 +2457,14 @@ private fun TabLayoutSettings(context: android.content.Context) {
         SettingsToggleRow(context, stringResource(R.string.settings_tabs_library), "tab_library", true, grouped = true)
     }
     listOf(
-        Triple(stringResource(R.string.settings_tabs_podcasts), "podcasts", MeloXSettingsRuntime.podcastsEnabled),
-        Triple(stringResource(R.string.settings_tabs_downloads), "downloads", MeloXSettingsRuntime.downloadsEnabled),
-        Triple(stringResource(R.string.settings_tabs_cloud), "cloud", MeloXSettingsRuntime.cloudMusicEnabled),
+        Triple("播客", "podcasts", MeloXSettingsRuntime.podcastsEnabled),
+        Triple("下载", "downloads", MeloXSettingsRuntime.downloadsEnabled),
+        Triple("云盘", "cloud", MeloXSettingsRuntime.cloudMusicEnabled),
     ).forEach { (title, key, enabled) ->
         Spacer(Modifier.height(10.dp))
         SettingsGlassGroup {
             Text(title, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f))
-            SettingsToggleRow(context, stringResource(R.string.settings_tabs_home_shortcut), "placement_${key}_home", key == "podcasts", if (enabled) null else stringResource(R.string.settings_tabs_enable_first, title), grouped = true)
+            SettingsToggleRow(context, stringResource(R.string.settings_tabs_home_shortcut), "placement_${key}_home", key == "podcasts", if (enabled) null else "请先在内容功能中启用$title。", grouped = true)
             SettingsToggleRow(context, stringResource(R.string.settings_tabs_library_page), "placement_${key}_library", true, grouped = true)
             SettingsToggleRow(context, stringResource(R.string.settings_tabs_own_tab), "placement_${key}_tab", false, grouped = true)
         }
@@ -2226,7 +2475,7 @@ private fun TabLayoutSettings(context: android.content.Context) {
         Text(stringResource(R.string.settings_tabs_order), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f))
         order.forEachIndexed { index, page ->
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(when (page) { "Home" -> stringResource(R.string.settings_tabs_home); "Explore" -> stringResource(R.string.settings_tabs_explore); "Library" -> stringResource(R.string.settings_tabs_library); "Podcasts" -> stringResource(R.string.settings_tabs_podcasts); "Downloads" -> stringResource(R.string.settings_tabs_downloads); "Cloud" -> stringResource(R.string.settings_tabs_cloud); else -> stringResource(R.string.settings_tabs_settings) }, Modifier.weight(1f))
+                Text(when (page) { "Home" -> stringResource(R.string.settings_tabs_home); "Explore" -> stringResource(R.string.settings_tabs_explore); "Library" -> stringResource(R.string.settings_tabs_library); "Podcasts" -> "播客"; "Downloads" -> "下载"; "Cloud" -> "云盘"; else -> stringResource(R.string.settings_tabs_settings) }, Modifier.weight(1f))
                 MeloXActionIcon("↑", Modifier.size(18.dp).clickable(enabled = index > 0) {
                     order = order.toMutableList().apply { add(index - 1, removeAt(index)) }
                     MeloXSettingsPreferences.setString(context, "tab_order", order.joinToString(","))
@@ -2243,12 +2492,12 @@ private fun TabLayoutSettings(context: android.content.Context) {
     SettingsGlassGroup {
         Text(stringResource(R.string.settings_tabs_home_sections), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f))
         SettingsToggleRow(context, stringResource(R.string.settings_tabs_shortcuts), "home_quick_actions", true, grouped = true)
-        SettingsToggleRow(context, stringResource(R.string.settings_tabs_playlists), "home_playlists", true, grouped = true)
+        SettingsToggleRow(context, "推荐歌单", "home_playlists", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_tabs_new_songs), "home_new_songs", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_tabs_remember_library), "library_remember_page", true, grouped = true)
         homeOrder.forEachIndexed { index, section ->
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(when (section) { "QuickActions" -> stringResource(R.string.settings_tabs_shortcuts); "Playlists" -> stringResource(R.string.settings_tabs_playlists); else -> stringResource(R.string.settings_tabs_new_songs) }, Modifier.weight(1f))
+                Text(when (section) { "QuickActions" -> stringResource(R.string.settings_tabs_shortcuts); "Playlists" -> "推荐歌单"; else -> stringResource(R.string.settings_tabs_new_songs) }, Modifier.weight(1f))
                 MeloXActionIcon("↑", Modifier.size(18.dp).clickable(enabled = index > 0) {
                     homeOrder = homeOrder.toMutableList().apply { add(index - 1, removeAt(index)) }
                     MeloXSettingsPreferences.setString(context, "home_section_order", homeOrder.joinToString(","))
@@ -2266,14 +2515,7 @@ private fun TabLayoutSettings(context: android.content.Context) {
         MeloXSettingsDropdown(
             title = stringResource(R.string.settings_tabs_default_library),
             selected = libraryPage,
-            items = listOf(
-                "Songs" to stringResource(R.string.settings_tabs_songs),
-                "Playlists" to stringResource(R.string.settings_tabs_playlist_page),
-                "Podcasts" to stringResource(R.string.settings_tabs_podcasts),
-                "Cloud" to stringResource(R.string.settings_tabs_cloud),
-                "History" to stringResource(R.string.settings_tabs_history),
-                "Downloads" to stringResource(R.string.settings_tabs_downloads),
-            )
+            items = listOf("Songs" to stringResource(R.string.settings_tabs_songs), "Playlists" to stringResource(R.string.settings_tabs_playlist_page), "Podcasts" to "播客", "Cloud" to "云盘", "History" to stringResource(R.string.settings_feature_history), "Downloads" to "下载")
                 .filter { (value, _) ->
                     (value != "Podcasts" || MeloXSettingsRuntime.podcastsEnabled) &&
                         (value != "Podcasts" || MeloXSettingsRuntime.podcastsLibraryPlacement) &&
@@ -2337,14 +2579,6 @@ private fun GeneralSettings(context: android.content.Context) {
         SettingsToggleRow(context, stringResource(R.string.settings_general_haptics), "general_haptic_feedback", true, grouped = true)
         SettingsToggleRow(
             context,
-            stringResource(R.string.settings_general_system_font),
-            "system_font",
-            false,
-            stringResource(R.string.settings_general_system_font_note),
-            grouped = true,
-        )
-        SettingsToggleRow(
-            context,
             stringResource(R.string.settings_general_tabbar),
             "general_disable_auto_tabbar_shrink",
             false,
@@ -2355,14 +2589,14 @@ private fun GeneralSettings(context: android.content.Context) {
 }
 
 @Composable
-private fun RecognitionSettings(context: android.content.Context) {
+fun MeloXRecognitionPanel(context: android.content.Context) {
     val client = remember(context) { SongRecognitionClient(context.applicationContext) }
     val scope = rememberCoroutineScope()
     var duration by remember {
         mutableStateOf(MeloXSettingsPreferences.string(context, "recognition_duration", "6").toIntOrNull() ?: 6)
     }
     var working by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf(context.getString(R.string.settings_recognition_ready)) }
+    var status by remember { mutableStateOf("靠近声源后开始识别") }
     var error by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<List<SongRecognitionResult>>(emptyList()) }
     var recognitionJob by remember { mutableStateOf<Job?>(null) }
@@ -2381,7 +2615,7 @@ private fun RecognitionSettings(context: android.content.Context) {
             if (duration != 0) results = emptyList()
             try {
                 if (duration == 0) {
-                    status = context.getString(R.string.settings_recognition_continuous)
+                    status = "正在持续识别；点击停止结束"
                     while (isActive) {
                         val found = client.recognize(9)
                         if (found.isNotEmpty()) {
@@ -2389,16 +2623,16 @@ private fun RecognitionSettings(context: android.content.Context) {
                         }
                     }
                 } else {
-                    status = context.getString(R.string.settings_recognition_listening, duration)
+                    status = "正在聆听 ${duration} 秒…"
                     val found = client.recognize(duration)
                     results = found
-                    status = if (found.isEmpty()) context.getString(R.string.settings_recognition_none) else context.getString(R.string.settings_recognition_done)
+                    status = if (found.isEmpty()) "没有识别到歌曲，请靠近声源后重试" else "识别完成"
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                status = if (results.isEmpty()) context.getString(R.string.settings_recognition_stopped) else context.getString(R.string.settings_recognition_stopped_kept)
+                status = if (results.isEmpty()) "识别已停止" else "已停止，保留识别结果"
             } catch (failure: Throwable) {
-                error = failure.message ?: context.getString(R.string.settings_recognition_failed)
-                status = context.getString(R.string.settings_recognition_incomplete)
+                error = failure.message ?: "听歌识曲失败"
+                status = "无法完成识别"
             } finally {
                 working = false
             }
@@ -2408,16 +2642,12 @@ private fun RecognitionSettings(context: android.content.Context) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) startCapture() else error = context.getString(R.string.settings_recognition_mic_denied)
+        if (granted) startCapture() else error = "没有麦克风权限；请在系统设置中允许 MeloX 使用麦克风。"
     }
 
     Spacer(Modifier.height(14.dp))
     SettingsGlassGroup {
-        listOf(
-            3 to stringResource(R.string.settings_recognition_seconds_fast),
-            6 to stringResource(R.string.settings_recognition_seconds_recommended),
-            9 to stringResource(R.string.settings_recognition_seconds_noisy),
-        ).forEach { (value, title) ->
+        listOf(3 to stringResource(R.string.settings_recognition_seconds_fast), 6 to stringResource(R.string.settings_recognition_seconds_recommended), 9 to stringResource(R.string.settings_recognition_seconds_noisy)).forEach { (value, title) ->
             SettingsChoiceRow(title, duration == value) {
                 if (!working) {
                     duration = value
@@ -2476,6 +2706,485 @@ private fun RecognitionSettings(context: android.content.Context) {
             }
         }
     }
+}
+
+@Composable
+private fun RemoteConfigSettings() {
+    val context = LocalContext.current.applicationContext
+    val status by MeloXRemoteConfigRuntime.status.collectAsState()
+    val scope = rememberCoroutineScope()
+    val githubRouting = remember { MeloXGitHubRouting(context) }
+    val consentEnabled = MeloXRemoteConfigConsent.enabled(context)
+    val source = if (!consentEnabled) {
+        stringResource(R.string.settings_remote_declined)
+    } else when (status.source) {
+        MeloXRemoteConfigSource.BuiltIn -> stringResource(R.string.settings_remote_builtin)
+        MeloXRemoteConfigSource.VerifiedRemote -> stringResource(R.string.settings_remote_verified)
+        MeloXRemoteConfigSource.VersionInapplicable -> stringResource(R.string.settings_remote_inapplicable)
+    }
+    SettingsGlassGroup {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text(source, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(
+                stringResource(R.string.settings_remote_summary),
+                modifier = Modifier.padding(top = 7.dp),
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
+            )
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+    SettingsGlassGroup {
+        RemoteConfigStatusLine(stringResource(R.string.settings_remote_version), status.config.configVersion.toString())
+        RemoteConfigStatusLine(
+            stringResource(R.string.settings_remote_access),
+            githubRouting.effectiveRoute()?.takeIf { githubRouting.selectedSource() == MeloXGitHubSource.Auto }
+                ?.let { "${it.source.label}（${it.latencyMs}ms）" }
+                ?: githubRouting.selectedSource().label,
+        )
+        RemoteConfigStatusLine(stringResource(R.string.settings_remote_key), status.keyId ?: stringResource(R.string.settings_remote_builtin_key))
+        RemoteConfigStatusLine(stringResource(R.string.settings_remote_last_check), formatRemoteConfigTime(status.lastCheckedAtEpochMs))
+        RemoteConfigStatusLine(stringResource(R.string.settings_remote_last_update), formatRemoteConfigTime(status.lastUpdatedAtEpochMs))
+        RemoteConfigStatusLine(
+            stringResource(R.string.settings_remote_breakers),
+            status.config.disabledCapabilities.takeIf(Set<String>::isNotEmpty)?.joinToString("、") ?: "无",
+        )
+        RemoteConfigStatusLine(stringResource(R.string.settings_remote_fallback_order), status.config.fallback.order.joinToString(" → "))
+        RemoteConfigStatusLine(stringResource(R.string.settings_remote_timeout), "${status.config.fallback.timeoutMs} ms")
+        RemoteConfigStatusLine("热更新", hotUpdateSummary())
+    }
+    status.error?.let { error ->
+        Spacer(Modifier.height(12.dp))
+        SettingsInfoCard("最近检查失败：$error\n已继续使用上一次有效配置或内置默认值。")
+    }
+    Spacer(Modifier.height(12.dp))
+    SettingsActionButton(
+        when {
+            !consentEnabled -> stringResource(R.string.settings_remote_enable_first)
+            status.refreshing -> stringResource(R.string.settings_about_checking)
+            else -> stringResource(R.string.settings_remote_check)
+        },
+    ) {
+        if (consentEnabled && !status.refreshing) {
+            scope.launch { MeloXRemoteConfigRuntime.refresh(force = true) }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsDangerButton(stringResource(R.string.settings_remote_clear)) {
+        scope.launch { MeloXRemoteConfigRuntime.clearCache(context) }
+    }
+}
+
+/**
+ * Compact view of what the signed hot-update channel currently contributes, so
+ * a maintainer can confirm a payload landed without digging through logs.
+ */
+@Composable
+private fun hotUpdateSummary(): String {
+    val text by com.lladlam.melox.core.remoteconfig.MeloXHotStrings.overrides.collectAsState()
+    val colors by com.lladlam.melox.core.remoteconfig.MeloXHotStyles.colors.collectAsState()
+    val scripts by com.lladlam.melox.core.remoteconfig.MeloXHotScripts.scripts.collectAsState()
+    val rules by com.lladlam.melox.core.remoteconfig.MeloXHotRules.rules.collectAsState()
+    val neteaseStrategy = com.lladlam.melox.core.remoteconfig.MeloXHotStrategies.value("netease_playback")
+    return buildString {
+        append("文案 ").append(text.values.sumOf { it.size })
+        append(" · 颜色 ").append(colors.size)
+        append(" · 脚本 ").append(scripts.size)
+        append(" · 后缀 ").append(rules.searchTitleStripSuffixes.size)
+        append(" · 网易云 ").append(neteaseStrategy)
+        val overridden = text.values.sumOf { it.size } + colors.size + scripts.size +
+            rules.searchTitleStripSuffixes.size
+        if (overridden == 0 && neteaseStrategy == "v1") append("（未覆盖）")
+    }
+}
+
+@Composable
+private fun RemoteConfigStatusLine(title: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f))
+        Text(value, modifier = Modifier.weight(1.4f), textAlign = TextAlign.End, fontSize = 13.sp)
+    }
+}
+
+private fun formatRemoteConfigTime(value: Long): String = if (value <= 0L) {
+    "尚未"
+} else {
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(value))
+}
+
+@Composable
+private fun AboutSettings(context: android.content.Context) {
+    val githubRouting = remember { MeloXGitHubRouting(context) }
+    val updateClient = remember { MeloXUpdateClient(context, routing = githubRouting) }
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var exportingLogs by remember { mutableStateOf(false) }
+    var showLogExportInfo by remember { mutableStateOf(false) }
+    var release by remember { mutableStateOf<MeloXRelease?>(null) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    var versionTapCount by remember { mutableIntStateOf(0) }
+    var lastVersionTapAt by remember { mutableStateOf(0L) }
+    var showCatEgg by remember { mutableStateOf(false) }
+    var downloadSource by remember { mutableStateOf(githubRouting.selectedSource()) }
+    val exportLogsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri == null) {
+            exportingLogs = false
+        } else {
+            scope.launch {
+                runCatching {
+                    MeloXLogExporter.exportRecentLogs(context, uri)
+                }.onSuccess { result ->
+                    updateStatus = "已导出 MeloX 当前进程日志（${result.lineCount} 行）"
+                }.onFailure { error ->
+                    updateStatus = error.message ?: "日志导出失败"
+                }
+                exportingLogs = false
+            }
+        }
+    }
+    Box(
+        modifier = Modifier.pointerInput(Unit) {
+            var distance = 0f
+            detectVerticalDragGestures(
+                onDragStart = { distance = 0f },
+                onVerticalDrag = { _, dragAmount ->
+                    distance += dragAmount
+                    if (distance > 180f) {
+                        showCatEgg = true
+                        distance = 0f
+                    }
+                },
+            )
+        },
+    ) {
+        SettingsGlassGroup {
+            Column(Modifier.padding(18.dp)) {
+            Text("MeloX Android", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "版本 ${BuildConfig.VERSION_NAME} · MeloX 的 Android 原生迁移版。",
+                modifier = Modifier
+                    .padding(top = 7.dp)
+                    .clickable {
+                        val now = System.currentTimeMillis()
+                        versionTapCount = if (now - lastVersionTapAt < 2_000L) versionTapCount + 1 else 1
+                        lastVersionTapAt = now
+                        if (versionTapCount >= 7) {
+                            showCatEgg = true
+                            versionTapCount = 0
+                        }
+                    },
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha=.62f),
+            )
+            Text(hotText("about.maintainer", stringResource(R.string.settings_about_maintainer)), modifier = Modifier.padding(top=14.dp), fontWeight=FontWeight.SemiBold)
+            Text(hotText("about.upstream", stringResource(R.string.settings_about_upstream)), modifier = Modifier.padding(top=5.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha=.58f))
+            }
+        }
+    }
+    if (showCatEgg) {
+        MeloXGlassDialog(visible = true, onDismiss = { showCatEgg = false }) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                MeloXPinkCat()
+                Text(hotText("about.cat_title", stringResource(R.string.settings_about_cat_title)), style = MaterialTheme.typography.titleLarge)
+                Text(hotText("about.cat_body", stringResource(R.string.settings_about_cat_body)), modifier = Modifier.padding(top = 7.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f))
+                MeloXGlassButton(
+                    onClick = { showCatEgg = false },
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                    style = MeloXGlassButtonStyle.BorderedProminent,
+                ) { Text(stringResource(R.string.settings_about_cat_accept)) }
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    SettingsToggleRow(context, stringResource(R.string.settings_about_auto_update), "update_auto_check", true, stringResource(R.string.settings_about_auto_update_note))
+    Spacer(Modifier.height(10.dp))
+    MeloXSettingsDropdown(
+        title = stringResource(R.string.settings_about_github_source),
+        selected = downloadSource,
+        items = listOf(
+            MeloXGitHubSource.Auto to stringResource(R.string.settings_about_source_auto),
+            MeloXGitHubSource.GitHubDoh to stringResource(R.string.settings_about_source_doh),
+            MeloXGitHubSource.GhFast to stringResource(R.string.settings_about_source_ghfast),
+            MeloXGitHubSource.GhProxy to stringResource(R.string.settings_about_source_ghproxy),
+            MeloXGitHubSource.GhProxyOrg to stringResource(R.string.settings_about_source_ghproxy_org),
+        ),
+        onSelected = {
+            downloadSource = it
+            githubRouting.selectSource(it)
+        },
+    )
+    Text(
+        githubRouting.effectiveRoute()?.takeIf { downloadSource == MeloXGitHubSource.Auto }?.let {
+            "自动测速当前选择 ${it.source.label}（${it.latencyMs}ms）；更新检查、APK 下载与已授权的签名配置共用此源。"
+        } ?: stringResource(R.string.settings_about_source_auto_note),
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
+    )
+    SettingsActionButton(if (checking) stringResource(R.string.settings_about_checking) else stringResource(R.string.settings_about_check_update)) {
+        if (!checking) scope.launch {
+            checking = true
+            runCatching { updateClient.latestStableRelease(forceSourceBenchmark = true) }
+                .onSuccess {
+                    release = it
+                    updateStatus = if (updateClient.isNewer(it.version, BuildConfig.VERSION_NAME)) {
+                        "发现新版本 ${it.version}：${it.name}"
+                    } else {
+                        "当前已是最新版本（${BuildConfig.VERSION_NAME}）"
+                    }
+                }
+                .onFailure { updateStatus = it.message ?: "更新检查失败" }
+            checking = false
+        }
+    }
+    val currentCommit = BuildConfig.GIT_SHA.take(7)
+    if (currentCommit.isNotBlank()) {
+        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = "当前构建 commit $currentCommit（开发版）",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .42f),
+        )
+    }
+    var devCommit by remember { mutableStateOf<MeloXDevCommit?>(null) }
+    SettingsActionButton(stringResource(R.string.settings_about_check_dev)) {
+        if (!checking) scope.launch {
+            checking = true
+            runCatching { updateClient.latestDevCommit() }
+                .onSuccess { latest ->
+                    devCommit = latest
+                    updateStatus = if (latest.sha == BuildConfig.GIT_SHA) {
+                        "已经是最新提交 ${latest.sha.take(7)}"
+                    } else {
+                        "main 有新提交 ${latest.sha.take(7)}：${latest.message}"
+                    }
+                }
+                .onFailure { updateStatus = it.message ?: "检查最新提交失败" }
+            checking = false
+        }
+    }
+    devCommit?.takeIf { it.sha != BuildConfig.GIT_SHA }?.let { latest ->
+        Spacer(Modifier.height(10.dp))
+        SettingsActionButton(stringResource(R.string.settings_about_download_dev)) {
+            scope.launch {
+                val target = runCatching { updateClient.devBuildUrl() }.getOrNull()
+                    ?: "https://github.com/lladlam/MeloX-Android/actions/workflows/build.yml"
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
+                    .onFailure { updateStatus = it.message ?: "无法打开下载页" }
+            }
+        }
+        Text(
+            text = "新提交 ${latest.sha.take(7)}（${latest.author}）：${latest.message}",
+            modifier = Modifier.padding(top = 8.dp),
+            fontSize = 12.sp,
+            lineHeight = 18.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
+        )
+    }
+    updateStatus?.let { message ->
+        Spacer(Modifier.height(10.dp))
+        Text(message, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
+    }
+    release?.takeIf { updateClient.isNewer(it.version, BuildConfig.VERSION_NAME) }?.let { available ->
+        Spacer(Modifier.height(10.dp))
+        var deltaPatch by remember(available.version) {
+            mutableStateOf<com.lladlam.melox.core.remoteconfig.MeloXRemoteUpdatePatch?>(null)
+        }
+        LaunchedEffect(available.version) {
+            deltaPatch = withContext(Dispatchers.IO) {
+                val patch = com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigRuntime.status.value
+                    .config.updatePatches.firstOrNull { it.toVersion == available.version }
+                    ?: return@withContext null
+                val installed = com.lladlam.melox.core.update.MeloXApkDelta.installedApkSha256(context)
+                    ?: return@withContext null
+                patch.takeIf { it.fromApkSha256.equals(installed, ignoreCase = true) }
+            }
+        }
+        deltaPatch?.let { patch ->
+            SettingsActionButton(
+                "增量更新 ${available.version}（约 %.0f MB）".format(patch.patchBytes / 1024.0 / 1024.0),
+            ) {
+                scope.launch {
+                    updateStatus = "正在下载增量补丁…"
+                    val patchFile = updateClient.downloadPatch(context, patch)
+                    if (patchFile == null) {
+                        updateStatus = "增量补丁下载失败，可用整包下载"
+                        return@launch
+                    }
+                    updateStatus = "正在重建安装包…"
+                    val apk = withContext(Dispatchers.IO) {
+                        com.lladlam.melox.core.update.MeloXApkDelta.reconstruct(
+                            context = context,
+                            patch = patchFile,
+                            expectedApkSha256 = patch.apkSha256,
+                            versionName = available.version,
+                        )
+                    }
+                    if (apk == null) {
+                        updateStatus = "增量重建校验失败，请用整包下载"
+                        return@launch
+                    }
+                    updateStatus = if (com.lladlam.melox.core.update.MeloXApkDelta.launchInstaller(context, apk)) {
+                        "已打开系统安装器"
+                    } else {
+                        "无法打开安装器，请用整包下载"
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+        SettingsActionButton(if (available.apkUrl != null) "下载 ${available.version} APK" else "打开 ${available.version} 发布页") {
+            scope.launch {
+                val target = runCatching { updateClient.downloadUrl(available) }.getOrNull() ?: available.pageUrl
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
+                    .onFailure { updateStatus = it.message ?: "无法打开下载链接" }
+            }
+        }
+        if (available.notes.isNotBlank()) {
+            Text(available.notes.take(700), modifier = Modifier.padding(top = 10.dp), fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    Spacer(Modifier.height(10.dp))
+    SettingsActionButton(stringResource(R.string.settings_about_restore_player)) {
+        MeloXSettingsPreferences.resetRecommendedPlayerSettings(context)
+        updateStatus = "已恢复推荐播放器、歌词与 AutoMix 配置"
+    }
+    Spacer(Modifier.height(14.dp))
+    SettingsGlassGroup {
+        Column(Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.settings_about_licenses_title), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "MeloX 主体：GNU GPLv3\n" +
+                    "qier222/YesPlayMusic：网易云接口与播放器实现参考（MIT）\n" +
+                    "jayfunc/BetterLyrics：逐字歌词渲染、光效与动效参考\n" +
+                    "WXRIW/Lyricify-Lyrics-Helper：网易云 YRC 解析参考\n" +
+                    "neteasecloudmusicapienhanced/api-enhanced：听歌识曲与音频指纹运行时\n" +
+                    "DanteAlighieri13210914/pv-tool：文字 PV 原始实现（Non-Commercial License）\n" +
+                     "mjhydri/BeatNet：自动混音节拍/重拍/速度分析（CC BY 4.0）\n" +
+                     "NEORUAA/MeiloX：基于 Mei 的仿 Apple Music 网易云音乐客户端，提供 UI 参考\n" +
+                     "lladlam/Square：Spotify 与 YouTube Music 双后端架构参考\n" +
+                     "YouTube Music：基于 Square 架构，使用 vendored Metrolist InnerTube（GPL-3.0）与 NewPipeExtractor\n" +
+                     "Spotify：参考 Square Spotify backend，使用 librespot-java（Apache-2.0）\n" +
+                     "vivo OriginOS：自动尝试原子岛通知适配，不提供单独开关\n" +
+                     "thlucas1/SpotifyWebApiPython：Spotify Web API 客户端，提供 Spotify API 参考\n" +
+                    "bromothymolb/bilibili-api-zoku：Bilibili API 调用整合项目，提供 Bilibili API 参考\n" +
+                    "Kyant0 AndroidLiquidGlass / Backdrop：Android 液态玻璃渲染基础",
+                modifier = Modifier.padding(top = 10.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+                fontSize = 13.sp,
+                lineHeight = 20.sp,
+            )
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    SettingsActionButton(stringResource(R.string.settings_about_github)) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lladlam/MeloX-Android"))) }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsActionButton(stringResource(R.string.settings_about_ios)) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/youshen2/MeloX"))) }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsActionButton(stringResource(R.string.settings_about_upstream_licenses)) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/youshen2/MeloX/blob/main/MeloX/Features/Legal/ProjectLicensesView.swift"))) }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsActionButton(stringResource(R.string.settings_about_qq_group)) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/wbhFQxj7mo"))) }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsActionButton(stringResource(R.string.settings_about_sponsor)) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ifdian.net/a/lladlam"))) }
+    }
+    Spacer(Modifier.height(10.dp))
+    SettingsActionButton(if (exportingLogs) stringResource(R.string.settings_about_exporting) else stringResource(R.string.settings_about_export)) {
+        if (!exportingLogs) showLogExportInfo = true
+    }
+
+    if (showLogExportInfo) {
+        val deviceInfo: MeloXLogDeviceInfo = MeloXLogExporter.collectDeviceInfo(context)
+        MeloXGlassDialog(
+            visible = true,
+            onDismiss = { showLogExportInfo = false },
+        ) {
+            Text(stringResource(R.string.settings_about_export), style = MaterialTheme.typography.titleMedium)
+            Text(
+                stringResource(R.string.settings_about_export_body),
+                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .64f),
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 14.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = .045f))
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("Android 版本：${deviceInfo.androidVersion}", fontSize = 13.sp)
+                Text("手机型号：${deviceInfo.phoneModel}", fontSize = 13.sp)
+                Text("系统版本：${deviceInfo.systemVersion}", fontSize = 13.sp)
+                Text(
+                    "已登录音乐源：${deviceInfo.loggedMusicSources.takeIf { it.isNotEmpty() }?.joinToString("、") ?: "无"}",
+                    fontSize = 13.sp,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SettingsActionButton(stringResource(R.string.action_cancel), Modifier.weight(1f)) { showLogExportInfo = false }
+                SettingsActionButton(stringResource(R.string.settings_about_choose_location), Modifier.weight(1f)) {
+                    showLogExportInfo = false
+                    exportingLogs = true
+                    exportLogsLauncher.launch("MeloX-logs-${System.currentTimeMillis()}.txt")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeveloperSettings() {
+    val context = LocalContext.current
+    var diagnosticsVisible by remember {
+        mutableStateOf(BuildConfig.DEBUG && MeloXSettingsPreferences.boolean(context, "developer_automix_diagnostics", false))
+    }
+    var diagnostics by remember { mutableStateOf(MeloXAutoMixDiagnostics.snapshot()) }
+    if (BuildConfig.DEBUG) {
+        SettingsToggleRow(
+            context = context,
+            title = stringResource(R.string.settings_dev_overlay),
+            key = "developer_performance_overlay",
+            default = false,
+            note = stringResource(R.string.settings_dev_overlay_note),
+        )
+        SettingsExternalToggleRow(
+            title = stringResource(R.string.settings_dev_automix),
+            value = diagnosticsVisible,
+            note = stringResource(R.string.settings_dev_automix_note),
+        ) {
+            diagnosticsVisible = it
+            MeloXSettingsPreferences.setBoolean(context, "developer_automix_diagnostics", it)
+        }
+        if (diagnosticsVisible) {
+            Spacer(Modifier.height(8.dp))
+            SettingsActionButton(stringResource(R.string.settings_dev_refresh)) { diagnostics = MeloXAutoMixDiagnostics.snapshot() }
+            Spacer(Modifier.height(10.dp))
+        }
+    }
+    Spacer(Modifier.height(10.dp))
 }
 
 private val LocalSettingsGroupedRows = staticCompositionLocalOf { false }

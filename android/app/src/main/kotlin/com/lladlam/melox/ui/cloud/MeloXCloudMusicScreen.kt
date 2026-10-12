@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
@@ -52,6 +53,7 @@ import com.lladlam.melox.ui.glass.MeloXGlassButtonStyle
 import com.lladlam.melox.ui.glass.MeloXGlassDialog
 import com.lladlam.melox.ui.glass.MeloXTypography
 import com.lladlam.melox.ui.glass.meloXContentSurface
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import kotlinx.coroutines.launch
 
 @Composable
@@ -204,6 +206,7 @@ fun MeloXCloudMusicScreen(
             if (query.isBlank()) Text(stringResource(R.string.cloud_search), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .4f))
             BasicTextField(query, { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
         }
+        val cloudListState = rememberLazyListState()
         when {
             loading && values.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             error != null && values.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -217,6 +220,9 @@ fun MeloXCloudMusicScreen(
                 }
             }
             else -> LazyColumn(
+                state = cloudListState,
+                // 触顶/触底橡胶回弹触感。
+                modifier = Modifier.meloXEdgeOverscrollHaptic(cloudListState),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 14.dp, bottom = MeloXBottomContentClearance),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {

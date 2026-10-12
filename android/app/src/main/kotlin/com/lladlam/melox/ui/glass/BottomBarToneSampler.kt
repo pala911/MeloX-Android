@@ -19,9 +19,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -148,20 +147,8 @@ internal class BottomBarToneState internal constructor() {
 private const val SAMPLE_W = 32
 private const val SAMPLE_H = 8
 
-/**
- * 明暗已经稳定、而且离翻转门槛还远时的采样间隔。
- * 底栏停着的时候不需要 120ms 抓一次窗口。
- */
-private const val SAMPLE_INTERVAL_IDLE_MS = 2_000L
-
-/** 亮度贴着门槛时加快，避免滑过一块深色区域要等两秒才反应。 */
-private const val SAMPLE_INTERVAL_NEAR_MS = 500L
-
-/** 已经有一次越界、正在确认时再快一点。确认两次大约 400ms。 */
-private const val SAMPLE_INTERVAL_CONFIRM_MS = 200L
-
-/** 离当前门槛不到这么多 L* 就视为「贴着」，改用 [SAMPLE_INTERVAL_NEAR_MS]。 */
-private const val TONE_NEAR_BAND_LSTAR = 8f
+/** 采样间隔。滚动时逐帧采样只会放大功耗与抖动，没有收益。 */
+private const val SAMPLE_INTERVAL_MS = 120L
 
 /** 单次 PixelCopy 的超时兜底 —— 拿不到回调也不能让循环卡死。 */
 private const val SAMPLE_TIMEOUT_MS = 900L
@@ -202,7 +189,7 @@ private const val TONE_FLIP_DEADBAND_LSTAR = 5.0f
  * 连续几次"同侧越界"才真的切。
  *
  * 采样带紧贴内容底部，进度条、封面旋转这类**局部动画**偶尔会把均值推出边界一帧；
- * 要求连续命中可以过滤掉这种单帧噪声。确认间隔见 [SAMPLE_INTERVAL_CONFIRM_MS]。
+ * 要求连续命中可以过滤掉这种单帧噪声，代价只是 ~120ms 的响应延迟。
  */
 private const val TONE_CONFIRM_COUNT = 2
 
@@ -221,15 +208,44 @@ private const val TONE_SWITCH_COOLDOWN_MS = 400L
 private val ToneTransition = spring<Float>(dampingRatio = 1f, stiffness = 180f)
 
 @Composable
-internal fun rememberBottomBarToneState(systemDark: Boolean): BottomBarToneState {
+internal fun rememberBottomBarToneState(
+    systemDark: Boolean,
+    /**
+     * 底栏是否**被全屏播放页完全遮住**（`fullPlayerVisible`）。
+     *
+     * ⚠⚠⚠ 2026-10-06（用户报障）：「播放页的**专辑流光取色盖住底栏**，没有了液态效果」。
+     *   根因：本采样器是**截屏底栏背后那条带**来判定明暗的，而播放页打开时那条带里
+     *   只有**播放页的专辑流光像素** —— 它会被当成「底栏背后真实内容」，把 tone 翻到
+     *   错误档位（深色流光 ⇒ 底栏整体翻成暗式 ⇒ 深色底栏叠在深色流光上，
+     *   折射完全看不见 = 用户说的「没有了液态效果」）。
+     *   而翻转本身有**去抖计数 + 400ms 冷却**（[TONE_SWITCH_COOLDOWN_MS]），
+     *   关掉播放页后要好几拍才恢复 ⇒ 「有时候」看到。
+     *   ⇒ 播放页期间**暂停采样、保持当前档位**（不清零计数、不 publish）；
+     *     播放页一关立刻按真实内容重新采样。
+     */
+    paused: Boolean = false,
+    /**
+     * 深色模式下**锁死暗色底栏**：底栏不再根据背后内容自适应翻成浅色。
+     *
+     * ⚠ 只锁深色：仅当 `systemDark && lockDarkInDarkMode` 同时成立时，把 tone 钉死在
+     *   `d = 1`（暗式）并**跳过采样**；浅色模式下自适应（暗背景→暗底栏）照常。
+     *   用 `rememberUpdatedState` 而非 key：开关切换不该重启采样循环（会丢失 `decided`/
+     *   冷却状态，反而制造一次额外翻转）。开关一开，下一轮循环即钉死暗式，无需重建协程。
+     */
+    lockDarkInDarkMode: Boolean = false,
+): BottomBarToneState {
     val context = LocalContext.current
     val density = LocalDensity.current
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val state = remember { BottomBarToneState() }
     val bandPx = remember(density) { with(density) { TONE_BAND_DP.dp.toPx() } }
     val insetPx = remember(density) { with(density) { TONE_BAND_INSET_DP.dp.toPx() } }
+    // ⚠ 用 `rememberUpdatedState` 而非 key：暂停开关不该重启整个采样循环
+    //   （重启会丢掉 `decided`/冷却状态，反而制造一次额外翻转）。
+    val pausedState = rememberUpdatedState(paused)
+    // 同 `pausedState`：锁开关切换时只更新值，不重启循环。
+    val lockDarkState = rememberUpdatedState(lockDarkInDarkMode)
 
-    LaunchedEffect(state, systemDark, lifecycle) {
+    LaunchedEffect(state, systemDark) {
         val window = context.findActivity()?.window
         if (window == null) {
             state.publishTarget(if (systemDark) 1f else 0f)
@@ -243,15 +259,25 @@ internal fun rememberBottomBarToneState(systemDark: Boolean): BottomBarToneState
         var pending = Float.NaN
         var pendingCount = 0
         var lastSwitchAt = 0L
-        var intervalMs = SAMPLE_INTERVAL_IDLE_MS
 
         while (true) {
-            delay(intervalMs)
+            delay(SAMPLE_INTERVAL_MS)
             if (state.released) break
-            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                intervalMs = SAMPLE_INTERVAL_IDLE_MS
+            // ⚠ 深色模式「保持暗色底栏」开关：只锁深色（浅色模式自适应照常）。
+            //   锁定时把 tone 钉死在 d=1（暗式）并**跳过采样**，
+            //   背后亮内容（如浅色封面）不再把下面的底栏翻成浅色。
+            //   `decided` 记为 1f，开关关闭后下一轮自然回到下方采样逻辑；
+            //   若背后确为亮内容会按正常去抖/冷却翻回浅式，不会卡死。
+            if (lockDarkState.value && systemDark) {
+                if (state.target != 1f) state.publishTarget(1f)
+                decided = 1f
+                pending = Float.NaN
+                pendingCount = 0
                 continue
             }
+            // ⚠⚠ 播放页完全遮住底栏时**跳过采样**（理由见 `paused` 参数说明）：
+            //   截到的只会是播放页的专辑流光，会把 tone 翻错，且冷却期让它迟迟不恢复。
+            if (pausedState.value) continue
             val rect = state.sampleRect(bandPx, insetPx) ?: continue
             val lum = withTimeoutOrNull(SAMPLE_TIMEOUT_MS) {
                 state.capture(window, rect)
@@ -262,27 +288,19 @@ internal fun rememberBottomBarToneState(systemDark: Boolean): BottomBarToneState
             val lstar = yToLstar(lum)
 
             val current = if (decided.isNaN()) fallback else decided
-            val threshold = if (current > 0.5f) {
-                TONE_FLIP_MID_LSTAR + TONE_FLIP_DEADBAND_LSTAR
-            } else {
-                TONE_FLIP_MID_LSTAR - TONE_FLIP_DEADBAND_LSTAR
-            }
             val want = if (current > 0.5f) {
                 // 现在暗式 ⇒ 背后要明显亮于感知中灰才回亮式
-                if (lstar > threshold) 0f else 1f
+                if (lstar > TONE_FLIP_MID_LSTAR + TONE_FLIP_DEADBAND_LSTAR) 0f else 1f
             } else {
                 // 现在亮式 ⇒ 背后要明显暗于感知中灰才进暗式
-                if (lstar < threshold) 1f else 0f
+                if (lstar < TONE_FLIP_MID_LSTAR - TONE_FLIP_DEADBAND_LSTAR) 1f else 0f
             }
-            val nearThreshold = kotlin.math.abs(lstar - threshold) < TONE_NEAR_BAND_LSTAR
 
             if (want == current) {
                 pending = Float.NaN
                 pendingCount = 0
-                intervalMs = if (nearThreshold) SAMPLE_INTERVAL_NEAR_MS else SAMPLE_INTERVAL_IDLE_MS
                 continue
             }
-            intervalMs = SAMPLE_INTERVAL_CONFIRM_MS
             if (pending != want) {
                 pending = want
                 pendingCount = 1
@@ -355,12 +373,13 @@ private suspend fun BottomBarToneState.capture(window: Window, rect: Rect): Floa
         //   ("Window doesn't have a backing surface!")。withTimeoutOrNull 只接
         //   CancellationException，兜不住它 ⇒ 直接打崩 App。采样只是「锦上添花」，
         //   任何失败都必须退化成 null，让上层 `?: continue` 跳过这一拍。
-        // ⚠⚠ 所以抓 `Throwable`，而不是 `IllegalArgumentException`。
+        // ⚠⚠ 抓 `Throwable`，不是 `IllegalArgumentException`。
         //   已知会同步抛的：
         //   - IllegalArgumentException "Window doesn't have a backing surface!"（文档写明）
-        //   - IllegalStateException：部分 ROM（vivo / 多窗口）在 surface 已销毁时抛的不是 IAE；
+        //   - IllegalStateException：部分 ROM（尤其 vivo/OPPO 的多窗口/自由窗口分支）在
+        //     surface 已销毁时抛的不是 IAE。
         //   - SecurityException：个别 OEM 对 `PixelCopy` 加了调用方校验。
-        //   采样是「锦上添花」，任何失败都必须退化成 null。
+        //   采样只是「锦上添花」，任何失败都必须退化成 null 让上层 `?: continue` 跳过这一拍。
         val launched = try {
             PixelCopy.request(
                 window,

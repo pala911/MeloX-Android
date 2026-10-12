@@ -116,6 +116,9 @@ object LocalRecommendationStore {
     fun readRecommendedTracks(context: Context): List<com.lladlam.melox.core.music.model.MusicTrack> {
         val candidates = readCandidateTracks(context)
         val recommendations = readRecommendations(context)
+        // 官方服务不提供黑名单读取接口，本地算法这份推荐是 MeloX 自己算出来的，
+        // 所以必须在出口按服务剔除被屏蔽的歌曲/歌手——否则屏蔽只在官方链路生效，
+        // 而 MeloX 独有的推荐里照样推。
         return recommendations.mapNotNull { recommendation ->
             candidates.firstOrNull { track ->
                 track.title == recommendation.title && track.artistText == recommendation.artist

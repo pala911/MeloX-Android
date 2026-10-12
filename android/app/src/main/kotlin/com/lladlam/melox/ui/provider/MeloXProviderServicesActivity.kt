@@ -15,18 +15,17 @@ import androidx.compose.runtime.setValue
 import com.lladlam.melox.core.account.rememberNeteaseSessionStore
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.provider.MusicProviderSelectionStore
-import com.lladlam.melox.ui.prepareMeloXPagePredictiveBack
-import com.lladlam.melox.ui.account.NeteaseLoginScreen
+import com.lladlam.melox.ui.prepareMeloXPageWindow
 import com.lladlam.melox.ui.theme.MeloXTheme
-import com.lladlam.melox.ui.MeloXPredictiveBackPage
+import com.lladlam.melox.ui.MeloXPageHost
 
 class MeloXProviderServicesActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        prepareMeloXPagePredictiveBack()
+        prepareMeloXPageWindow()
         setContent {
-            MeloXPredictiveBackPage(onBack = ::finish) {
+            MeloXPageHost {
                 MeloXTheme {
                     ProviderServicesPage()
                 }
@@ -39,15 +38,6 @@ class MeloXProviderServicesActivity : ComponentActivity() {
         val context = this@MeloXProviderServicesActivity
         val session = rememberNeteaseSessionStore()
         var currentSource by remember { mutableStateOf(MusicProviderSelectionStore.selectedSource(context)) }
-        var showNeteaseLogin by remember { mutableStateOf(false) }
-        if (showNeteaseLogin) {
-            NeteaseLoginScreen(
-                session = session,
-                onDismiss = { showNeteaseLogin = false },
-                onLoggedIn = { showNeteaseLogin = false },
-            )
-            return
-        }
         ProviderServicesScreen(
             currentSource = currentSource,
             onSourceSelected = { source ->
@@ -55,7 +45,9 @@ class MeloXProviderServicesActivity : ComponentActivity() {
                 MusicProviderSelectionStore.setSelectedSource(context, source)
             },
             neteaseSession = session,
-            onNeteaseLogin = { showNeteaseLogin = true },
+            onNeteaseLogin = {
+                startActivity(Intent(context, com.lladlam.melox.ui.account.MeloXNeteaseLoginActivity::class.java))
+            },
             onBack = ::finish,
         )
     }

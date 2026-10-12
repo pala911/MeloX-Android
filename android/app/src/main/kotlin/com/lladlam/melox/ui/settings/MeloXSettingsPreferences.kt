@@ -91,11 +91,26 @@ object MeloXSettingsRuntime {
         internal set
     var reduceMotion by mutableStateOf(false)
         internal set
+    // ⚠⚠⚠ 2026-10-06：默认值 **240 → 360**（用户拍板「默认动画速度和设置显示改回 360，
+    //   之前是测试才默认 240ms」）。
+    //   历史：2026-10-03 曾把默认从 360 改成 240（当时口径是「对齐 Apple Music 参考视频
+    //   实测 ~200ms」）—— 现确认那是**测试期**的临时口径，正式默认回到 **360**。
+    //   ⚠ 光改这一行**不够**：`SharedPreferences` 是持久化的，设备里存的旧值会盖住默认值
+    //   ⇒ 必须配合 `playerTransitionDurationMs(context)` 里的**一次性 v2 迁移**
+    //     （**无条件归一为 360**，只做一次），才能让「设置页显示」与「实际」**同时**立刻变成 360。
     var playerTransitionDurationMs by mutableStateOf(360)
         internal set
     var playerBackgroundIsolationEnabled by mutableStateOf(true)
         internal set
     var frostedGlassEnabled by mutableStateOf(false)
+        internal set
+    /**
+     * 深色模式下**锁死暗色底栏**：关闭底栏按背后内容自适应翻成浅色的逻辑。
+     *
+     * ⚠ 只锁深色：浅色模式下自适应（暗背景→暗底栏）照常，不在此开关范围内。
+     * 默认开启 —— 用户口径「新增机制，深色模式底栏不自适应变色到浅色底栏」。
+     */
+    var bottomBarLockDarkInDarkMode by mutableStateOf(true)
         internal set
     var keepScreenOn by mutableStateOf(false)
         internal set
@@ -293,6 +308,13 @@ object MeloXSettingsRuntime {
         internal set
     var floatingHighContrast by mutableStateOf(true)
         internal set
+    /**
+     * AutoSync: generate a real word-level timeline locally (ONNX) when a song
+     * only has line-timed lyrics. Off by default — it is an experimental path
+     * that spends CPU and battery on the current track.
+     */
+    var autoSyncWordLyricsEnabled by mutableStateOf(false)
+        internal set
     var homeTabEnabled by mutableStateOf(true)
         internal set
     var homeQuickActionsEnabled by mutableStateOf(true)
@@ -341,7 +363,7 @@ object MeloXSettingsRuntime {
         internal set
     var showPlayerQualityTip by mutableStateOf(true)
         internal set
-    var systemFontEnabled by mutableStateOf(false)
+    var systemFontEnabled by mutableStateOf(true)
         internal set
     var smartQueueEnabled by mutableStateOf(false)
         internal set
@@ -371,7 +393,7 @@ object MeloXSettingsRuntime {
         rememberLibraryPage = MeloXSettingsPreferences.boolean(app, "library_remember_page", true)
         defaultLibraryPage = MeloXSettingsPreferences.string(app, "library_default_page", "Songs")
         clipboardLinksEnabled = MeloXSettingsPreferences.boolean(app, "general_clipboard_links", true)
-        systemFontEnabled = MeloXSettingsPreferences.boolean(app, "system_font", false)
+        systemFontEnabled = MeloXSettingsPreferences.boolean(app, "system_font", true)
     }
 
     fun initialize(context: Context, force: Boolean = false) {
@@ -413,11 +435,21 @@ object MeloXSettingsRuntime {
         }.getOrDefault(MeloXPlayerShell.AppleMusic)
         artworkMotionEnabled = MeloXSettingsPreferences.boolean(app, "player_artwork_motion", true)
         reduceMotion = MeloXSettingsPreferences.boolean(app, "reduce_motion", false)
-        playerTransitionDurationMs = MeloXSettingsPreferences.int(app, "player_transition_duration_ms", 360)
-            .let { stored -> if (stored == 575) 360 else stored }
-            .coerceIn(200, 1_200)
+        // ⚠⚠ 2026-10-06：**正式默认 = 360**（240 只是 2026-10-03~10-06 的测试期口径）。
+        //   `575 → 360` 那行是**旧档位**归一，与默认档无关，保留原样。
+        // ⚠⚠⚠ 默认值迁移（v1 的 360→240、v2 的 240→360）**都不在这里做** ——
+        //   本函数只被 `MeloXSettingsRuntime` 读，而设置页走
+        //   `MeloXSettingsPreferences.playerTransitionDurationMs(...)`，
+        //   两条路径不同源 ⇒ 迁移放这里会导致「显示 / 实际」不一致。
+        //   统一走 [playerTransitionDurationMs]（读 + 迁移 + 写回同一处）。
+        // ⚠⚠⚠ 必须带 `MeloXSettingsPreferences.` 前缀：本函数在 `MeloXSettingsRuntime`
+        //   内部，而 `MeloXSettingsRuntime` 也有同名属性 `playerTransitionDurationMs`
+        //   ⇒ 裸写会被解析成**属性自赋值**，编译报 `Unresolved reference`。
+        playerTransitionDurationMs =
+            MeloXSettingsPreferences.playerTransitionDurationMs(app)
         playerBackgroundIsolationEnabled = MeloXSettingsPreferences.boolean(app, "player_background_isolation", true)
         frostedGlassEnabled = MeloXSettingsPreferences.boolean(app, "player_frosted_glass", false)
+        bottomBarLockDarkInDarkMode = MeloXSettingsPreferences.boolean(app, "bottom_bar_lock_dark_in_dark_mode", true)
         keepScreenOn = MeloXSettingsPreferences.boolean(app, "player_keep_screen_on", false)
         screenAwakeMode = runCatching {
             MeloXScreenAwakeMode.valueOf(
@@ -430,7 +462,7 @@ object MeloXSettingsRuntime {
         }.getOrDefault(MeloXScreenAwakeMode.Disabled)
         immersivePlaybackEnabled = MeloXSettingsPreferences.boolean(app, "immersive_playback", false)
         showPlayerQualityTip = MeloXSettingsPreferences.boolean(app, "player_show_quality_tip", true)
-        systemFontEnabled = MeloXSettingsPreferences.boolean(app, "system_font", false)
+        systemFontEnabled = MeloXSettingsPreferences.boolean(app, "system_font", true)
         smartQueueEnabled = MeloXPlaybackModePreferences.smartQueue(app)
         transitionUiEnabled = MeloXSettingsPreferences.boolean(app, "transition_ui_enabled", false)
         showLyricTranslation = MeloXSettingsPreferences.boolean(app, "lyrics_translation", true)
@@ -561,6 +593,7 @@ object MeloXSettingsRuntime {
         }.getOrDefault(MeloXSecondaryLyricMode.Auto)
         floatingFontSizeSp = MeloXSettingsPreferences.int(app, "floating_lyrics_font_size", 18).coerceIn(14, 28)
         floatingHighContrast = MeloXSettingsPreferences.boolean(app, "floating_lyrics_high_contrast", true)
+        autoSyncWordLyricsEnabled = MeloXSettingsPreferences.boolean(app, "autosync_word_lyrics_enabled", false)
         homeTabEnabled = MeloXSettingsPreferences.boolean(app, "tab_home", true)
         homeQuickActionsEnabled = MeloXSettingsPreferences.boolean(app, "home_quick_actions", true)
         homePlaylistsEnabled = MeloXSettingsPreferences.boolean(app, "home_playlists", true)
@@ -626,6 +659,64 @@ object MeloXSettingsPreferences {
     fun int(context: Context, key: String, default: Int = 0): Int =
         prefs(context).getInt(key, default)
 
+    /**
+     * 读取 `player_transition_duration_ms`，并做**一次性**的旧默认迁移。
+     *
+     * ### ⚠⚠ 迁移史（两次**方向相反**，别搞混）
+     * · **v1**（2026-10-03，**已废弃**）：默认 `360 → 240`，一次性标记键
+     *   `..._migrated_v1`。当时口径是「对齐 Apple Music 参考 ~200ms」。
+     * · **v2**（2026-10-06，**当前**）：确认 **240 只是测试期口径**，正式默认回到 **360**
+     *   → 需要把老设备里残留的 **240 纠正回 360**，一次性标记键 `..._migrated_v2`。
+     *   ⚠⚠ **必须用新键**：老设备的 v1 标记已是 `true`，复用 v1 键会让纠正**永不执行**
+     *     （正是「改了默认值但设备上没变」的经典坑）。
+     *
+     * ⚠⚠⚠ 为什么迁移必须落在**这个被两边共用的读取函数**上：
+     *   设置页那项走 `selectedProvider = { playerTransitionDurationMs(context) }`
+     *   （见 `SettingsScreen` 的「播放器展开/收回时长」），而运行时
+     *   `MeloXSettingsRuntime.load()` 也调本函数 ⇒ 只有在这里迁移，
+     *   「**显示 == 实际**」才成立。只在 `load()` 里迁 ⇒ 设置页仍显示旧值
+     *   （历史报障原文：「**不要实际变，设置显示没变**」）。
+     *
+     * ⚠ v2 迁移是**无条件归一为 360**（不是「只把 240 改成 360」）：用户要的是
+     *   「默认值**和设置显示**都回到 360」，而持久化值会盖住默认值，设备上还可能残留
+     *   测试期跟着调的其它档 ⇒ 只有无条件归一才能让设置页**立刻**显示 360。
+     *   **只做一次**，之后 `240/300/360/460/600` 五档全部自由可调、正常持久化。
+     */
+    fun playerTransitionDurationMs(context: Context): Int {
+        val store = prefs(context)
+        val migrated = store.getBoolean(KEY_PLAYER_TRANSITION_DURATION_MIGRATED_V2, false)
+        if (!migrated) {
+            // ⚠⚠ 2026-10-06（用户口径：「默认动画速度和**设置显示**改回 360，
+            //   之前是**测试才**默认 240ms」）：
+            //   这是**测试期口径的纠正**，所以这里**无条件**归一到 360，
+            //   而不是「只把 240 改成 360」——
+            //   · 用户要的是「**设置显示**也立刻是 360」，只改默认值 / 只挑 240 改
+            //     都盖不住持久化值（设备上可能残留测试期跟着调的 300/460/600）；
+            //   · **只做一次**（v2 标记），此后 240/300/360/460/600 五档全部自由可调、
+            //     正常持久化，用户选什么就是什么。
+            //   ⚠ 无存储值的新装设备走同一个分支 ⇒ 同样得到 360（正式默认）。
+            store.edit()
+                .putInt(KEY_PLAYER_TRANSITION_DURATION_MS, 360)
+                .putBoolean(KEY_PLAYER_TRANSITION_DURATION_MIGRATED_V2, true)
+                .apply()
+            return 360
+        }
+        return store.getInt(KEY_PLAYER_TRANSITION_DURATION_MS, 360).coerceIn(200, 1_200)
+    }
+
+    const val KEY_PLAYER_TRANSITION_DURATION_MS = "player_transition_duration_ms"
+
+    /**
+     * v2 一次性标记：「测试期默认 240 → 正式默认 360」的纠正。
+     *
+     * ⚠ 用**独立键**（不复用 v1 的 `..._migrated_v1`）—— 老设备 v1 标记已为 true，
+     *   复用会导致纠正永不执行。
+     * ⚠ 也不能用「值等于 240 就算没选过」的判据单独做：那会让**用户手动选的 240**
+     *   每次读取都被拉回 360（该档位不可持久化）。所以照样只在首读时做一次。
+     */
+    private const val KEY_PLAYER_TRANSITION_DURATION_MIGRATED_V2 =
+        "player_transition_duration_ms__migrated_v2"
+
     fun float(context: Context, key: String, default: Float = 0f): Float =
         prefs(context).getFloat(key, default)
 
@@ -675,6 +766,7 @@ object MeloXSettingsPreferences {
             "reduce_motion" -> MeloXSettingsRuntime.reduceMotion = value
             "player_background_isolation" -> MeloXSettingsRuntime.playerBackgroundIsolationEnabled = value
             "player_frosted_glass" -> MeloXSettingsRuntime.frostedGlassEnabled = value
+            "bottom_bar_lock_dark_in_dark_mode" -> MeloXSettingsRuntime.bottomBarLockDarkInDarkMode = value
             "player_keep_screen_on" -> MeloXSettingsRuntime.keepScreenOn = value
             "lyrics_translation" -> MeloXSettingsRuntime.showLyricTranslation = value
             "lyrics_auto_select" -> MeloXSettingsRuntime.automaticLyricSelectionEnabled = value
@@ -705,6 +797,7 @@ object MeloXSettingsPreferences {
             "lyrics_notification_dismiss_paused" -> MeloXSettingsRuntime.lyricNotificationDismissWhenPaused = value
             "floating_lyrics_enabled" -> MeloXSettingsRuntime.floatingLyricsEnabled = value
             "floating_lyrics_high_contrast" -> MeloXSettingsRuntime.floatingHighContrast = value
+            "autosync_word_lyrics_enabled" -> MeloXSettingsRuntime.autoSyncWordLyricsEnabled = value
             "tab_home" -> MeloXSettingsRuntime.homeTabEnabled = value
             "home_quick_actions" -> MeloXSettingsRuntime.homeQuickActionsEnabled = value
             "home_playlists" -> MeloXSettingsRuntime.homePlaylistsEnabled = value
@@ -889,7 +982,11 @@ object MeloXSettingsPreferences {
             .remove("player_artwork_motion")
             .remove("player_background_isolation")
             .remove("player_frosted_glass")
-            .remove("player_transition_duration_ms")
+            .remove(KEY_PLAYER_TRANSITION_DURATION_MS)
+            // ⚠ 2026-10-06：连**迁移标记**一起清掉，否则「恢复默认」后标记仍在
+            //   ⇒ 迁移逻辑不再跑。清掉后下次读取走首读分支 ⇒ 回到**正式默认 360**。
+            //   ⚠ 清的是 **v2** 标记（当前生效的那个）；v1 是已废弃键，不必再管。
+            .remove(KEY_PLAYER_TRANSITION_DURATION_MIGRATED_V2)
             .remove("lyrics_style")
             .remove("lyrics_rendering_quality")
             .remove("lyrics_text_pv_style")

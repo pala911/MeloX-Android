@@ -65,9 +65,17 @@ data class MeloXAutoMixSettings(
     val skipQuietOpening: Boolean = true,
     val minimumConfidence: Double = 0.42,
     val analyzeStreaming: Boolean = true,
+    val smartQueueAnalysisLimit: Int = 60,
     val fallback: MeloXAutoMixFallback = MeloXAutoMixFallback.Crossfade,
 ) {
     companion object {
+        /** 「不限」：智能队列全量分析（默认值之外的显式选择）。 */
+        const val UNLIMITED_ANALYSIS = -1
+
+        /** -1 = 不限额；正数收敛到 10..500。 */
+        private fun analysisLimit(stored: Int): Int =
+            if (stored < 0) UNLIMITED_ANALYSIS else stored.coerceIn(10, 500)
+
         fun read(context: Context): MeloXAutoMixSettings {
             val prefs = MeloXPlaybackModePreferences.preferences(context)
             fun <T : Enum<T>> enumValue(key: String, fallback: T, values: Array<T>): T {
@@ -86,6 +94,7 @@ data class MeloXAutoMixSettings(
                 skipQuietOpening = prefs.getBoolean("automix_skip_quiet_opening", true),
                 minimumConfidence = prefs.getFloat("automix_minimum_confidence", 0.42f).toDouble().coerceIn(0.2, 0.8),
                 analyzeStreaming = prefs.getBoolean("automix_analyze_streaming", true),
+                smartQueueAnalysisLimit = analysisLimit(prefs.getInt("automix_smart_queue_analysis_limit", 60)),
                 fallback = enumValue("automix_fallback", MeloXAutoMixFallback.Crossfade, MeloXAutoMixFallback.entries.toTypedArray()),
             )
         }

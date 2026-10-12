@@ -65,6 +65,7 @@ import com.lladlam.melox.core.download.MeloXDownloadStore
 import com.lladlam.melox.core.library.NeteaseLibraryClient
 import com.lladlam.melox.core.library.NeteasePlaylistSummary
 import com.lladlam.melox.core.model.SearchSong
+import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.network.MeloXCommentRepliesPage
 import com.lladlam.melox.core.network.MeloXListenTogetherRoom
 import com.lladlam.melox.core.network.MeloXMusicComment
@@ -119,6 +120,9 @@ fun MeloXSongActionsOverlay(
     sourcePlaylist: MeloXDownloadPlaylistRef? = null,
     sourceOwnedPlaylistId: Long? = null,
     onSourcePlaylistChanged: (() -> Unit)? = null,
+    // ★ 「天际歌词」入口（2026-10-07）。只有平板双栏传得进来，见
+    //   [MeloXNowPlayingActionsSheet] 同名声明的注释；为 null 时本行不渲染。
+    onShowSkyline: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext
@@ -287,7 +291,17 @@ fun MeloXSongActionsOverlay(
                         when (target) {
                             SongActionPage.Main -> {
                                 Text(stringResource(R.string.player_more_actions), Modifier.padding(bottom = 10.dp), fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                                val actions = listOf(
+                                // ★ 平板双栏专属：⋯ 里补一条进「天际歌词」的通道（2026-10-07）。
+                                //   放**第一条** —— 它切的是"整屏呈现方式"，与下面那一串歌曲操作不是
+                                //   一类，混在中间会找不到。`onShowSkyline == null`（手机 / 竖屏）时
+                                //   `listOfNotNull` 直接滤掉 ⇒ 那两端的菜单逐像素不变。
+                                val actions = listOfNotNull(
+                                    onShowSkyline?.let { openSkyline ->
+                                        MeloXMoreAction(stringResource(R.string.player_skyline_lyrics), MeloXSymbol.Lyrics) {
+                                            openSkyline()
+                                            onDismiss()
+                                        }
+                                    },
                                     MeloXMoreAction(stringResource(R.string.player_sleep_timer), MeloXSymbol.Moon) { page = SongActionPage.Sleep },
                                     MeloXMoreAction(stringResource(R.string.player_play_next), MeloXSymbol.Next) {
                                         if (playbackState == null) PlaybackCommands.playNext(context, song)

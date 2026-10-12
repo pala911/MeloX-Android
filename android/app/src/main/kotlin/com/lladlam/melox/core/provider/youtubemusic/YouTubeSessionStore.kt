@@ -1,8 +1,6 @@
 package com.lladlam.melox.core.provider.youtubemusic
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.metrolist.innertube.YouTube
 import java.security.MessageDigest
 
@@ -78,13 +76,6 @@ object YouTubeSessionStore {
         appliedFingerprint = fingerprint
     }
 
-    private fun preferences(context: Context) = EncryptedSharedPreferences.create(
-        context.applicationContext,
-        PreferencesName,
-        MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private fun preferences(context: Context) =
+        com.lladlam.melox.core.account.SecureSessionPreferences.openEncrypted(context, PreferencesName)
 }

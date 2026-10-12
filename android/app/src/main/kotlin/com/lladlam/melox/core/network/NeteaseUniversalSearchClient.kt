@@ -530,12 +530,16 @@ class NeteaseUniversalSearchClient(
         val artists = buildList {
             for (i in 0 until artistArray.length()) artistArray.optJSONObject(i)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add)
         }.joinToString(" / ")
+        val artistId = if (artistArray.length() > 0) artistArray.optJSONObject(0)?.optLong("id")?.takeIf { it > 0 } else null
         val album = value.optJSONObject("al") ?: value.optJSONObject("album")
+        val albumId = album?.optLong("id")?.takeIf { it > 0 }
         return SearchSong(
             id = id,
             name = value.optString("name").ifBlank { "未知歌曲" },
             artists = artists.ifBlank { "未知歌手" },
             album = album?.optString("name").orEmpty(),
+            albumId = albumId,
+            artistId = artistId,
             artworkUrl = secure(album?.optString("picUrl")?.takeIf(String::isNotBlank) ?: album?.optString("blurPicUrl")?.takeIf(String::isNotBlank)),
             durationMs = value.optLong("dt", value.optLong("duration", 0L)).coerceAtLeast(0L),
         )

@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.IBinder
+import android.os.Build
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
@@ -87,6 +88,10 @@ class MeloXFloatingLyricsService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            stopSelf()
+            return
+        }
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return

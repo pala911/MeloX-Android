@@ -111,6 +111,8 @@ fun SpotifyLoginScreen(onDismiss: () -> Unit, onLoggedIn: () -> Unit) {
             }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+        // 上游 0.6.2（22ebcb3）：改走 loopback 授权，本地起一个回环端口接回调，
+        // 不再依赖 SpotifyCallbackActivity。
         MeloXGlassButton(
             onClick = {
                 if (authorizing) return@MeloXGlassButton

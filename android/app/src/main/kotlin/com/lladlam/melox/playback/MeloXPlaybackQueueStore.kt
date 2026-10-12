@@ -19,12 +19,11 @@ internal object MeloXPlaybackQueueStore {
     private const val QUEUE = "queue"
     private const val INDEX = "index"
     private const val POSITION = "position"
+    private const val CURRENT_ID = "current_id"
 
-    fun save(context: Context, player: androidx.media3.common.Player) {
-        // Never erase a saved queue just because the live player is momentarily
-        // empty. The service can be observed with no items during start-up,
-        // before the restore pass runs, and wiping there loses the user's queue
-        // permanently. A stale queue is recoverable; a deleted one is not.
+    fun save(context: Context, player: androidx.media3.common.Player, flush: Boolean = false) {
+        // 上游 0.6.2（8b8cf70）：冷启动 restore 流程跑完之前会观察到「空 player」，
+        // 此时清库会把用户队列永久删掉 ⇒ 空队列直接返回，不再 remove。
         if (player.mediaItemCount == 0) return
         val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val array = JSONArray()
@@ -43,19 +42,15 @@ internal object MeloXPlaybackQueueStore {
                 put("originalIndex", extras?.getInt(PlaybackCommands.QUEUE_ORIGINAL_INDEX_KEY, -1) ?: -1)
                 put("entryId", extras?.getString(PlaybackCommands.QUEUE_ENTRY_ID_KEY))
                 put("durationMs", extras?.getLong(PlaybackTrackIdentity.DurationMsExtra, 0L) ?: 0L)
-                put("source", extras?.getString(PlaybackTrackIdentity.SourceExtra))
-                put("resourceId", extras?.getString(PlaybackTrackIdentity.ResourceIdExtra))
-                put("trackTitle", extras?.getString(PlaybackTrackIdentity.TitleExtra))
-                put("trackArtist", extras?.getString(PlaybackTrackIdentity.ArtistExtra))
-                put("trackAlbum", extras?.getString(PlaybackTrackIdentity.AlbumExtra))
-                put("trackArtwork", extras?.getString(PlaybackTrackIdentity.ArtworkExtra))
             })
         }
-        preferences.edit()
+        val currentIndex = player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1)
+        val editor = preferences.edit()
             .putString(QUEUE, array.toString())
-            .putInt(INDEX, player.currentMediaItemIndex.coerceAtLeast(0))
+            .putInt(INDEX, currentIndex)
             .putLong(POSITION, player.currentPosition.coerceAtLeast(0L))
-            .commit()
+            .putString(CURRENT_ID, player.getMediaItemAt(currentIndex).mediaId)
+        if (flush) editor.commit() else editor.apply()
     }
 
     /**
@@ -91,24 +86,6 @@ internal object MeloXPlaybackQueueStore {
                         putString(PlaybackCommands.QUEUE_ENTRY_ID_KEY, it)
                     }
                     putLong(PlaybackTrackIdentity.DurationMsExtra, value.optLong("durationMs", 0L))
-                    value.optString("source").takeIf(String::isNotBlank)?.let {
-                        putString(PlaybackTrackIdentity.SourceExtra, it)
-                    }
-                    value.optString("resourceId").takeIf(String::isNotBlank)?.let {
-                        putString(PlaybackTrackIdentity.ResourceIdExtra, it)
-                    }
-                    value.optString("trackTitle").takeIf(String::isNotBlank)?.let {
-                        putString(PlaybackTrackIdentity.TitleExtra, it)
-                    }
-                    value.optString("trackArtist").takeIf(String::isNotBlank)?.let {
-                        putString(PlaybackTrackIdentity.ArtistExtra, it)
-                    }
-                    value.optString("trackAlbum").takeIf(String::isNotBlank)?.let {
-                        putString(PlaybackTrackIdentity.AlbumExtra, it)
-                    }
-                    value.optString("trackArtwork").takeIf(String::isNotBlank)?.let {
-                        putString(PlaybackTrackIdentity.ArtworkExtra, it)
-                    }
                 }
                 add(
                     MediaItem.Builder()
@@ -128,9 +105,17 @@ internal object MeloXPlaybackQueueStore {
             }
         }
         return items.takeIf { it.isNotEmpty() }?.let {
+            // 按 mediaId 锚定当前索引：持久化后若条目被过滤/截断，旧存的数值 index
+            // 会被 `coerceIn` 压到末尾 ⇒ 恢复到错误的歌。有 id 时用 id 反查，
+            // 找不到再退回数值 index。
+            val numericIndex = prefs.getInt(INDEX, 0).coerceIn(it.indices)
+            val currentId = prefs.getString(CURRENT_ID, null)
+            val index = if (currentId != null) {
+                it.indexOfFirst { item -> item.mediaId == currentId }.takeIf { idx -> idx >= 0 } ?: numericIndex
+            } else numericIndex
             MeloXPersistedQueue(
                 items = it,
-                index = prefs.getInt(INDEX, 0).coerceIn(it.indices),
+                index = index,
                 positionMs = prefs.getLong(POSITION, 0L).coerceAtLeast(0L),
             )
         }

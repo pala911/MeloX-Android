@@ -6,6 +6,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.ResolvingDataSource
+import com.lladlam.melox.core.audio.MeloXPlaybackUnavailableException
 import com.lladlam.melox.core.audio.MusicQualityRuntime
 import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicResourceId
@@ -19,10 +20,8 @@ import java.io.IOException
 import java.util.LinkedHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Adds provider-aware `melox://track/...` URIs while delegating every legacy
@@ -35,8 +34,6 @@ class ProviderPlaybackResolver(
     private val localSourceProvider: (MusicResourceId) -> Uri? = { null },
     private val authKeyProvider: (MusicSource) -> String = { "" },
     private val providerPlaybackEnabled: (MusicSource) -> Boolean = { true },
-    private val chkszPlayback: ChkszPlaybackResolver? = null,
-    private val lxUserPlayback: LxUserPlaybackResolver? = null,
     private val thirdPartySourcesEnabled: () -> Boolean = { true },
     private val crossProviderFallback: CrossProviderPlaybackFallbackResolver? = null,
 ) : ResolvingDataSource.Resolver {
@@ -108,14 +105,8 @@ class ProviderPlaybackResolver(
         cached(key)?.let { return it }
         val pending = CompletableFuture<ResolvedRequest>()
         val existing = inFlight.putIfAbsent(key, pending)
-        if (existing != null) {
-            if (existing.isCompletedExceptionally) {
-                inFlight.remove(key, existing)
-            } else {
-                return runCatching { existing.get(20L, TimeUnit.SECONDS) }
-                    .getOrElse { throw IOException("Unable to resolve provider playback source", it.cause ?: it) }
-            }
-        }
+        if (existing != null) return runCatching { existing.get() }
+            .getOrElse { throw IOException("Unable to resolve provider playback source", it.cause ?: it) }
 
         var trackOrNull: MusicTrack? = null
         return try {
@@ -140,7 +131,7 @@ class ProviderPlaybackResolver(
             Log.d(TAG, "resolve detail source=${source.storageValue} id=${resourceValue.take(8)} title=${track.title.take(40)} " +
                 "artists=${track.artistText.take(60)} durationMs=${track.durationMs} metadata=${track.providerMetadata.javaClass.simpleName}")
             Log.i(TAG, "Resolve start source=${source.storageValue} quality=${quality.name} thirdParty=${thirdPartySourcesEnabled()}")
-            // 官方（主源）先行：LX/CHKSZ 只在官方给试听片段、会员/版权受限或
+// 官方（主源）先行：LX/CHKSZ 只在官方给试听片段、会员/版权受限或
             // 音质不达标时才花——与网易云链路同样是官方优先（需求：先找网易云）。
             Log.i(
                 TAG,
@@ -150,7 +141,20 @@ class ProviderPlaybackResolver(
             val playback = provider as? PlaybackCapability
                 ?: throw IOException("${provider.displayName} 当前没有实现播放能力")
             val resolution = runBlocking(Dispatchers.IO) {
-                withTimeout(20_000L) { playback.resolvePlayback(track, quality) }
+                playback.resolvePlayback(track, quality)
+            }
+
+            /**
+             * 官方音源不可用时的统一兜底入口：当前上传版本不带第三方脚本音源，
+             * 官方明确失败（会员 / 版权 / 地区 / 拿不到链接）时直接抛不可播放异常。
+             */
+            fun thirdPartyFallbackOrThrow(
+                track: MusicTrack,
+                quality: AudioQualityTier,
+                source: MusicSource,
+                message: String,
+            ): ResolvedRequest {
+                throw MeloXPlaybackUnavailableException(message)
             }
             val result = when (resolution) {
                 is PlaybackResolution.Playable -> {
@@ -210,7 +214,7 @@ class ProviderPlaybackResolver(
                         }
                     }
                 }
-                is PlaybackResolution.Preview -> {
+is PlaybackResolution.Preview -> {
                     // Same case as Netease: the provider hands out a clip instead of
                     // failing, so the URL on its own is not an answer - spend the
                     // third-party sources (with the trial-clip retry) and the
@@ -240,11 +244,27 @@ class ProviderPlaybackResolver(
                 // 以下失败分支一律原样抛出，由 catch 统一跑 LX→CHKSZ→bili 比质
                 // 选源（与网易云链官方抛异常的 catch 分支同款；上游 0.6.1 曾在这里
                 // 丢掉第三方回落，我们保留它，且现在覆盖所有失败分支）。
+                //
+                // ⚠ 以下「拿不到链接」的分支必须用 `MeloXPlaybackUnavailableException`
+                //   而不是普通 `IOException`（2026-09-28 修「切到无音源的歌会弹回原曲」）：
+                //   服务端的 `onPlayerError` 靠这个类型把它和「网络抖动」区分开，
+                //   从而**向前跳过**而不是卡在错误态等一个永远不会来的重试。
+                //   注意 `LoginRequired` **不**归这一类 —— 登录态是全局的，一旦缺失
+                //   整队都播不了，逐个跳过只会把整个队列清空，应该保留现曲目等人处理。
                 PlaybackResolution.LoginRequired -> throw IOException("${provider.displayName} 需要登录后播放")
-                PlaybackResolution.SubscriptionRequired -> throw IOException("${provider.displayName} 当前歌曲需要对应会员权益")
-                PlaybackResolution.RegionRestricted -> throw IOException("${provider.displayName} 当前地区不可播放")
-                PlaybackResolution.CopyrightRestricted -> throw IOException("${provider.displayName} 当前版权不可播放")
-                is PlaybackResolution.Unavailable -> throw IOException(
+                // 会员 / 版权 / 地区 / 拿不到链接 都归「官方音源不可用」，统一走第三方兜底。
+                // 第三方只在官方失败后兜底，正常歌（Playable）永远先用官方，不会被脚本抢占。
+                PlaybackResolution.SubscriptionRequired -> thirdPartyFallbackOrThrow(
+                    track, quality, source, "${provider.displayName} 当前歌曲需要对应会员权益",
+                )
+                PlaybackResolution.RegionRestricted -> thirdPartyFallbackOrThrow(
+                    track, quality, source, "${provider.displayName} 当前地区不可播放",
+                )
+                PlaybackResolution.CopyrightRestricted -> thirdPartyFallbackOrThrow(
+                    track, quality, source, "${provider.displayName} 当前版权不可播放",
+                )
+                is PlaybackResolution.Unavailable -> thirdPartyFallbackOrThrow(
+                    track, quality, source,
                     resolution.reason ?: "${provider.displayName} 暂时没有可播放音源",
                 )
             }
@@ -281,7 +301,7 @@ class ProviderPlaybackResolver(
         }
     }
 
-    /**
+/**
      * The external half of the NetEase chain, shared by every path a provider
      * resolution can take: the third-party sources (LX then CHKSZ) spend first,
      * bilibili only joins while they cannot satisfy the requested quality, and
@@ -438,7 +458,6 @@ class ProviderPlaybackResolver(
                 "via=${source.storageValue} quality=${candidate.actualQuality?.name ?: "unknown"}",
         )
     }
-
     private fun cached(key: ResolveKey): ResolvedRequest? = synchronized(cacheLock) {
         resolvedUris[key]?.also { cached ->
             if (cached.expiresAtEpochMs?.let { System.currentTimeMillis() >= it } == true) {

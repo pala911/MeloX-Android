@@ -1,4 +1,4 @@
-/*
+﻿/*
  * MeloX Backdrop controls
  *
  * Adapted from the LiquidButton and LiquidBottomTabs examples in
@@ -9,13 +9,17 @@ package com.lladlam.melox.ui.glass
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
@@ -24,6 +28,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtMost
 import com.kyant.backdrop.Backdrop
@@ -131,25 +136,6 @@ internal const val BOTTOM_GLASS_SURFACE_ALPHA = 0.52f
  */
 internal const val MeloXDropletLensScale = 49f / 56f
 
-/**
- * 水珠**静息态**的外投影下限（官方 `LiquidBottomTabs` 写死 `Shadow(alpha = p)` ⇒ 静息为 0）。
- *
- * 胶囊 L1 面板的静息外投影是**恒定**的 `Shadow(24dp, Black 0.12, alpha = 0.08)`；
- * 水珠若在静息时投影为 0，边界就只剩「取样图与胶囊的明暗差」，没有任何「被抬起」的提示
- * ⇒ 真机读成「在胶囊上挖了个洞」，而不是「胶囊里浮着一颗玻璃珠」。
- *
- * ⚠ `Shadow` 默认色是 **Black 0.06**，有效浓度 = 0.06 × alpha ⇒ 0.5 已经 ≈ 3%。
- *   再往上加就不是玻璃投影，是「胶囊上贴了一圈黑影」——要动就动 `Shadow` 的 `color`，别加这个。
- */
-internal const val MeloXDropletRestShadow = 0.50f
-
-/**
- * 水珠**静息态**的内阴影下限。半径不共用本常量：随 p 从 4dp 长到 8dp（官方 8dp·p）。
- *
- * 与 [MeloXDropletRestShadow] 同理：`InnerShadow` 默认色 Black 0.06 ⇒ 0.6 ≈ 3.6%。
- */
-internal const val MeloXDropletRestInnerShadow = 0.60f
-
 /** 浅色下额外叠的一层白纱浓度（=0 表示不叠），用于整体加浓的 A/B 调档。 */
 @Composable
 internal fun bottomGlassSurfaceColor(): Color =
@@ -214,9 +200,6 @@ fun Modifier.meloXLiquidContentTransform(interaction: MeloXLiquidInteraction): M
     graphicsLayer {
         val controlHeight = size.height.coerceAtLeast(1f)
         val dragOffset = interaction.highlight.offset
-        // ⚠ 这里写的每一个量最终都进 HWUI `RenderNode` 的变换矩阵（见 MeloXGlassSafety.kt）。
-        //   `pressProgress` 来自欠阻尼弹簧、区间约 [−0.16, 1.16] ⇒ 先 `safeProgress`；
-        //   `dragOffset` 与乘除结果再统一过 `finiteOrZero()`（正常值恒等，观感零变化）。
         val pressProgress = safeProgress(interaction.highlight.pressProgress)
         val baseScale = (1f + (4.dp.toPx() / controlHeight) * pressProgress).finiteOrZero()
         val maxOffset = size.minDimension.coerceAtLeast(1f)
@@ -289,7 +272,7 @@ fun Modifier.meloXGlassSurface(
                     spec.lensRadius.toPx(),
                     spec.refractionHeight.toPx(),
                     depthEffect = p > 0.01f,
-                    chromaticAberration = true,
+                    chromaticAberration = false,
                 )
             }
         },
@@ -430,9 +413,6 @@ fun Modifier.meloXLiquidBottomBar(
     //   `isMeloXDarkTheme()`）。它外部看不见，是最容易漏的一处 —— 漏了的结果就是
     //   涂层已经在过渡、高光还停在旧档，观感上是「切换了一半」。
     val tone = bottomBarTone()
-    // ⚠ 底栏面板的按压来自 `PublicDampedDragAnimation.pressProgress`
-    //   （`spring(1f, 1000f)`，临界阻尼、静息恰 0、理论不过冲），
-    //   但仍统一过一遍 `safeProgress` —— 出口只有一处，比逐个调用点核对参数便宜。
     val p = safeProgress(pressProgress)
     return drawBackdrop(
         backdrop = backdrop,
@@ -441,11 +421,19 @@ fun Modifier.meloXLiquidBottomBar(
             vibrancy()
             // ── 逐项照搬 kyant0 官方 `LiquidBottomTabs` 面板层（2026-09-25）────────
             //   官方源 `app/src/commonMain/.../components/LiquidBottomTabs.kt` 第 1 层：
-            //     effects = { vibrancy(); blur(...); lens(24f.dp.toPx(), 24f.dp.toPx()) }
+            //     effects = { vibrancy(); blur(8f.dp.toPx()); lens(24f.dp.toPx(), 24f.dp.toPx()) }
             //     onDrawSurface = { drawRect(containerColor) }
-            //   ⚠ 不变约束：面板 blur 必须 ≥ 捕获层 blur，两处永远同值。
-            //     二者一旦不等，「指示器 / 折射混乱」就会重现 —— 成因是锐利的页面内容
-            //     穿进 lens，被放大链撕成碎片；排查该症状第一步看本行，别先去动 lens。
+            // ── blur = 2dp（2026-09-25 **用户拍板**，偏离官方 8dp）──────────────────
+            //   官方 kyant0 `LiquidBottomTabs` 面板层 = vibrancy + blur(8dp) + lens(24,24)。
+            //   历史故障：本项目曾在「极端折射诊断」期间把 blur 写成 2dp 并遗留，真机症状
+            //     「指示器颜色和水珠折射都很混乱」—— 成因是锐利的页面内容穿进 lens，
+            //     被 5× 放大链撕成碎片。
+            //   本次用户**明确要求**偏离官方值（观感：更少奶油感、更透），且**面板与捕获层
+            //     同步取值**，以维持下面这条约束。
+            //   取值沿革：8dp(官方) → 2dp → 3dp → 2.5dp → **2dp**（2026-09-25 回调：2.5dp 偏糊，回到更透的 2dp）。
+            //   ⚠ 不变约束：面板 blur 必须 ≥ 捕获层 blur（现二者相等，均为 2dp）。
+            //   ⚠ 若真机再现「指示器 / 折射混乱」，**第一嫌疑就是本行的低 blur** ——
+            //     排查第一步应是把它改回 8dp 验一次，别先去动 lens。
             blur(2.dp.toPx())
             lens(24.dp.toPx(), 24.dp.toPx())
         },
@@ -476,6 +464,57 @@ fun Modifier.meloXLiquidBottomBar(
         exportedBackdrop = exportedBackdrop,
         onDrawSurface = {
             drawRect(surfaceColor)
+        },
+    )
+}
+
+/**
+ * 播放页三键「选中态玻璃圆盘」材质（2026-10-01）。
+ *
+ * ⚠ **绝不能复用 `meloXLiquidBottomBar`** —— 那个材质是为底栏**胶囊**调的，带
+ *   `lens(24dp, 24dp)` + `Highlight.Default` + `InnerShadow(4dp)` + `Shadow(24dp)`。
+ *   照搬到 40dp 的小圆盘上，真机症状正是「一个圆里有白环加图标」：
+ *   ① `lens(24dp, 24dp)` 的折射半径接近圆盘半径，圆周被放大弯折成一圈；
+ *   ② `Highlight.Default` 沿圆形边缘再补一圈亮环 ⇒ 那道「白环」；
+ *   ③ `InnerShadow` 默认 offset `(0, radius)` 在顶沿压出暗带。
+ *
+ *   所以这里只要 **vibrancy + blur 的纯模糊玻璃**，无任何边缘装饰；
+ *   中间的图标由 `DST_OUT` 镂空（见 `ScenePageButton`）。
+ */
+@Composable
+fun Modifier.meloXScenePageDisc(
+    surfaceColor: Color,
+    holePath: Path? = null,
+): Modifier {
+    val backdrop = meloXGlassBackdrop()
+    if (backdrop == null) {
+        // 无 backdrop 时退化成一层稳定的半透明圆（避免整枚按钮凭空消失）。
+        return background(
+            surfaceColor.compositeOver(MaterialTheme.colorScheme.background),
+            CircleShape,
+        )
+    }
+    return drawBackdrop(
+        backdrop = backdrop,
+        shape = { CircleShape },
+        effects = {
+            vibrancy()
+            blur(6.dp.toPx())
+        },
+        highlight = null,
+        shadow = null,
+        innerShadow = null,
+        onDrawSurface = {
+            if (holePath != null) {
+                // ★ 选中态「镂空图标」：用 ClipOp.Difference 把图标形状从白色纱上
+                //   挖掉，露出其下的模糊背景（专辑封面），形成真正的镂空而非反色实心。
+                //   holePath 必须位于圆盘坐标系（0..size），由调用方按 SF 字形轮廓生成。
+                clipPath(holePath, ClipOp.Difference) {
+                    drawRect(surfaceColor)
+                }
+            } else {
+                drawRect(surfaceColor)
+            }
         },
     )
 }
@@ -520,7 +559,6 @@ fun Modifier.meloXLiquidCaptureLayer(
     refractionAmount: Dp = 28.dp,
 ): Modifier {
     val backdrop = meloXGlassBackdrop() ?: return this
-    // ⚠ 底栏捕获层的按压同样过 `safeProgress`，理由见下面 lens 的零值门。
     val p = safeProgress(pressProgress)
     if (MeloXSettingsRuntime.frostedGlassEnabled) {
         return drawBackdrop(
@@ -545,7 +583,9 @@ fun Modifier.meloXLiquidCaptureLayer(
             //     highlight = { Highlight.Default.copy(alpha = p) }
             //     onDrawSurface = { drawRect(containerColor) }
             //     // ← 没有 shadow、没有 innerShadow
-            //   ⚠ blur 必须与面板同值：改一处就必须改另一处，二者不等即重现折射混乱。
+            //   ⚠ blur 固定 2dp —— **必须与面板同值**（面板已同步改 2dp），
+            //     以满足「面板 blur ≥ 捕获层 blur」。
+            //     ⚠ 改一处就必须改另一处：二者一旦不等，就会重现历史上的折射混乱。
             blur(2.dp.toPx())
             // ⚠ **静息（p≈0）必须整段跳过 lens，不能传 lens(0, 0)**。
             //   AGSL 里：`if (-sd >= refractionHeight) return content.eval(coord);`
@@ -568,7 +608,10 @@ fun Modifier.meloXLiquidCaptureLayer(
     )
 }
 
-/** Moving/selected tab lens used inside the bottom panel. */
+/**
+ * Moving/selected tab lens used inside the bottom panel.
+ *
+ */
 @Composable
 fun Modifier.meloXLiquidTabSelection(
     shape: Shape,
@@ -581,8 +624,9 @@ fun Modifier.meloXLiquidTabSelection(
 ): Modifier {
     if (!selected) return this
     val backdrop = meloXGlassBackdrop()
+    val surfaceColor = tint
     if (backdrop == null) {
-        return background(tint.copy(alpha = maxOf(tint.alpha, 0.36f)), shape)
+        return background(surfaceColor.copy(alpha = maxOf(surfaceColor.alpha, 0.36f)), shape)
     }
     if (MeloXSettingsRuntime.frostedGlassEnabled) {
         return drawBackdrop(
@@ -592,7 +636,7 @@ fun Modifier.meloXLiquidTabSelection(
             highlight = null,
             shadow = null,
             innerShadow = null,
-            onDrawSurface = { drawRect(tint) },
+            onDrawSurface = { drawRect(surfaceColor) },
         )
     }
     // ── 水珠材质：**逐项照搬 kyant0 官方 `LiquidBottomTabs`**（2026-09-25 用户拍板）──
@@ -621,10 +665,6 @@ fun Modifier.meloXLiquidTabSelection(
     // 水珠 / 选中指示器同样由同一个 d 驱动。指示器色是黑白（不是 accent 蓝）：
     // 暗式翻成白、亮式是黑 —— 端点与 `MeloXApp.kt` 的 `selectionTint` 口径一致。
     val tone = bottomBarTone()
-    // 静息态轮廓光下限：与胶囊 L1 面板的静息 highlight 同口径
-    // （`meloXLiquidBottomBar` 里是恒定的 `lerp(0.48f, 0.32f, tone)`）。
-    val restRim = lerp(0.48f, 0.32f, tone)
-    // ⚠ 水珠的 press spec 是临界阻尼、静息恰 0；这里统一清洗只为「出口唯一」。
     val p = safeProgress(pressProgress)
     return drawBackdrop(
         backdrop = selectionBackdrop,
@@ -651,27 +691,16 @@ fun Modifier.meloXLiquidTabSelection(
                 )
             }
         },
-        // ── 静息态 rim：不再全灭（2026-09-25 v0.10.7，用户反馈「静息指示器比胶囊通透、像挖了个洞」）
+        // ── 静息态视觉（2026-10-02 终版：换回 kyant0 官方方案）──────────────────
         //
-        //   官方 `LiquidBottomTabs` 水珠的 highlight / shadow / innerShadow **一律 ×p**
-        //   ⇒ 静息 p=0 时三项全 0：水珠边界只靠「取样图与胶囊内容的明暗差」勾勒，
-        //     没有边缘光、没有投影 ⇒ 读成「在胶囊上开了个洞」，而不是「胶囊里浮着玻璃珠」。
-        //
-        //   ⚠ **这不是取样浓度的问题，别去动涂层 / lens**：静息时取样图（L2 捕获层）已经
-        //     带 0.52 涂层，本层 onDrawSurface 又叠 0.1 纱 ⇒ 水珠有效涂层 0.62，比胶囊的
-        //     0.52 **更厚**。要变通透只能从边缘光找，不是从取样找。
-        //
-        //   三项各给一个静息下限，再按 p 插回官方值 —— **p=1 时与官方逐字一致**，
-        //   按压态的折射 / 缩放 / 折痕全部不变（不破坏下面「缩放不溢出折射带」那条约束）。
-        highlight = { Highlight.Default.copy(alpha = lerp(restRim, 1f, p)) },
-        // 保留库默认 offset / radius / color（见上方教训），只加静息下限。
-        shadow = { Shadow(alpha = lerp(MeloXDropletRestShadow, 1f, p)) },
-        innerShadow = {
-            InnerShadow(
-                radius = 4.dp + 4.dp * p,    // 静息 4dp → 按压 8dp（官方 8dp·p）
-                alpha = lerp(MeloXDropletRestInnerShadow, 1f, p),
-            )
-        },
+        //   09-25 的 restRim/shadow/innerShadow 静息下限、10-02 的纵向受光渐变、
+        //   被否决的霜化模糊——全部撤销。水珠三项**逐字回到官方**：
+        //     highlight/shadow/innerShadow 一律 ×p ⇒ 静息 p=0 全零，
+        //     onDrawSurface 只剩涂层淡出 + 官方 0.03f·p 黑纱。
+        //   静息层次感不再由水珠自身叠加提供；若需调浓度，走胶囊 L2 涂层，别动这三项。
+        highlight = { Highlight.Default.copy(alpha = p) },
+        shadow = { Shadow(alpha = p) },
+        innerShadow = { InnerShadow(radius = 8.dp * p, alpha = p) },
         // ⚠ 调用方注入的是一段**裸变换 lambda**（本项目的调用点里含 `velocity` 除法、
         //   弹簧 scale 等）。这些值最终写进 HWUI `RenderNode` 的变换矩阵：一旦是
         //   NaN / ±Inf，矩阵不可逆、绘制行为未定义 —— 这是「能跑玻璃的机型上因为
@@ -688,15 +717,10 @@ fun Modifier.meloXLiquidTabSelection(
             }
         },
         onDrawSurface = {
-            // 官方口径：按压时选中涂层淡出 + 极淡黑色叠加。
-            drawRect(
-                lerp(
-                    Color.Black.copy(0.1f),
-                    Color.White.copy(0.1f),
-                    tone,
-                ),
-                alpha = 1f - p,
-            )
+            // 官方口径：静息时选中涂层平涂、按压淡出 + 官方 0.03f·p 黑纱。
+            // （2026-10-02「涂料下沉」试验过把 tint 搬进捕获层、真机无差异，已回退——
+            //   tint 仍画在这里，即采样图之上；红内容的明度上限 = 1−a，见 MeloXApp.kt。）
+            drawRect(surfaceColor, alpha = 1f - p)
             drawRect(Color.Black.copy(alpha = 0.03f * p))
         },
     )

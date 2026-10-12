@@ -30,7 +30,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -67,7 +67,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -80,6 +84,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -98,10 +106,10 @@ import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.zIndex
 import com.lladlam.melox.core.lyrics.LyricHighlightStrategy
 import com.lladlam.melox.core.lyrics.LyricLine
 import com.lladlam.melox.core.lyrics.LyricTimelineProcessor
@@ -109,10 +117,10 @@ import com.lladlam.melox.core.lyrics.LyricRomanizationAligner
 import com.lladlam.melox.core.lyrics.LyricsDocument
 import com.lladlam.melox.core.lyrics.withPseudoTiming
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.lladlam.melox.MeloXAppVisibility
 import com.lladlam.melox.ui.settings.MeloXLyricsStyle
 import com.lladlam.melox.ui.theme.LocalMeloXFontFamily
-import com.lladlam.melox.ui.theme.MeloXLanTingProFontFamily
 import com.lladlam.melox.R
 import androidx.core.content.res.ResourcesCompat
 import com.lladlam.melox.ui.settings.MeloXLyricsRenderingQuality
@@ -208,6 +216,93 @@ internal fun lyricsPanelPlaybackInitialization(
 internal fun initialLyricsHighlightPositionMs(positionMs: Long, advanceMs: Long): Long =
     positionMs + advanceMs
 
+/**
+ * 歌词**逐行**自带的水平内边距（左右同值）。
+ *
+ * ⚠ 这不是"左边距"调参入口，而是行自身的呼吸位。横屏要求「除底部三键外的部件左缘与三键
+ * 里最左那颗按钮的左缘齐平」时，调用点用它换算补差值（见 `MeloXIOSNowPlayingScene` 的
+ * `MeloXLandscapeLyricsStartInset`），所以**别在行上写死 8.dp**。
+ */
+internal val MeloXLyricLineHorizontalPadding = 8.dp
+
+/**
+ * 横屏歌词字号系数（唯一调参入口）。横屏可视高度只有竖屏的一半左右，同一字号（34sp ×
+ * 用户 `lyricFontScale`）显得过大、一屏放不下几行 ⇒ 横屏按此系数整体等比缩小。
+ * ⚠ 只影响横屏歌词面板，**不动**用户设置里的全局字号。
+ */
+internal const val MeloXLandscapeLyricFontMultiplier = 0.85f
+
+/**
+ * 横屏歌词面板的底部留白。**已弃用（2026-09-30），调用点已移除，保留仅供历史参考。**
+ *
+ * 硬让位是个没有正确解的两难：让到 32dp 仍会透字（三键顶沿 = 右列底 − 32dp）、
+ * 让到 52dp 又会让底部显得很空。现改由 [MeloXLandscapeLyricsFadeBottom] 的**渐隐**承担 ——
+ * 三键下方的行是"淡出到透明"而不是"被切掉"。
+ * 历史：50dp → 20dp（「歌词下区域离底部三组件还有很多距离」）→ 32dp（消除歌词透字）→ 弃用。
+ */
+internal val MeloXLandscapeLyricsBottomPadding = 32.dp
+
+/**
+ * 横屏歌词「上下边缘渐隐」的高度（Apple Music 的 container edge fade，唯一调参入口）。
+ *
+ * 做法来源：Apple Music 处理歌词与上下 UI 衔接**不是**给浮层加底板、也不是给歌词留一条
+ * 与 UI 等高的空 padding，而是让歌词**铺满**可用区、由自身在边界处淡出到透明（取代硬裁）。
+ * 证据见 `MEMORY.md`「歌词 ↔ 上下 UI 衔接的上游权威做法」。
+ *
+ * - [MeloXLandscapeLyricsFadeTop] = 64dp，正好等于横屏曲名栏 `LandscapeSongHeader` 的高度
+ *   ⇒ 歌词在「栏底」处才完全显形，滚到栏后的行自然消隐。
+ * - [MeloXLandscapeLyricsFadeBottom] = 56dp，让开底部三键浮层（行高 42dp + `offset(y=10dp)`
+ *   + 余量）⇒ 末行不再被三键压住，也不需要 `MeloXLandscapeLyricsBottomPadding` 的硬让位。
+ */
+internal val MeloXLandscapeLyricsFadeTop = 64.dp
+internal val MeloXLandscapeLyricsFadeBottom = 56.dp
+
+/**
+ * 横屏歌词「边缘渐隐带」内的**最大模糊半径**（dp，唯一调参入口；0dp = 只渐隐不模糊）。
+ *
+ * 为什么不能靠已有的按行距衰减的模糊（[sourceDistanceBlurRadius]）来出这个效果：
+ * 那条是按「行中点到焦点行的行距」算的，而横屏焦点在 0.30 ⇒ 视口**最上沿**距焦点
+ * 只有 `306dp × 0.30 ≈ 92dp ÷ 34.7dp ≈ 0.8` 个行距，代入即 `0`（要超过 1.35 个行距才起糊）。
+ * 也就是「焦点偏上」时按行距算的模糊**够不到边缘**，必须在边缘单独给。
+ *
+ * 本项按**行中点到视口边缘的像素距离**线性铺开（`smootherStep` 缓入，边沿更糊）：
+ * 内沿 = 0、屏幕边 = 本值。几何上是行自身 y 的连续函数 ⇒ 滚动时逐帧连续变化，
+ * **没有**「行滚进某区间突然变糊」的跳变 —— 那正是早先固定 y 区间硬模糊被否决的原因，
+ * 这里不是那个做法。
+ *
+ * 只在渐隐带存在时生效（`edgeFadeTop/Bottom > 0`，即仅横屏）⇒ 竖屏逐帧不变。
+ */
+internal val MeloXLandscapeLyricsEdgeBlurMax = 6.dp
+
+/**
+ * 竖屏歌词「底部渐隐带」高度（唯一调参入口，配 `edgeFadeBottomTerminal` 一起用）。
+ *
+ * 背景：竖屏歌词面板是**铺满**到 Column 底部的（只有 `padding(top = 88.dp)`、**没有底部
+ * 让位**），底下那一截被底部控件条盖住。控件条只有 `meloXBackdropBlur`（`surfaceColor`
+ * 仅 `Black 8%` + 24dp 模糊）—— 对**白色高亮歌词**遮挡不足，会"幽灵般"透出来。真机
+ * 截图实证：`0:00  [标准]  -0:00` 那一带能看到下层 `(4665,777)` 的虚影、三控件下方还有
+ * 一整行。用户描述为「本该被下半操作区遮挡的歌词出现了」。
+ *
+ * 做法同横屏（Apple 的 container edge fade）：不加强遮挡、也不给歌词留空让位，而是让
+ * 歌词**在控件条区域内本身就淡到透明**。区别在于竖屏控件条高 279dp（占视口 ~45%），
+ * 远大于横屏的 56dp，而纵向渐隐是线性 ⇒ 光靠加宽渐隐带没用（控件条落在带**起点**、
+ * alpha 仍是 1）。所以必须把**归零点**上移到控件条顶沿（见 `bottomTerminalPx`），
+ * 本常量只负责"归零点之上多宽开始变淡"。
+ *
+ * ⚠⚠ 归零点**必须跟随控件条显隐**（见 `MeloXIOSNowPlayingScene` 竖屏调用点的
+ * `lyricsFadeTerminal`）：控件条 3 秒无操作会自动隐藏，若归零点恒钉在顶沿，隐藏后
+ * 下方 279dp（占视口 ~40%）会变成"既没控件、也没歌词"的空白 —— 用户报的
+ * 「控件隐藏了，下面的歌词不出来，白白浪费下面的空间」。
+ */
+internal val MeloXPortraitLyricsFadeBottom = 64.dp
+
+/**
+ * 横屏歌词的焦点行锚点。竖屏用户设置值 `lyricFocusPosition` 默认 0.25，但横屏右列只有
+ * ~306dp 高、且顶部有 64dp 曲名栏 ⇒ 0.25 会让当前行（行顶）压到栏底。抬到 0.30 让当前行
+ * 落在栏下方 ~11dp 处，同时仍比原来 `padding(top=48dp)` 的落点更高（消除栏下空白）。
+ */
+internal const val MeloXLandscapeLyricsFocusPosition = 0.30f
+
 @Composable
 fun MeloXIOSLyricsPanel(
     state: MeloXPlaybackUiState,
@@ -217,6 +312,20 @@ fun MeloXIOSLyricsPanel(
     onInterfaceVisibilityChange: (Boolean) -> Unit = {},
     allowAutomaticSkyline: Boolean = true,
     active: Boolean = true,
+    // ★ 横屏专用字号系数（默认 1f = 不动）。横屏可视高度只有竖屏的一半，同一字号显得过大
+    //   ⇒ 横屏传 <1 缩小。**只乘在读取 `lyricFontScale` 处**，不改用户设置里的全局字号。
+    fontScaleMultiplier: Float = 1f,
+    // ★ 横屏专用「上下边缘渐隐」高度（默认 0dp = 关闭 ⇒ 竖屏行为完全不变）。
+    //   见 `MeloXLandscapeLyricsFadeTop` 的注释：取代「给浮层加底板 / 给歌词留空让位」。
+    edgeFadeTop: Dp = 0.dp,
+    edgeFadeBottom: Dp = 0.dp,
+    // ★ 横屏专用焦点行锚点（默认 null = 沿用用户设置 `lyricFocusPosition`）。
+    focusPositionOverride: Float? = null,
+    // ★ 底部渐隐的**归零点**距视口底的距离（默认 0dp = 归零点即视口底，即旧行为）。
+    //   竖屏传「底部控件条高度」⇒ 控件条区域内歌词恒透明，遮挡不再依赖那层模糊底板。
+    edgeFadeBottomTerminal: Dp = 0.dp,
+    // ★ 渐隐带内的最大边缘模糊（dp）。默认沿用横屏值；竖屏传 0dp（只要渐隐、不要模糊）。
+    edgeBlurMax: Dp = MeloXLandscapeLyricsEdgeBlurMax,
 ) {
     val configuration = LocalConfiguration.current
     if (allowAutomaticSkyline && configuration.screenWidthDp > configuration.screenHeightDp && MeloXSettingsRuntime.skylineEnabled) {
@@ -231,9 +340,58 @@ fun MeloXIOSLyricsPanel(
             onInterfaceInteraction,
             onInterfaceVisibilityChange,
             active,
+            fontScaleMultiplier,
+            edgeFadeTop,
+            edgeFadeBottom,
+            focusPositionOverride,
+            edgeFadeBottomTerminal,
+            edgeBlurMax,
         )
         MeloXLyricsStyle.Eva -> MeloXEvaLyricsPanel(state, modifier, onInterfaceInteraction, active)
         MeloXLyricsStyle.TextPV -> MeloXTextPVLyricsPanel(state, modifier, onInterfaceInteraction, active)
+    }
+}
+
+/**
+ * ★★ 「旁听式」点按识别：**不消费任何 pointer 事件**。
+ *
+ * 控件隐藏时歌词面板底部会挂一层透明的「点按唤出控件」捕获层。它早先用的是
+ * `clickable`，而 `clickable` 会消费 pointer down ⇒ 底下 LazyColumn 的
+ * scrollable 再也拿不到 down ⇒ **控件一隐藏，底部那片歌词就完全滑不动**
+ * （用户报的 bug）。
+ *
+ * 本实现只监听、不消费：手指位移超过 `touchSlop` 即判为滑动，事件原样留给下面
+ * 的歌词列表去滚动；只有「按下后未越过 slop 就抬起」才触发 [onTap]。
+ *
+ * @param onTap 识别为点按时回调（唤出控件条）。
+ */
+private suspend fun PointerInputScope.detectPassThroughTap(onTap: () -> Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            // requireUnconsumed=false：即使下游已消费也照样观察，避免漏判。
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val slop = viewConfiguration.touchSlop
+            var moved = false
+            var released = false
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                val allUp = event.changes.all { !it.pressed }
+                if (!moved && !released) {
+                    val change: PointerInputChange? =
+                        event.changes.firstOrNull { it.id == down.id }
+                    if (change == null) {
+                        released = true
+                    } else if (!change.pressed) {
+                        released = true
+                    } else if ((change.position - down.position).getDistance() > slop) {
+                        // 判定为滑动：本轮不再触发点按，事件全程留给歌词列表。
+                        moved = true
+                    }
+                }
+                if (allUp) break
+            }
+            if (released && !moved) onTap()
+        }
     }
 }
 
@@ -246,6 +404,12 @@ private fun MeloXAppleMusicLyricsPanel(
     onInterfaceInteraction: () -> Unit = {},
     onInterfaceVisibilityChange: (Boolean) -> Unit = {},
     active: Boolean = true,
+    fontScaleMultiplier: Float = 1f,
+    edgeFadeTop: Dp = 0.dp,
+    edgeFadeBottom: Dp = 0.dp,
+    focusPositionOverride: Float? = null,
+    edgeFadeBottomTerminal: Dp = 0.dp,
+    edgeBlurMax: Dp = MeloXLandscapeLyricsEdgeBlurMax,
 ) {
     val context = LocalContext.current
     val appContext = context.applicationContext
@@ -306,7 +470,25 @@ private fun MeloXAppleMusicLyricsPanel(
         if (mediaId.isNullOrBlank()) return@LaunchedEffect
         isLoading = true
         errorMessage = null
-        runCatching { MeloXProviderLyricsLoader.load(appContext, state) }
+        runCatching {
+            MeloXProviderLyricsLoader.load(appContext, state) { upgraded ->
+                // Authored-source swaps keep their early window. Local model
+                // timing can finish later, but must still belong to this track.
+                val livePositionMs = anchorPositionMs +
+                    (SystemClock.elapsedRealtime() - anchorRealtimeMs)
+                if (state.mediaId == mediaId &&
+                    (upgraded.autoSyncModelKey != null || livePositionMs <= MeloXProviderLyricsLoader.AmllUpgradeWindowMs)
+                ) {
+                    lyrics = upgraded
+                    if (upgraded.autoSyncModelKey != null) {
+                        android.util.Log.i(
+                            "MeloXLyricsAuto",
+                            "AutoSync displayed track=$mediaId wordLines=${upgraded.lines.count { it.syllables.isNotEmpty() }}",
+                        )
+                    }
+                }
+            }
+        }
             .onSuccess { lyrics = it }
             .onFailure { errorMessage = it.message ?: "歌词加载失败" }
         // A newly selected item always enters from its lyric start anchor.
@@ -473,6 +655,7 @@ private fun MeloXAppleMusicLyricsPanel(
     val rowHeightsPx = remember(
         document,
         MeloXSettingsRuntime.lyricFontScale,
+        fontScaleMultiplier,
         MeloXSettingsRuntime.lyricSpacingScale,
         MeloXSettingsRuntime.showLyricTranslation,
         MeloXSettingsRuntime.showLyricRomanization,
@@ -505,7 +688,9 @@ private fun MeloXAppleMusicLyricsPanel(
             }
     }
 
-    val lyricFontScale = MeloXSettingsRuntime.lyricFontScale
+    // ★ 横屏系数只乘在这一处：下面所有字号 / 行高 / 注释尺寸都以这个局部变量为基准，
+    //   所以一处即可整体等比缩小（竖屏 multiplier = 1f ⇒ 行为完全不变）。
+    val lyricFontScale = MeloXSettingsRuntime.lyricFontScale * fontScaleMultiplier
     val lyricSpacingScale = MeloXSettingsRuntime.lyricSpacingScale
     val lineSpacingPx = with(density) { (UpstreamLyrics.LINE_SPACING_DP * lyricSpacingScale).dp.toPx() }
     val primaryHeightPx = with(density) { (UpstreamLyrics.LINE_HEIGHT_SP * lyricFontScale).sp.toPx() }
@@ -667,9 +852,25 @@ private fun MeloXAppleMusicLyricsPanel(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .onSizeChanged { viewportHeightPx = it.height },
+            .onSizeChanged { viewportHeightPx = it.height }
+            // ★★ 「控件隐藏时点按唤出控件」挂在面板**根节点**（歌词 LazyColumn 的祖先）。
+            //    必须放在这里而不是做成一层覆盖 Box：Compose 命中测试在同一层级里一旦
+            //    命中某个带 pointerInput 的节点，就**停止测试它下方的兄弟节点** ⇒ 任何
+            //    压在歌词列表之上的捕获层（无论是否消费事件、`clickable` 或 `pointerInput`）
+            //    都会让被它盖住的那片歌词**完全滑不动**（真机复现：底部 279dp 内滑动
+            //    变化像素 = 0，紧邻其上的 y=1800 同一手势变化 12 万像素）。
+            //    祖先与后代属同一条命中路径，不构成遮挡；本回调**不消费任何事件**，
+            //    纯滑动照旧交给列表滚动。控件已显示时不再重复唤出。
+            .pointerInput(latestInterfaceHidden) {
+                detectPassThroughTap {
+                    if (latestInterfaceHidden.value) {
+                        latestInteractionCallback.value.invoke()
+                    }
+                }
+            },
     ) {
-        val focusPosition = MeloXSettingsRuntime.lyricFocusPosition
+        // 横屏传 override（默认 null ⇒ 沿用用户设置，竖屏行为不变）。
+        val focusPosition = focusPositionOverride ?: MeloXSettingsRuntime.lyricFocusPosition
         val topPaddingPx = viewportHeightPx * focusPosition
         val bottomPaddingPx = max(
             viewportHeightPx * (1f - focusPosition),
@@ -743,15 +944,7 @@ private fun MeloXAppleMusicLyricsPanel(
 
             val baseDurationMs = sourceFocusAnimationDurationMs(nextIndex, lines)
             val skippedLineCount = (nextIndex - previousIndex).coerceAtLeast(1)
-            // Overlapping cues keep the focus on the earliest line. When they
-            // end together, the next cue is only one visual step away even if
-            // its index skipped the lines that were already on screen.
-            val overlappingStep = previousIndex < nextIndex &&
-                (previousIndex until nextIndex).all { index ->
-                    sourceLineActivationTimeMs(lines[index + 1]) -
-                        sourceLineActivationTimeMs(lines[index]) <= 280L
-                }
-            val isAdjacentForward = skippedLineCount == 1 || overlappingStep
+            val isAdjacentForward = skippedLineCount == 1
             val effectivePosition = renderedPositionState.longValue + lyricAdvanceMs
             val remainingMs = sourceRemainingFocusDurationMs(nextIndex, effectivePosition, lines)
 
@@ -917,15 +1110,30 @@ private fun MeloXAppleMusicLyricsPanel(
                 }
                 val visibleItemsByIndex = browsingVisibleItemsByIndex
 
+                val edgeFadeTopPx = with(density) { edgeFadeTop.toPx() }
+                val edgeFadeBottomPx = with(density) { edgeFadeBottom.toPx() }
+                val edgeFadeTerminalPx = with(density) { edgeFadeBottomTerminal.toPx() }
+                val hasEdgeFade = edgeFadeTopPx > 0f || edgeFadeBottomPx > 0f ||
+                    edgeFadeTerminalPx > 0f
                 Layout(
                     modifier = Modifier
                         .fillMaxSize()
                         .clipToBounds()
-                        .graphicsLayer { alpha = if (initialLyricsPositioned) 1f else 0f },
+                        // 上下边缘渐隐（替换此前"留空让位"的做法）。所有 fade 参数都是默认值
+                        // （0 / 0 / 0）时不建离屏层、修饰符内部短路 ⇒ 旧调用点逐字节一致。
+                        .graphicsLayer {
+                            alpha = if (initialLyricsPositioned) 1f else 0f
+                            if (hasEdgeFade) {
+                                compositingStrategy = CompositingStrategy.Offscreen
+                            }
+                        }
+                        .lyricsEdgeFade(edgeFadeTopPx, edgeFadeBottomPx, edgeFadeTerminalPx),
                     content = {
                         LazyColumn(
                             state = listState,
-                            modifier = Modifier.fillMaxSize().nestedScroll(lyricInteractionConnection),
+                            // 触顶/触底橡胶回弹触感：嵌套在歌词手势 connection 外层，
+                            // 两个 nestedScroll 各自独立收到 post-scroll，互不吞掉。
+                            modifier = Modifier.fillMaxSize().meloXEdgeOverscrollHaptic(listState).nestedScroll(lyricInteractionConnection),
                         ) {
                     item(key = "lyrics-top-padding") {
                         Spacer(Modifier.height(with(density) { topPaddingPx.toDp() }))
@@ -976,6 +1184,19 @@ private fun MeloXAppleMusicLyricsPanel(
                             preceding,
                             following,
                         ) * (1f - effectiveFocus)
+                        // 横屏渐隐带内的边缘邻近模糊：行越贴近视口上/下边缘越糊。
+                        // 竖屏 edgeFadeTop/Bottom 均为 0 ⇒ 恒 0，行为完全不变。
+                        val edgeBlur = if (hasEdgeFade && edgeBlurMax > 0.dp) {
+                            sourceEdgeProximityBlur(
+                                rowMidYpx = visualMidY,
+                                viewportHeightPx = viewportHeightPx,
+                                topBandPx = edgeFadeTopPx,
+                                bottomBandPx = edgeFadeBottomPx,
+                                maxBlurDp = edgeBlurMax.value,
+                            )
+                        } else {
+                            0f
+                        }
                         val distanceOpacity = sourceDistanceOpacity(
                             distance,
                             lyricStridePx,
@@ -1027,6 +1248,7 @@ private fun MeloXAppleMusicLyricsPanel(
                             rowAlpha = rowAlpha,
                             distanceBlurDp = distanceBlur,
                             focusBlurDp = focusBlur,
+                            edgeBlurDp = edgeBlur,
                             renderingQuality = renderingQuality,
                             showTranslation = MeloXSettingsRuntime.showLyricTranslation &&
                                 !line.translation.isNullOrBlank(),
@@ -1071,25 +1293,14 @@ private fun MeloXAppleMusicLyricsPanel(
             }
         }
 
-        // MeloX iOS reserves only the former bottom-controls region as the
-        // hidden-controls tap target. Covering the complete viewport here made
-        // every lyric stop receiving scroll input as soon as transport chrome
-        // retracted, so the lines the user was browsing appeared to vanish or
-        // become unreachable.
-        if (isInterfaceHidden) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(MeloXNowPlayingControlsHeight.dp)
-                    .zIndex(100f)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onInterfaceInteraction,
-                    ),
-            )
-        }
+        // ⚠⚠ 「控件隐藏后点按唤出控件」的捕获层**已删除**，改为挂在面板根节点
+        //    （见本函数最外层 `Box` 的 `pointerInput`）。原因：Compose 命中测试
+        //    一旦命中某个带 pointerInput 的节点，就**不再测试它下方的兄弟节点** ——
+        //    捕获层与歌词 `LazyColumn` 是同级兄弟，所以不管它是否消费事件，都会让
+        //    底部 279dp 的歌词彻底滑不动（用户报的 bug；换成不消费的
+        //    `detectPassThroughTap` 也无效，因为问题在命中测试阶段而非消费阶段）。
+        //    挂到根节点（`LazyColumn` 的祖先）后：祖先与后代在同一条命中路径上，
+        //    不构成遮挡，歌词在任何位置都能滚。
     }
     shareInitialIndex?.let { initial ->
         MeloXLyricShareDialog(
@@ -1171,6 +1382,9 @@ private fun MeloXUpstreamLyricLine(
     rowAlpha: Float,
     distanceBlurDp: Float,
     focusBlurDp: Float,
+    // 边缘邻近模糊（dp）：横屏渐隐带内额外叠加，见 `MeloXLandscapeLyricsEdgeBlurMax`。
+    // 默认 0f ⇒ 竖屏与其它样式逐帧不变。
+    edgeBlurDp: Float = 0f,
     renderingQuality: MeloXLyricsRenderingQuality,
     showTranslation: Boolean,
     showRomanization: Boolean,
@@ -1185,7 +1399,7 @@ private fun MeloXUpstreamLyricLine(
     val flipped = line.agent?.alignment == com.lladlam.melox.core.lyrics.LyricAgentAlignment.Flipped
     val lineAlignment = if (flipped) Alignment.End else Alignment.Start
     val lineTextAlign = if (flipped) TextAlign.End else TextAlign.Start
-    val requestedBlur = max(max(distanceBlurDp, focusBlurDp), 0f)
+    val requestedBlur = max(max(distanceBlurDp, focusBlurDp), max(edgeBlurDp, 0f))
     val effectiveBlur = when (renderingQuality) {
         MeloXLyricsRenderingQuality.Low -> 0f
         MeloXLyricsRenderingQuality.Balanced -> requestedBlur * .55f
@@ -1202,6 +1416,7 @@ private fun MeloXUpstreamLyricLine(
                 translationY = visualOffsetPx
                 scaleX = visualScale
                 scaleY = visualScale
+                alpha = rowAlpha
                 transformOrigin = TransformOrigin(if (flipped) 1f else 0f, 0f)
             }
             .combinedClickable(
@@ -1209,11 +1424,11 @@ private fun MeloXUpstreamLyricLine(
                 onClick = { if (tapSeekEnabled) onClick() },
                 onLongClick = { if (longPressShareEnabled) onLongClick() },
             )
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = MeloXLyricLineHorizontalPadding),
         horizontalAlignment = lineAlignment,
     ) {
         accompanimentBefore.forEach { vocal ->
-            MeloXTimedAccompaniment(vocal, playbackTimeProvider, fontScale, reduceMotion, renderingQuality, effectiveBlur)
+            MeloXTimedAccompaniment(vocal, playbackTimeProvider, fontScale, reduceMotion, focusProgress, renderingQuality, effectiveBlur)
         }
         if (showRomanization) {
             MeloXRubyLyricText(
@@ -1226,7 +1441,7 @@ private fun MeloXUpstreamLyricLine(
                 fontScale = fontScale,
                 renderingQuality = renderingQuality,
                 softBlurDp = effectiveBlur,
-                modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = rowAlpha },
+                modifier = Modifier.fillMaxWidth(),
             )
         } else {
             MeloXGlyphLyricText(
@@ -1242,12 +1457,12 @@ private fun MeloXUpstreamLyricLine(
                 unplayedAlpha = timedUnplayedAlpha,
                 renderingQuality = renderingQuality,
                 softBlurDp = effectiveBlur,
-                modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = rowAlpha },
+                modifier = Modifier.fillMaxWidth(),
             )
         }
 
         accompanimentAfter.forEach { vocal ->
-            MeloXTimedAccompaniment(vocal, playbackTimeProvider, fontScale, reduceMotion, renderingQuality, effectiveBlur)
+            MeloXTimedAccompaniment(vocal, playbackTimeProvider, fontScale, reduceMotion, focusProgress, renderingQuality, effectiveBlur)
         }
 
         val romanSize = max(UpstreamLyrics.FONT_SIZE_SP * fontScale * MeloXSettingsRuntime.lyricRomanizationFontScale, 13f)
@@ -1261,7 +1476,6 @@ private fun MeloXUpstreamLyricLine(
             Text(
                 text = line.translation.orEmpty(),
                 modifier = Modifier.fillMaxWidth()
-                    .graphicsLayer { alpha = rowAlpha }
                     .blur(effectiveBlur.dp)
                     .padding(top = UpstreamLyrics.ANNOTATION_SPACING_DP.dp),
                 color = Color.White.copy(alpha = MeloXSettingsRuntime.lyricTranslationOpacity),
@@ -1292,6 +1506,7 @@ private fun MeloXTimedAccompaniment(
     playbackTimeProvider: () -> Long,
     fontScale: Float,
     reduceMotion: Boolean,
+    focusProgress: Float,
     renderingQuality: MeloXLyricsRenderingQuality,
     softBlurDp: Float,
 ) {
@@ -1305,19 +1520,16 @@ private fun MeloXTimedAccompaniment(
         exit = fadeOut(tween(600)) + slideOutVertically(tween(600)) { it / 2 } + shrinkVertically(tween(600)),
     ) {
         val vocalLine = LyricLine(vocal.timeMs, vocal.durationMs, vocal.text, vocal.syllables, agent = vocal.agent)
-        // Lead vocals stay on the line clock. Accompaniment keeps its own
-        // syllable times, so only the words already reached light up.
         MeloXGlyphLyricText(
             line = vocalLine,
             playbackTimeProvider = playbackTimeProvider,
             supportsTimedLyrics = vocal.syllables.isNotEmpty(),
             fontScale = fontScale * .68f,
             reduceMotion = reduceMotion,
-            timingEffectsStrength = 1f,
-            followOwnTiming = true,
+            timingEffectsStrength = focusProgress,
             renderingQuality = renderingQuality,
             softBlurDp = softBlurDp,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).graphicsLayer { alpha = .72f },
         )
     }
 }
@@ -1593,7 +1805,6 @@ private fun MeloXGlyphLyricText(
     reduceMotion: Boolean,
     timingEffectsStrength: Float,
     unplayedAlpha: Float = MeloXSettingsRuntime.lyricInactiveOpacity,
-    followOwnTiming: Boolean = false,
     renderingQuality: MeloXLyricsRenderingQuality,
     softBlurDp: Float = 0f,
     modifier: Modifier = Modifier,
@@ -1603,15 +1814,17 @@ private fun MeloXGlyphLyricText(
     val context = LocalContext.current
     val density = LocalDensity.current
     val lyricWeight = MeloXSettingsRuntime.lyricFontWeight.composeWeight
-    val fontTypeface = remember {
-        ResourcesCompat.getFont(context, R.font.mi_lan_pro) ?: Typeface.DEFAULT
+    val useSystemFont = MeloXSettingsRuntime.systemFontEnabled
+    val fontTypeface = remember(useSystemFont) {
+        if (useSystemFont) Typeface.DEFAULT
+        else ResourcesCompat.getFont(context, R.font.mi_lan_pro) ?: Typeface.DEFAULT
     }
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
     BoxWithConstraints(modifier = modifier) {
         val widthPx = with(density) { maxWidth.roundToPx().coerceAtLeast(1) }
         val style = TextStyle(
             color = Color.White,
-            fontFamily = MeloXLanTingProFontFamily,
+            fontFamily = LocalMeloXFontFamily.current,
             fontSize = (UpstreamLyrics.FONT_SIZE_SP * fontScale).sp,
             lineHeight = (UpstreamLyrics.LINE_HEIGHT_SP * fontScale).sp,
             fontWeight = lyricWeight,
@@ -1714,15 +1927,11 @@ private fun MeloXGlyphLyricText(
 
         Canvas(Modifier.fillMaxWidth().height(height)) {
             val playbackTimeMs = playbackTimeProvider()
-            val effectsStrength = if (followOwnTiming) {
-                timingEffectsStrength.coerceIn(0f, 1f)
-            } else {
-                sourceTimingEffectsStrength(
-                    line = line,
-                    playbackTimeMs = playbackTimeMs,
-                    focusProgress = timingEffectsStrength,
-                )
-            }
+            val effectsStrength = sourceTimingEffectsStrength(
+                line = line,
+                playbackTimeMs = playbackTimeMs,
+                focusProgress = timingEffectsStrength,
+            )
             if (effectsStrength <= 0.0001f) {
                 drawText(
                     layout,
@@ -2367,6 +2576,95 @@ private fun sourceFocusBlurRadius(
     preceding: Boolean,
     following: Boolean,
 ): Float = ((if (preceding) 2.4f else 0f) + (if (following) 0.7f else 0f)) * intensity
+
+/**
+ * 「边缘邻近模糊」半径（dp）：行中点越靠近视口上/下边缘，模糊越强。
+ *
+ * 与 [sourceDistanceBlurRadius]（按离焦点行的行距衰减）正交 —— 那条在焦点靠上时
+ * （横屏 0.30）够不到边缘，所以边缘处必须按**行到边的像素距离**单独给。详见
+ * [MeloXLandscapeLyricsEdgeBlurMax] 的注释。
+ *
+ * ⚠ 输入是行自身的 [rowMidYpx]（滚动时逐帧连续变化）⇒ 结果是连续函数，
+ * **不会**出现「行滚进某个固定 y 区间突然变糊」的跳变。
+ *
+ * @param rowMidYpx 行中点在歌词视口内的 y（px）
+ * @param viewportHeightPx 歌词视口高（px）
+ * @param topBandPx 顶部渐隐带高（0 = 不参与）
+ * @param bottomBandPx 底部渐隐带高（0 = 不参与）
+ * @param maxBlurDp 贴到屏幕边时的模糊半径（dp）
+ */
+private fun sourceEdgeProximityBlur(
+    rowMidYpx: Float,
+    viewportHeightPx: Int,
+    topBandPx: Float,
+    bottomBandPx: Float,
+    maxBlurDp: Float,
+): Float {
+    if (viewportHeightPx <= 0 || maxBlurDp <= 0f) return 0f
+    val bottomBandStart = viewportHeightPx - bottomBandPx
+    val t = when {
+        topBandPx > 0f && rowMidYpx < topBandPx -> (topBandPx - rowMidYpx) / topBandPx
+        bottomBandPx > 0f && rowMidYpx > bottomBandStart ->
+            (rowMidYpx - bottomBandStart) / bottomBandPx
+        else -> 0f
+    }.coerceIn(0f, 1f)
+    // 量化到 0.25dp：`MeloXGlyphLyricText` 是按 `remember(softBlurDp)` 重建模糊蒙版的，
+    // 未量化的连续值会让滚动中的行**逐帧新建 BlurMaskFilter**。0.25dp 的台阶视觉上
+    // 不可辨，却能把重建次数降一个数量级。（同理 distanceBlur 天然按行离散，才不会逐帧重建。）
+    return (maxBlurDp * sourceSmootherStep(t) * 4f).roundToInt() / 4f
+}
+
+/**
+ * 把内容在上下边缘 mask 到透明 —— 等价 Apple Music 的 `container edge fade`
+ * （Web 版对应 CSS 变量 `--lyrics-linear-gradient`），**取代硬裁**：
+ * 行不是"被切掉"，而是在抵达边界之前就淡成透明。
+ *
+ * ⚠ `BlendMode.DstIn` 只对**离屏图层内部**有意义，必须与
+ * `CompositingStrategy.Offscreen` 配对使用 —— 否则 DstIn 会落到父级画布上、
+ * 把整屏（含左侧大封面）一并挖空。调用点已按此设置 `compositingStrategy`。
+ *
+ * @param topFadePx 顶部渐隐带高度：0 = 面板顶，topFadePx = 完全显形处。
+ * @param bottomFadePx 底部渐隐带高度（自**归零点**往上量）。
+ * @param bottomTerminalPx 底部**归零点**距视口底的距离（0 = 归零点即视口底，旧行为）。
+ *   该点以下恒透明。竖屏用它把"完全淡出"提前到**底部控件条的顶沿**：控件条本身是
+ *   `meloXBackdropBlur`（仅 8% 黑 + 模糊），白色高亮歌词会从中渗出（真机截图实证
+ *   「0:00 进度条那一带能看见 `(4665,777)` 的虚影」）⇒ 不能靠它"挡"，必须让歌词在
+ *   该区间本来就透明。纵向渐隐是**线性**的：若把归零点留在视口底，控件条恰好落在
+ *   渐隐带**起点**（alpha = 1），无论带宽多大都挡不住 —— 所以必须能上移归零点。
+ */
+private fun Modifier.lyricsEdgeFade(
+    topFadePx: Float,
+    bottomFadePx: Float,
+    bottomTerminalPx: Float = 0f,
+): Modifier =
+    drawWithContent {
+        drawContent()
+        if (topFadePx <= 0f && bottomFadePx <= 0f) return@drawWithContent
+        val h = size.height
+        if (h <= 0f) return@drawWithContent
+        val topStop = (topFadePx / h).coerceIn(0f, .48f)
+        // bottomTerminalPx = 0 时两式与旧实现逐值相同（横屏走这条 ⇒ 观感零变化）。
+        val bottomEnd = if (bottomTerminalPx > 0f) {
+            (1f - bottomTerminalPx / h).coerceIn(.52f, 1f)
+        } else {
+            1f
+        }
+        val bottomStop = if (bottomTerminalPx > 0f) {
+            (bottomEnd - bottomFadePx / h).coerceIn(0f, bottomEnd)
+        } else {
+            (1f - bottomFadePx / h).coerceIn(.52f, 1f)
+        }
+        drawRect(
+            brush = Brush.verticalGradient(
+                0f to Color.Transparent,
+                topStop to Color.Black,
+                bottomStop to Color.Black,
+                bottomEnd to Color.Transparent,
+                1f to Color.Transparent,
+            ),
+            blendMode = BlendMode.DstIn,
+        )
+    }
 
 private fun sourceDistanceOpacity(
     distancePx: Float,

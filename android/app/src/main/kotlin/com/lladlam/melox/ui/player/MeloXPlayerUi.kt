@@ -1,11 +1,15 @@
 package com.lladlam.melox.ui.player
 
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -78,7 +82,6 @@ import com.lladlam.melox.playback.MeloXAutoMixTransitionRuntime
 import com.lladlam.melox.playback.MeloXPlaybackModeRuntime
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.playback.PlaybackTrackIdentity
-import com.lladlam.melox.playback.LxUserPlaybackResolver
 import com.lladlam.melox.core.music.model.MusicArtistRef
 import com.lladlam.melox.core.music.model.MusicAlbumRef
 import com.lladlam.melox.core.music.model.MusicResourceId
@@ -94,7 +97,6 @@ import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import com.lladlam.melox.ui.glass.MeloXSymbolVariant
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -105,6 +107,31 @@ enum class MeloXNowPlayingPage {
     Artwork,
     Lyrics,
     Queue,
+}
+
+/**
+ * 天际歌词此刻**能不能呈现** —— 也就是「有没有一枚可用的封面源/目标」。
+ *
+ * `np-skyline-artwork` 的**源端**不是场景自绘的副本，而是 SharedHost 那枚**持久封面本体**
+ * （见 `MeloXIOSNowPlayingSharedHost` 的 `skylineSourceModifier`；2026-10-06「双封面」修复
+ * 把场景层等位副本删掉了）。源注册与否直接决定了"哪些页面能进天际"：
+ *
+ * · **歌词页**：任何布局都行（手机横屏的入口就挂在右列曲名栏上）。持久封面停在左列、
+ *   天际开启期间**位置不动** ⇒ 封面从大封面直接飞进天际那枚 132dp。
+ * · **平板双栏的封面态**（`Artwork`）：左列整块**居中**、右列空着。这枚持久封面同样
+ *   **一动不动** ⇒ 从屏幕正中直接飞入天际，比"先把左列收回分栏、再飞"少一段会跟 morph
+ *   抢起点的并发位移动画（2026-10-07 把入口挂到左列「更多」时定稿）。
+ * · **队列页**：`Queue` 没有对应的封面源 ⇒ 永不允许（入口会先把页面切到歌词页再开天际）。
+ *
+ * ⚠ 手机 / 竖屏（`twoPane == false`）**不能进 `Artwork` 分支**：那条路径下本判据与
+ *   `page == Lyrics` 等价，放开只会得到一个"没有源"的天际 ⇒ 封面凭空出现。
+ *   ⇒ 本函数是**唯一**判据，四处（host 源注册 / host 常亮 / 场景内容淡出 / 天际层可见性）
+ *   必须全部走它，任何一处写死 `page == Lyrics` 都会退回"没有源"的旧行为。
+ */
+internal fun meloXSkylineCanRender(page: MeloXNowPlayingPage, twoPane: Boolean): Boolean = when (page) {
+    MeloXNowPlayingPage.Lyrics -> true
+    MeloXNowPlayingPage.Artwork -> twoPane
+    MeloXNowPlayingPage.Queue -> false
 }
 
 enum class MeloXQueueOrigin { Base, Manual }
@@ -129,8 +156,6 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
     private var recordedMediaId: String? = null
     private var recordedCompletion = false
     private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var artworkLookupJob: Job? = null
-    private var artworkLookupMediaId: String? = null
 
     var mediaId by mutableStateOf<String?>(null)
         private set
@@ -189,6 +214,15 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
     var sleepTimerEndRealtimeMs by mutableLongStateOf(0L)
         private set
 
+    // ★ 系统音量实时同步（2026-10-06）：volumeControlMode == System 时，用户用硬件音量键 /
+    //   系统音量条调 STREAM_MUSIC，本 receiver 捕获 VOLUME_CHANGED_ACTION 并立即把最新
+    //   系统音量写回 `volume`，播放页滑块随即实时跟随（否则只有 refresh() 才更新，会滞后）。
+    //   ⚠ 用字符串字面量而非 AudioManager.VOLUME_CHANGED_ACTION —— 后者是 @SystemApi 隐藏常量，
+    //     直接引用在公开 SDK 下编不过。
+    //   ⚠ VOLUME_CHANGED_ACTION 携带 EXTRA_VOLUME_STREAM，需 == STREAM_MUSIC 才同步，
+    //     避免其它音频流（闹钟/通话）变化误触发。
+    private var systemVolumeReceiver: BroadcastReceiver? = null
+
     val hasMedia: Boolean
         get() = mediaId != null
 
@@ -198,6 +232,24 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
             Player.REPEAT_MODE_ONE -> appContext.getString(R.string.player_repeat_one)
             else -> appContext.getString(R.string.player_repeat_off)
         }
+
+    /**
+     * UI 口径的「在播」——**播放意图**，而不是 Media3 的「正在出声」。
+     *
+     * `Player.isPlaying` 只在 `STATE_READY && playWhenReady && 未抑制` 时为 true。
+     * 切歌（`seekToNextMediaItem()`）时 ExoPlayer 会短暂落到 `STATE_BUFFERING`，
+     * `isPlaying` 于是掉一帧 false（网络曲源能掉几百毫秒），带来一串可见抖动：
+     *   · 迷你播放栏 / 全屏播放页的**暂停键闪成播放键**再闪回来（用户说的「抽搐」）；
+     *   · dancing bars 冻住；动态封面 `1f → 0.74f` 缩一下再弹回来；
+     *   · 歌词自动滚动被判定为「已暂停」而停一拍。
+     *
+     * Media3 官方也建议播放/暂停键用 `playWhenReady` 驱动：用户按了播放、没播完、
+     * 也没被音频焦点抑制，键位就该一直显示「暂停」。
+     */
+    private fun Player.isPlaybackActiveForUi(): Boolean =
+        playWhenReady &&
+            playbackState != Player.STATE_ENDED &&
+            playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -212,15 +264,14 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
         controller?.removeListener(listener)
         controller = newController
         newController.addListener(listener)
-        restoreLastPlaybackIfNeeded()
+        // ⚠ 冷启动队列恢复已收归 Service（`MeloXPlaybackQueueStore` + `restorePersistedQueue`），
+        // 这里不再自行 `setMediaItems`——否则会和 Service 的恢复竞争，把整条队列
+        // 覆盖成 1 首 / 或卡在 `mediaItemCount>0` 短路掉全量恢复。
         refresh(rebuildQueue = true)
     }
 
     internal fun unbind() {
         cancelPendingMediaClear()
-        artworkLookupJob?.cancel()
-        artworkLookupJob = null
-        artworkLookupMediaId = null
         controller?.removeListener(listener)
         controller?.release()
         controller = null
@@ -239,8 +290,26 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
         cancelPendingMediaClear()
         MeloXPlaybackModeRuntime.heartModeActive = item.mediaMetadata.extras
             ?.getBoolean(PlaybackCommands.HEART_MODE_KEY, false) == true
-        val metadata = player.mediaMetadata.takeUnless { it == MediaMetadata.EMPTY }
-            ?: item.mediaMetadata
+        // ⚠⚠⚠ 2026-10-06 修「迷你栏横滑切歌后抽搐闪回**上一首**」——**真根因就在这里**：
+        //
+        //   原来以 **`player.mediaMetadata`**（= MediaController 最近一次收到的
+        //   `PlaybackInfo.mediaMetadata`）**优先**，而 `mediaId` / `currentIndex` 取自
+        //   `player.currentMediaItem`（**当拍就是新歌**）。切歌那一拍两条信息**不同源**：
+        //     · `EVENT_MEDIA_ITEM_TRANSITION` 先到 ⇒ `currentMediaItem` 已切到新歌；
+        //     · `EVENT_MEDIA_METADATA_CHANGED` 后到 ⇒ `mediaMetadata` **还是上一首的**。
+        //   ⇒ 于是有若干帧是「`mediaId` = 新歌，`title`/`artist` = **上一首**」。
+        //   迷你栏主行显示的正是 `state.title` ⇒ 用户看到「抽搐一下、闪回上一首歌」。
+        //
+        //   ⚠ 为什么诊断日志看着是"干净"的：埋点只记了**索引**（`mini.sidx/cmt/swc` 全部自洽，
+        //     `mini.shown` 恒 -1）——错配发生在**文字**上，索引根本无法暴露它。
+        //   ⚠ 为什么只有"落定后"才闪：滑动中主行显示的 `state` 本来就是**旧歌**（正确），
+        //     预览行取自 `buildQueue()` 的 `item.mediaMetadata`（**本来就对**）⇒ 差异只在
+        //     交接那一拍之后的主行。
+        //
+        //   ⇒ 修法：**以当前 media item 自己的 metadata 为准**（同一拍内自洽），
+        //     只在它为空时才回退到 player 级。稳态下两者本就相同 ⇒ 行为不变。
+        val metadata = item.mediaMetadata.takeUnless { it == MediaMetadata.EMPTY }
+            ?: player.mediaMetadata
         val itemExtras = item.mediaMetadata.extras
         val extras = metadata.extras ?: itemExtras
         val providerSource = PlaybackTrackIdentity.fromMediaItem(item)?.source
@@ -266,22 +335,18 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
         artworkUrl = currentSongId?.let(downloadStore::localArtworkUri)?.toString()
             ?: metadata.artworkUri?.toString()
             ?: extras?.getString(PlaybackTrackIdentity.ArtworkExtra)?.takeIf(String::isNotBlank)
-        resolveMissingLxArtwork(item, providerSource)
-        isPlaying = player.isPlaying
+        isPlaying = player.isPlaybackActiveForUi()
         positionMs = player.currentPosition.coerceAtLeast(0L)
         durationMs = player.duration
             .takeUnless { it == C.TIME_UNSET || it < 0L }
             ?: 0L
+        // ⚠ 本地推荐记录**不在**这里落库了（2026-09-28 修「无音源的歌被记进历史」）：
+        //   `refresh()` 在 `onMediaItemTransition` 的同批事件里就被调用，此时只说明
+        //   「切过去了」，数据源还没打开 —— 一首无音源的 VIP 歌同样会走到这里，于是
+        //   playCount +1、偏好向量 +0.25，可它一个字节都没出声。
+        //   ⇒ 挪到 `refreshProgress()`，并要求 `isPlaying`（真的在播）才记。
         if (recordedMediaId != item.mediaId) {
-            recordedMediaId = item.mediaId
             recordedCompletion = false
-            LocalRecommendationStore.recordPlayback(appContext, item.mediaId, title, artist)
-            if (LocalRecommendationStore.isAlgorithmEnabled(appContext) && LocalRecommendationStore.hasPersonalizationConsent(appContext)) {
-                LocalRecommendationEngine.start(appContext)
-            }
-        }
-        if (MeloXSettingsPreferences.boolean(appContext, "playback_remember_last_song", true)) {
-            MeloXLastPlaybackStore.save(appContext, item, metadata, extras)
         }
         hasPrevious = player.hasPreviousMediaItem()
         hasNext = player.hasNextMediaItem()
@@ -305,36 +370,6 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
         ).takeIf { it > System.currentTimeMillis() } ?: 0L
         if (rebuildQueue || queue.size != player.mediaItemCount) {
             queue = buildQueue(player)
-        }
-    }
-
-    private fun resolveMissingLxArtwork(item: MediaItem, source: MusicSource?) {
-        if (artworkUrl != null || source == null || source == MusicSource.Local ||
-            artworkLookupMediaId == item.mediaId || title.isBlank() || artist.isBlank()) return
-        val identity = PlaybackTrackIdentity.decode(item.mediaId) ?: return
-        artworkLookupMediaId = item.mediaId
-        artworkLookupJob?.cancel()
-        artworkLookupJob = artworkScope.launch {
-            val artwork = runCatching {
-                LxUserPlaybackResolver(appContext).resolveArtwork(
-                    MusicTrack(
-                        id = MusicResourceId(source, identity.value),
-                        title = title,
-                        artists = artist.split(" /").filter(String::isNotBlank).map { name -> MusicArtistRef(name = name) },
-                        album = album.takeIf(String::isNotBlank)?.let { MusicAlbumRef(name = it) },
-                        durationMs = durationMs.takeIf { it > 0L },
-                    ),
-                )
-            }.getOrNull() ?: return@launch
-            withContext(Dispatchers.Main) {
-                val active = controller ?: return@withContext
-                if (active.currentMediaItem?.mediaId != item.mediaId) return@withContext
-                val updated = item.buildUpon().setMediaMetadata(
-                    item.mediaMetadata.buildUpon().setArtworkUri(Uri.parse(artwork)).build(),
-                ).build()
-                active.replaceMediaItem(active.currentMediaItemIndex, updated)
-                refresh(rebuildQueue = true)
-            }
         }
     }
 
@@ -370,17 +405,54 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
     internal fun refreshProgress() {
         val player = controller ?: return
         if (player.currentMediaItem == null) return
-        isPlaying = player.isPlaying
+        isPlaying = player.isPlaybackActiveForUi()
         positionMs = player.currentPosition.coerceAtLeast(0L)
         durationMs = player.duration
             .takeUnless { it == C.TIME_UNSET || it < 0L }
             ?: 0L
+        // 「播过这首」的落库点：**只在真的在播时**才记（无音源的歌 `isPlaying`
+        // 恒 false，永远进不来 ⇒ 不会被算进本地推荐记录）。
+        // recordPlayback() 内部会 readFeatures()（最多 2000 条 JSON 反序列化）→ 改 →
+        // writeFeatures()（重新序列化 + prefs apply 全量重写 local_recommendation.xml），
+        // 整段跑在主线程会卡 100~250ms ⇒ 一律挪到 IO 线程。
+        val currentMediaId = player.currentMediaItem?.mediaId
+        if (isPlaying && recordedMediaId != currentMediaId) {
+            recordedMediaId = currentMediaId
+            val recordTitle = title
+            val recordArtist = artist
+            if (currentMediaId != null) {
+                artworkScope.launch {
+                    runCatching {
+                        LocalRecommendationStore.recordPlayback(
+                            appContext,
+                            currentMediaId,
+                            recordTitle,
+                            recordArtist,
+                        )
+                        if (LocalRecommendationStore.isAlgorithmEnabled(appContext) &&
+                            LocalRecommendationStore.hasPersonalizationConsent(appContext)
+                        ) {
+                            LocalRecommendationEngine.start(appContext)
+                        }
+                    }
+                }
+            }
+        }
         if (!recordedCompletion && durationMs > 0L && positionMs >= (durationMs * .85f).toLong()) {
             recordedCompletion = true
             mediaId?.let { key ->
-                LocalRecommendationStore.recordPlayback(appContext, key, title, artist, completed = true)
-                if (LocalRecommendationStore.isAlgorithmEnabled(appContext) && LocalRecommendationStore.hasPersonalizationConsent(appContext)) {
-                    LocalRecommendationEngine.start(appContext)
+                val recordTitle = title
+                val recordArtist = artist
+                // 进度 tick 也在主线程 → 存储写入挪到 IO。
+                artworkScope.launch {
+                    runCatching {
+                        LocalRecommendationStore.recordPlayback(appContext, key, recordTitle, recordArtist, completed = true)
+                        if (LocalRecommendationStore.isAlgorithmEnabled(appContext) &&
+                            LocalRecommendationStore.hasPersonalizationConsent(appContext)
+                        ) {
+                            LocalRecommendationEngine.start(appContext)
+                        }
+                    }
                 }
             }
         }
@@ -459,35 +531,10 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
 
     fun togglePlayPause() {
         controller?.let { player ->
-            if (player.isPlaying) player.pause() else {
-                if (player.playbackState == Player.STATE_IDLE) player.prepare()
-                player.play()
-            }
+            // 用 UI 口径（播放意图）判断：缓冲期间 `player.isPlaying` 是 false，
+            // 若照它判断，此时点暂停会变成又一次 `play()`（点了没反应）。
+            if (player.isPlaybackActiveForUi()) player.pause() else player.play()
         }
-    }
-
-    private fun restoreLastPlaybackIfNeeded() {
-        val player = controller ?: return
-        if (
-            player.currentMediaItem != null ||
-            MeloXSettingsPreferences.boolean(appContext, "playback_save_queue", true) ||
-            !MeloXSettingsPreferences.boolean(appContext, "playback_remember_last_song", true)
-        ) return
-        val saved = MeloXLastPlaybackStore.read(appContext) ?: return
-        val builder = MediaItem.Builder()
-            .setMediaId(saved.mediaId)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(saved.title)
-                    .setArtist(saved.artist)
-                    .setAlbumTitle(saved.album)
-                    .setArtworkUri(saved.artworkUrl?.let(Uri::parse))
-                    .build(),
-            )
-        saved.uri?.let { builder.setUri(Uri.parse(it)) }
-        player.setMediaItem(builder.build())
-        player.prepare()
-        player.pause()
     }
 
     fun seekTo(positionMs: Long) {
@@ -514,10 +561,54 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
         }
     }
 
+    /**
+     * 迷你栏**横滑**专用只读预判：朝 [direction] 滑动是否**真的会切换到另一首曲目**。
+     *
+     * ⚠ 横滑的视觉（当前曲滑出 → 目标曲预览滑入 → 落位）必须与「真的会换曲」对齐。
+     *   若 UI 一律假设"会换"，而实际命令只是**重播当前曲**，就会出现
+     *   「滑出「上一首」预览 → 曲目根本没变 → 1.5s 超时后再滑回来」的抽搐闪回
+     *   （用户报障 2026-10-06「横滑切歌后抽搐闪回上一首」）。
+     *
+     * 判据与 [`nextFromMiniPlayer`] / [`previousFromMiniPlayer`] 逐条对齐：
+     * · 单曲（`mediaItemCount <= 1`）：两条路径都无目标 ⇒ 恒 `false`。
+     * · `direction < 0`（下一首）：末位回绕到 0 ⇒ 恒会换。
+     * · `direction > 0`（上一首）：首位回绕到末位 ⇒ 会换；其余走 [`previous`]，
+     *   而它命中「已播 ≥5s 且开启重播设置」时**只 `seekTo(0)`、曲目不变** ⇒ `false`。
+     *
+     * **只读，无任何副作用**（不改队列、不 seek、不刷新）。
+     */
+    fun miniSwipeChangesTrack(direction: Int): Boolean {
+        val player = controller ?: return false
+        if (player.mediaItemCount <= 1) return false
+        return when {
+            direction < 0 -> true
+            direction > 0 -> if (player.currentMediaItemIndex <= 0) {
+                true // `previousFromMiniPlayer` 回绕到最后一首
+            } else {
+                // ⚠ 与 `previous()` 的重播分支逐字同义，否则 UI 会以为"会换曲"。
+                !(MeloXSettingsRuntime.previousRestartsAfterFiveSeconds && player.currentPosition >= 5_000L)
+            }
+            else -> false
+        }
+    }
+
     fun next() {
         controller?.let { player ->
-            if (!recordedCompletion && player.currentPosition < 30_000L) {
-                mediaId?.let { LocalRecommendationStore.recordPlayback(appContext, it, title, artist, skipped = true) }
+            // ⚠ 多一个 `recordedMediaId == mediaId` 判据（2026-09-28 修）：
+            //   `recordedMediaId` 只在「真的在播」时才被置上。切到一首无音源的歌后
+            //   它根本没出声 ⇒ 这里不会给它记 skipCount（-1.5 的负向权重），
+            //   也不会把 playCount 又 +1 —— 没播过的歌不该产生任何推荐信号。
+            if (!recordedCompletion && recordedMediaId == mediaId && player.currentPosition < 30_000L) {
+                mediaId?.let { id ->
+                    val recordTitle = title
+                    val recordArtist = artist
+                    // 与 refresh 同理：存储写入别压主线程（切歌要立刻响应）。
+                    artworkScope.launch {
+                        runCatching {
+                            LocalRecommendationStore.recordPlayback(appContext, id, recordTitle, recordArtist, skipped = true)
+                        }
+                    }
+                }
             }
             PlaybackCommands.prioritizeManualQueue(player)
             player.seekToNextMediaItem()
@@ -576,6 +667,21 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
         MeloXPlaybackModePreferences.setSmartQueue(appContext, smartQueueEnabled)
     }
 
+    // ★ 拖动期主线程零 binder（2026-10-06，用户报「手动滑动偶尔闪烁」）：
+    //   maxVolume 与当前档位都**缓存成普通字段**，拖动每像素不再打 AudioManager。
+    //   原实现每像素做 getStreamMaxVolume + getStreamVolume + setStreamVolume 三次同步
+    //   binder IPC ⇒ 阻塞主线程、丢帧 ⇒ 音量条「偶尔闪烁」。
+    private var cachedMaxVolume: Int = 0
+    private var cachedStep: Int = -1
+
+    /** 取 STREAM_MUSIC 最大档位（带缓存；缓存无效时才真正问一次 AudioManager）。 */
+    private fun maxVolumeCached(audioManager: AudioManager): Int {
+        if (cachedMaxVolume <= 0) {
+            cachedMaxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        }
+        return cachedMaxVolume
+    }
+
     fun changeVolume(value: Float) {
         if (MeloXSettingsRuntime.volumeControlMode == MeloXVolumeControlMode.Player) {
             controller?.volume = value.coerceIn(0f, 1f)
@@ -583,10 +689,114 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
             return
         }
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val maxVolume = maxVolumeCached(audioManager)
         val target = (value.coerceIn(0f, 1f) * maxVolume).toInt().coerceIn(0, maxVolume)
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-        volume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume.toFloat()
+        // ★ 只在**跨格**时才真正下发 setStreamVolume（2026-10-06）：
+        //   拖动时 Compose 每像素都会回调 onValueChange，若每像素都 setStreamVolume，
+        //   会高频打系统音量服务 → 系统音量 HUD 反复弹出 + 回读抖动 ⇒ 滑块「抽搐」。
+        //   系统音量本身是**离散档位**，同格内重复下发无意义。
+        // ⚠ 判据用**本地缓存的档位**（cachedStep），不再 binder 回读 getStreamVolume。
+        if (cachedStep != target) {
+            cachedStep = target
+            // setStreamVolume 也是同步 binder，丢到 IO 线程，绝不阻塞拖动手势。
+            artworkScope.launch {
+                runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+            }
+        }
+        // 同样只在跨格时写 volume（同格内不触发 UI 重组 / 动画重启）。
+        val fresh = target.toFloat() / maxVolume.toFloat()
+        if (fresh != volume) volume = fresh
+    }
+
+    // ★ 拖拽抑制（2026-10-06）：用户正在拖本滑块时，系统音量回灌（广播 / 轮询）**不写** [volume]。
+    //   否则 setStreamVolume 的整数化回读会与手指位置打架（一个连续、一个跳格）⇒ 滑块抽搐。
+    private var volumeDragging = false
+
+    internal fun beginVolumeDrag() {
+        volumeDragging = true
+    }
+
+    internal fun endVolumeDrag() {
+        volumeDragging = false
+    }
+
+    /**
+     * 立即把当前系统媒体音量同步进 [volume]（用于 receiver 回调、轮询与注册瞬间首读）。
+     * 只在 System 模式生效；Player 模式（独立音量）下系统音量变化与本滑块无关，跳过。
+     * 拖拽中直接跳过（见 [volumeDragging]）。
+     */
+    internal fun syncSystemVolume() {
+        syncSystemVolumeNow()
+    }
+
+    /**
+     * 立即把当前系统媒体音量同步进 [volume]，并**返回档位是否真的变了**。
+     *
+     * 返回值专供实体音量键那条通道（`MeloXVolumeKeyBridge`）：`false` 就代表"这一按没能再
+     * 抬高/压低" ⇒ 已经顶到最大/最小了（**越界按**），播放页据此给出"过冲拉长"的反馈。
+     * 轮询与广播这两条路忽略返回值（它们只关心同步本身）。
+     *
+     * ⚠ 注意 `false` 的三种含义要分清：非 System 模式 / 正在拖拽 / 真的顶到头了。
+     *   调用方（音量条）必须先自行排除前两种，才能把 `false` 当成越界。
+     */
+    internal fun syncSystemVolumeNow(): Boolean {
+        if (MeloXSettingsRuntime.volumeControlMode != MeloXVolumeControlMode.System) return false
+        if (volumeDragging) return false
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val maxVolume = maxVolumeCached(audioManager)
+        val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        // 外部（音量键）改了音量时同步本地缓存，避免下次拖动误判成"跨格"。
+        cachedStep = current
+        val fresh = current.toFloat() / maxVolume.toFloat()
+        // ⚠ 值没变就**不写**（2026-10-06 用户连续报「不丝滑」）：
+        //   150ms 轮询每拍都会读回同一个值；若无条件写 `volume`，UI 侧跟随动画的
+        //   target 每拍被"重新赋值" ⇒ 动画被反复重启 ⇒ 顿挫。音量没变就跳过写入。
+        if (fresh == volume) return false
+        volume = fresh
+        return true
+    }
+
+    /** 注册系统音量变化监听（仅 System 模式、且尚未注册时）。 */
+    internal fun registerSystemVolumeSync() {
+        if (MeloXSettingsRuntime.volumeControlMode != MeloXVolumeControlMode.System) return
+        if (systemVolumeReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                // ⚠ EXTRA_VOLUME_STREAM 判据不可靠：部分 ROM（含 vivo）发这个广播时**不带**该 extra
+                //   （实测硬件音量键调节收不到回调），所以这里不作为过滤条件——
+                //   改为「只要是音量变化广播就同步」，非音乐流的音量写入 STREAM_MUSIC 后
+                //   回读仍是音乐流音量，值本身自带正确性，不会串到别的流。
+                syncSystemVolume()
+            }
+        }
+        systemVolumeReceiver = receiver
+        val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION").apply {
+            // 另加系统标准的 content:// 音量变化通知，部分 ROM 走这条而非 action 广播。
+            // ⚠ `IntentFilter` **没有** `addDataContentUri(...)` 这个 API（编译不过），
+            //   等价写法是 scheme + authority 两步（content://media）。
+            addDataScheme("content")
+            addDataAuthority("media", null)
+        }
+        // VOLUME_CHANGED_ACTION 是系统有序广播，动态注册即可收到（无需 manifest）。
+        // RECEIVER_NOT_EXPORTED：本 receiver 不对外暴露，仅接收本应用注册的意图。
+        runCatching {
+            appContext.registerReceiver(receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }.onFailure {
+            // 部分 ROM 对带 data URI 的 filter 组合会抛异常 ⇒ 退回纯 action filter。
+            appContext.registerReceiver(
+                receiver,
+                IntentFilter("android.media.VOLUME_CHANGED_ACTION"),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
+        // 注册瞬间首读一次，确保进入播放页时滑块已对齐当前系统音量。
+        syncSystemVolume()
+    }
+
+    /** 反注册系统音量监听。 */
+    internal fun unregisterSystemVolumeSync() {
+        systemVolumeReceiver?.let { appContext.unregisterReceiver(it) }
+        systemVolumeReceiver = null
     }
 
     fun moveQueueItem(from: Int, to: Int) {
@@ -618,42 +828,11 @@ class MeloXPlaybackUiState internal constructor(private val appContext: Context)
     refresh(rebuildQueue = true)
 }
 
-private data class MeloXLastPlayback(
-    val mediaId: String,
-    val title: String,
-    val artist: String,
-    val album: String,
-    val artworkUrl: String?,
-    val uri: String?,
-)
+// 冷启动队列恢复已收归 Service 侧 `MeloXPlaybackQueueStore` + `restorePersistedQueue`。
+// 此处旧版 `MeloXLastPlaybackStore`/`queue_v1` 整块删除：它从 `melox_last_playback` 自行
+// `setMediaItems` 恢复，会与 Service 的恢复竞争、把整条队列覆盖成 1 首或卡在
+// `mediaItemCount>0` 短路掉全量恢复。
 
-private object MeloXLastPlaybackStore {
-    private const val PREFS = "ysyy_last_playback"
-
-    fun save(context: Context, item: MediaItem, metadata: MediaMetadata, extras: android.os.Bundle?) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("media_id", item.mediaId)
-            .putString("title", metadata.title?.toString().orEmpty())
-            .putString("artist", metadata.artist?.toString().orEmpty())
-            .putString("album", metadata.albumTitle?.toString().orEmpty())
-            .putString("artwork_url", metadata.artworkUri?.toString() ?: extras?.getString(PlaybackTrackIdentity.ArtworkExtra))
-            .putString("uri", item.localConfiguration?.uri?.toString())
-            .apply()
-    }
-
-    fun read(context: Context): MeloXLastPlayback? {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val mediaId = prefs.getString("media_id", null)?.takeIf(String::isNotBlank) ?: return null
-        return MeloXLastPlayback(
-            mediaId = mediaId,
-            title = prefs.getString("title", "").orEmpty(),
-            artist = prefs.getString("artist", "").orEmpty(),
-            album = prefs.getString("album", "").orEmpty(),
-            artworkUrl = prefs.getString("artwork_url", null),
-            uri = prefs.getString("uri", null),
-        )
-    }
-}
 
     fun setSleepTimer(minutes: Int) {
         if (minutes <= 0) return
@@ -709,6 +888,41 @@ fun rememberMeloXPlaybackUiState(
             disposed = true
             if (!future.isDone) future.cancel(true)
             state.unbind()
+        }
+    }
+
+    // ★ 系统音量实时同步（2026-10-06）：注册系统音量变化监听，播放页滑块实时跟随
+    //   硬件音量键 / 系统音量条调节。仅 System 模式真正注册（register 内部按 mode 判），
+    //   随 volumeControlMode 与连接状态重建 —— 设置里切到 System 立即生效，切走则注销。
+    DisposableEffect(context, connectionEnabled, MeloXSettingsRuntime.volumeControlMode) {
+        if (!connectionEnabled) return@DisposableEffect onDispose {}
+        state.registerSystemVolumeSync()
+        onDispose { state.unregisterSystemVolumeSync() }
+    }
+
+    // ★ 轮询兜底（2026-10-06，用户实测「实体音量键调节不实时跟随」后加）：
+    //   vivo 等 ROM 上 VOLUME_CHANGED_ACTION 广播**不可靠**（硬件音量键调节收不到回调），
+    //   因此再加一条低频轮询直接读 STREAM_MUSIC 音量写入 `volume`，
+    //   保证实体音量键 / 系统音量条任何路径下都能实时跟得上。
+    //   syncSystemVolume 内部只在 System 模式且**非拖拽中**才写，拖拽时轮询自动让位，
+    //   不会与手指位置打架。轮询值与广播值走同一个 setter，天然幂等。
+    //
+    // ⚠⚠ 2026-10-07 两处修正（用户续报「物理音量键调节时音量移动还是不平滑」）：
+    //   ① **周期 150ms → 60ms**。硬件音量键现在已有专属的即时通道
+    //      （`MeloXVolumeKeyBridge` + `MainActivity.onKeyDown`，延迟 ≈1 帧），轮询只负责
+    //      "系统音量 HUD 拖动"这条路径 —— 而 150ms 的采样间隔对连续拖动来说太稀，
+    //      页面看到的目标是每 150ms 跳一格 ⇒ 条只能一格一格追 ⇒ 不平滑。
+    //   ② **调用搬到 `Dispatchers.Default`**。`syncSystemVolume` 里是一次同步
+    //      `getStreamVolume` binder 往返；原先 `LaunchedEffect` 体默认跑在**主线程**上
+    //      ⇒ 每 150ms 就往主线程塞一次 binder（个别时刻足以掉一帧）。周期还会缩短到 60ms，
+    //      更不能留在主线程。
+    //      ⚠ Compose state 允许从后台线程写（快照机制本身线程安全），写完全局失效照常生效。
+    LaunchedEffect(context, connectionEnabled, MeloXSettingsRuntime.volumeControlMode) {
+        if (!connectionEnabled) return@LaunchedEffect
+        if (MeloXSettingsRuntime.volumeControlMode != MeloXVolumeControlMode.System) return@LaunchedEffect
+        while (true) {
+            withContext(Dispatchers.Default) { state.syncSystemVolume() }
+            delay(60L)
         }
     }
 
@@ -1140,6 +1354,8 @@ private fun MeloXVolumeControl(state: MeloXPlaybackUiState) {
         MeloXSymbolIcon(MeloXSymbol.Volume, Modifier.size(18.dp), Color.White.copy(alpha = 0.62f), iconSize = 16.sp)
         Slider(
             value = state.volume,
+            // ⚠ 过渡期禁用（收起动画中/收尾瞬间音量仍可被点到，用户报障）。
+            enabled = LocalMeloXPlayerControlsEnabled.current,
             onValueChange = state::changeVolume,
             modifier = Modifier
                 .weight(1f)

@@ -176,6 +176,8 @@ class MeloXDownloadStore private constructor(private val context: Context) {
             name = metadata.title?.toString().orEmpty().ifBlank { "未知歌曲" },
             artists = metadata.artist?.toString().orEmpty().ifBlank { "未知歌手" },
             album = metadata.albumTitle?.toString().orEmpty(),
+            albumId = item.mediaMetadata.extras?.getLong("melox.system.original_album_id")?.takeIf { it > 0L },
+            artistId = item.mediaMetadata.extras?.getLong("melox.system.original_artist_id")?.takeIf { it > 0L },
             artworkUrl = metadata.artworkUri?.toString(),
             durationMs = 0L,
         )

@@ -174,10 +174,44 @@ class NeteaseMusicOperationsClient(
 
     suspend fun setPlaylistSubscribed(playlistId: Long, subscribed: Boolean) = withContext(Dispatchers.IO) {
         ensureLoggedIn()
-        val data = JSONObject()
-            .put("id", playlistId)
-            .put("t", if (subscribed) 1 else 2)
-        eapi("/api/playlist/subscribe", data, true)
+        // ⚠⚠ 取消收藏是独立接口！web 端错误码映射实证：subscribe 的 t=2 会返回
+        //   code=501「歌单已经收藏！」（2026-10-09 真机复现）。正确做法：
+        //   收藏 → /api/playlist/subscribe（t=1）；取消收藏 → /api/playlist/unsubscribe。
+        if (subscribed) {
+            authenticatedWeapi.post(
+                "/api/playlist/subscribe",
+                JSONObject()
+                    .put("id", playlistId.toString())
+                    .put("t", 1),
+            )
+        } else {
+            authenticatedWeapi.post(
+                "/api/playlist/unsubscribe",
+                JSONObject().put("id", playlistId.toString()),
+            )
+        }
+        Unit
+    }
+
+    /**
+     * 删除**自己创建**的歌单（`/api/playlist/delete`）。
+     *
+     * ⚠ 与 [setPlaylistSubscribed] 语义完全不同：那里是「订阅 / 取消订阅**别人的**歌单」，
+     *   这里是「删除**自己的**歌单」。资料库歌单列表（`/api/user/playlist`）返回的是
+     *   「我喜欢的音乐」+ 用户自创歌单，此前一律走 `setPlaylistSubscribed(false)`，
+     *   对这两类都是无效操作 ⇒ 用户报的「收藏的歌单删不掉」。
+     *
+     * 调用方须自行排除系统歌单「我喜欢的音乐」（`likedPlaylistId`）—— 网易云不允许删除它。
+     */
+    suspend fun deletePlaylist(playlistId: Long) = withContext(Dispatchers.IO) {
+        ensureLoggedIn()
+        require(playlistId > 0L) { "歌单 ID 无效" }
+        // ⚠ 改用 weapi（2026-10-09）：/api/playlist/delete 是官方 web 端路径，
+        //   参数 pid 为字符串；eapi 版本此前被判定参数错误（code=501）。
+        authenticatedWeapi.post(
+            "/api/playlist/delete",
+            JSONObject().put("pid", playlistId.toString()),
+        )
         Unit
     }
 
@@ -399,6 +433,39 @@ class NeteaseMusicOperationsClient(
         Unit
     }
 
+    /**
+     * 把歌曲标记为「不感兴趣」——与官方客户端日推卡片上的 × 打的是同一个接口
+     * （`/weapi/v2/discovery/recommend/dislike`，resType=4 歌曲 / sceneType=1 日推）。
+     *
+     * 网易云只暴露「写入」、没有任何读取黑名单列表的接口，所以这是 MeloX 侧屏蔽
+     * 唯一能回灌到官方推荐的通道：调过之后网易云自己的日推与私人 FM 也会避开它。
+     * 失败一律静默吞掉——本地屏蔽已经生效，不该让一次网络抖动把整个屏蔽动作打回。
+     */
+    suspend fun markSongNotInterested(songId: Long) = withContext(Dispatchers.IO) {
+        if (songId <= 0L) return@withContext
+        if (!NeteaseSessionStore.containsMusicU(cookieProvider())) return@withContext
+        runCatching {
+            authenticatedWeapi.post(
+                "/api/v2/discovery/recommend/dislike",
+                JSONObject().put("resId", songId).put("resType", 4).put("sceneType", 1),
+            )
+        }
+        Unit
+    }
+
+    /** 私人 FM 垃圾桶（官方「删除这首歌」）。同样是只写不读的单向通道。 */
+    suspend fun trashSong(songId: Long) = withContext(Dispatchers.IO) {
+        if (songId <= 0L) return@withContext
+        if (!NeteaseSessionStore.containsMusicU(cookieProvider())) return@withContext
+        runCatching {
+            authenticatedWeapi.post(
+                "/api/radio/trash",
+                JSONObject().put("alg", "RT").put("songId", songId).put("time", 25),
+            )
+        }
+        Unit
+    }
+
     suspend fun messageContacts(userId: Long, limit: Int = 200): List<MeloXMessageContact> = withContext(Dispatchers.IO) {
         ensureLoggedIn()
         val path = "/api/user/getfollows/$userId"; val data = JSONObject().put("offset", 0).put("limit", limit.coerceIn(1, 1_000)).put("order", true); val response = socialRead(path, data)
@@ -572,7 +639,7 @@ class NeteaseMusicOperationsClient(
         httpClient.newCall(req).execute().use { response ->
             val body=response.body.string(); if(!response.isSuccessful)throw IOException("网易云请求失败：HTTP ${response.code}")
             if(body.isBlank())throw IOException("网易云返回了空响应"); val result=JSONObject(body); val code=result.optInt("code",response.code)
-            if(code !in 200..299)throw IOException(result.optString("message").ifBlank{result.optString("msg")}.ifBlank{"请求失败（$code）"}); return result
+            if(code !in 200..299)throw IOException((result.optString("message").ifBlank{result.optString("msg")}.ifBlank{"请求失败（$code）"})+" | ${body.take(300)}"); return result
         }
     }
     private fun authenticatedHeader(c:Map<String,String>,now:Long)=JSONObject().put("osver",c["osver"]?:"16.2").put("deviceId",c["deviceId"]?:syntheticDeviceId).put("os",c["os"]?:"iPhone OS").put("appver",c["appver"]?:"9.0.90").put("versioncode",c["versioncode"]?:"140").put("buildver",c["buildver"]?:(now/1000L).toString()).put("resolution",c["resolution"]?:"1170x2532").put("__csrf",c["__csrf"]?:"").put("channel",c["channel"]?:"distribution").put("requestId","${now}_${randomDigits(4)}").apply{c["MUSIC_U"]?.takeIf(String::isNotBlank)?.let{put("MUSIC_U",it)}}

@@ -157,11 +157,15 @@ class SongRecognitionClient(
                 artistArray.optJSONObject(index)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add)
             }
         }.joinToString(" / ").ifBlank { "未知歌手" }
+        val artistId = if (artistArray.length() > 0) artistArray.optJSONObject(0)?.optLong("id")?.takeIf { it > 0 } else null
+        val albumId = album?.optLong("id")?.takeIf { it > 0 }
         return SearchSong(
             id = id,
             name = value.optString("name").ifBlank { "未知歌曲" },
             artists = artists,
             album = album?.optString("name").orEmpty(),
+            albumId = albumId,
+            artistId = artistId,
             artworkUrl = artwork?.replace("http://", "https://"),
             durationMs = value.optLong("dt", value.optLong("duration", 0L)).coerceAtLeast(0L),
         )

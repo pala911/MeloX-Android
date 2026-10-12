@@ -60,6 +60,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lladlam.melox.R
+import com.lladlam.melox.ui.glass.MeloXGlassIconButton
 import com.lladlam.melox.ui.glass.MeloXSymbol
 import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import com.lladlam.melox.ui.legal.MeloXLegalLinks
@@ -85,6 +86,7 @@ fun MeloXPhoneCodeLoginScreen(
     onSendCode: suspend (countryCode: String, phone: String) -> Result<Unit>,
     onSubmitCode: suspend (countryCode: String, phone: String, code: String) -> Result<Unit>,
     onWebLogin: () -> Unit,
+    onQrLogin: (() -> Unit)? = null,
     webFallbackEmphasis: Boolean = false,
     initialPhone: String = "",
     startAtCodeStep: Boolean = false,
@@ -149,10 +151,14 @@ fun MeloXPhoneCodeLoginScreen(
             error = null
         } else onClose()
     }
+    // ⚠ 不做进入页面的自动聚焦：一进来就弹软键盘会把整个表单顶上去，
+    // 用户还没看清页面就被键盘糊脸。焦点留给用户点输入框时自然获得。
     LaunchedEffect(step) {
-        delay(120)
-        if (step == PhoneLoginStep.Phone) phoneFocusRequester.requestFocus()
-        else codeFocusRequester.requestFocus()
+        if (step == PhoneLoginStep.Code) {
+            // 验证码步骤不同：用户刚点完「继续」，意图明确就是输码，这里聚焦是对的。
+            delay(120)
+            codeFocusRequester.requestFocus()
+        }
     }
     LaunchedEffect(resendSeconds) {
         if (resendSeconds > 0) {
@@ -363,31 +369,39 @@ fun MeloXPhoneCodeLoginScreen(
                     fontWeight = if (webFallbackEmphasis) FontWeight.Medium else FontWeight.Normal,
                 )
             }
+            // 扫码登录入口（仅网易云传 onQrLogin；其他平台不受影响）。
+            // 与「使用网页登录」**同级同权**：两种登录方式并列，谁也不该用品牌红抢视觉。
+            if (onQrLogin != null) {
+                TextButton(
+                    onClick = onQrLogin,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { role = Role.Button },
+                ) {
+                    Text(
+                        text = stringResource(R.string.account_netease_qr_entry),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Normal,
+                    )
+                }
+            }
             MeloXLegalLinks(
                 modifier = Modifier.padding(bottom = 2.dp),
                 tint = brandColor,
             )
         }
 
-        Box(
+        // 关闭键与全站统一：液态玻璃圆钮（MeloXGlassIconButton，44dp），
+        // 不再自己画一个 36dp 的灰圆 —— 那是全 App 唯一一处不一样的返回键。
+        MeloXGlassIconButton(
+            symbol = MeloXSymbol.ChevronLeft,
+            onClick = onClose,
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(8.dp)
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable(role = Role.Button, onClick = onClose)
-                .semantics { contentDescription = closeLoginDescription },
-            contentAlignment = Alignment.Center,
-        ) {
-            MeloXSymbolIcon(
-                symbol = MeloXSymbol.Xmark,
-                modifier = Modifier.size(14.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                contentDescription = null,
-                iconSize = 13.sp,
-            )
-        }
+                .padding(8.dp),
+            contentDescription = closeLoginDescription,
+        )
     }
 }
 

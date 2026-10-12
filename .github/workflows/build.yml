@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
-      - debug/one-time-issue-fixes
+  # Run the same build on PRs targeting main so the required status check
+  # (`build-debug`) can gate merges via the main-branch ruleset.
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:

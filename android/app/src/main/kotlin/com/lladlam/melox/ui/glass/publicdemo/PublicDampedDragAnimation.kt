@@ -142,9 +142,9 @@ class PublicDampedDragAnimation(
     // 与 [animateToValue] 相同，但值弹簧带过冲 —— 只用于「从搜索返回、重新呼出指示器」
     // 这一条路径，让水珠 Q 弹地落格；普通 tab 切换与拖拽松手仍走临界阻尼。
     // ⚠ **不要 press()/release()**：程序化呼出没有手指，press 会把水珠放大到 1.393×，
-    //   而水珠采样的是 L2 捕获层的录制缓冲（高仅 navHeight − 8dp）—— 放大后采样区上下
-    //   超出缓冲、采不到内容 ⇒ 表现为「呼出的水珠上下被裁切、不完整」。
-    //   Q 弹只由带过冲的位置弹簧提供，缩放留在真手按压路径（animateToValue / drag）。
+    //   而水珠采样的是 L2 捕获层的录制缓冲（高仅 navHeight−8dp）——放大后采样区上下
+    //   超出缓冲、采不到内容 ⇒ 真机表现为「呼出的水珠上下被裁切、不完整」。
+    //   Q 弹只由带过冲的位置弹簧提供，缩放留在真手按压路径（animateToValue/drag）。
     fun animateToValueBouncy(value: Float) {
         animationScope.launch {
             mutatorMutex.mutate {

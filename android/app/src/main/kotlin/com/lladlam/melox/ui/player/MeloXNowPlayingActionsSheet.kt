@@ -33,6 +33,10 @@ fun MeloXNowPlayingActionsSheet(
     onDismiss: () -> Unit,
     onNavigateSearch: ((String, MeloXSearchKind) -> Unit)? = null,
     onLocalMetadataChanged: () -> Unit = {},
+    // ★ 「天际歌词」入口（2026-10-07）。**只有平板双栏传得进来**（手机横屏的天际入口仍是
+    //   右列曲名栏上那枚字形按钮，竖屏根本进不去天际）⇒ 默认 null 时两份操作浮层里
+    //   这一行整个不渲染，手机 / 竖屏的 ⋯ 菜单逐像素不变。
+    onShowSkyline: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current.applicationContext
     val identity = state.mediaId?.let(PlaybackTrackIdentity::decode)
@@ -108,6 +112,7 @@ fun MeloXNowPlayingActionsSheet(
                 },
                 playbackState = state,
                 onNavigateSearch = onNavigateSearch,
+                onShowSkyline = onShowSkyline,
             )
         } else if (identity != null) {
             MeloXProviderSongActionsOverlay(
@@ -117,6 +122,7 @@ fun MeloXNowPlayingActionsSheet(
                 onDismiss = onDismiss,
                 onNavigateSearch = onNavigateSearch,
                 onLocalMetadataChanged = onLocalMetadataChanged,
+                onShowSkyline = onShowSkyline,
             )
         }
     }

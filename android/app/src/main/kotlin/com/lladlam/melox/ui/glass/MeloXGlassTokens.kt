@@ -10,7 +10,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
-import com.lladlam.melox.ui.theme.MeloXLanTingProFontFamily
 import com.kyant.capsule.ContinuousRoundedRectangle
 import com.kyant.shapes.Capsule
 
@@ -42,15 +41,15 @@ object MeloXShapes {
     val circle: Shape = CircleShape
 }
 
-/** iOS-derived type sizes while retaining Android's system/CJK fallback font. */
+/** iOS-derived type sizes. Family is inherited from MaterialTheme typography,
+ * which already follows the system-font toggle. */
 object MeloXTypography {
-    private val family = MeloXLanTingProFontFamily
-    val largeTitle = TextStyle(fontFamily = family, fontWeight = FontWeight.Bold, fontSize = 34.sp, lineHeight = 41.sp)
-    val title2 = TextStyle(fontFamily = family, fontWeight = FontWeight.Bold, fontSize = 22.sp, lineHeight = 28.sp)
-    val headline = TextStyle(fontFamily = family, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, lineHeight = 22.sp)
-    val body = TextStyle(fontFamily = family, fontWeight = FontWeight.Normal, fontSize = 17.sp, lineHeight = 22.sp)
-    val subheadline = TextStyle(fontFamily = family, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 20.sp)
-    val caption = TextStyle(fontFamily = family, fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp)
+    val largeTitle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 34.sp, lineHeight = 41.sp)
+    val title2 = TextStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp, lineHeight = 28.sp)
+    val headline = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 17.sp, lineHeight = 22.sp)
+    val body = TextStyle(fontWeight = FontWeight.Normal, fontSize = 17.sp, lineHeight = 22.sp)
+    val subheadline = TextStyle(fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 20.sp)
+    val caption = TextStyle(fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp)
 }
 
 enum class MeloXGlassButtonStyle {

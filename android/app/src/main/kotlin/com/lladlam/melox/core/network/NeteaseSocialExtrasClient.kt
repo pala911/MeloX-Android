@@ -61,6 +61,25 @@ class NeteaseSocialExtrasClient(cookieProvider: () -> String, httpClient: OkHttp
     private fun parseComments(values: JSONArray?): List<MeloXMusicComment> = buildList { val source = values ?: JSONArray(); for (index in 0 until source.length()) parseComment(source.optJSONObject(index))?.first?.let(::add) }
     private fun parseComment(value: JSONObject?): Pair<MeloXMusicComment, Long>? { value ?: return null; val id = value.optLong("commentId", -1L); if (id <= 0L) return null; val user = value.optJSONObject("user"); val time = value.optLong("time", -1L)
         return MeloXMusicComment(id, user?.optString("nickname").orEmpty().ifBlank { "网易云用户" }, secure(user?.optString("avatarUrl")?.takeIf(String::isNotBlank)), value.optString("content").ifBlank { "…" }, value.optLong("likedCount", 0L), value.optString("timeStr"), value.optInt("replyCount", value.optJSONArray("beReplied")?.length() ?: 0).coerceAtLeast(0)) to time }
-    private fun parseSong(value: JSONObject?): SearchSong? { value ?: return null; val id = value.optLong("id", -1L); if (id <= 0L) return null; val a = value.optJSONArray("ar") ?: value.optJSONArray("artists") ?: JSONArray(); val artists = buildList { for (i in 0 until a.length()) a.optJSONObject(i)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add) }.joinToString(" / "); val album = value.optJSONObject("al") ?: value.optJSONObject("album"); return SearchSong(id, value.optString("name").ifBlank { "未知歌曲" }, artists.ifBlank { "未知歌手" }, album?.optString("name").orEmpty(), secure(album?.optString("picUrl")?.takeIf(String::isNotBlank)), value.optLong("dt", value.optLong("duration", 0L)).coerceAtLeast(0L)) }
+    private fun parseSong(value: JSONObject?): SearchSong? {
+        value ?: return null
+        val id = value.optLong("id", -1L)
+        if (id <= 0L) return null
+        val a = value.optJSONArray("ar") ?: value.optJSONArray("artists") ?: JSONArray()
+        val artists = buildList { for (i in 0 until a.length()) a.optJSONObject(i)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add) }.joinToString(" / ")
+        val artistId = if (a.length() > 0) a.optJSONObject(0)?.optLong("id")?.takeIf { it > 0 } else null
+        val album = value.optJSONObject("al") ?: value.optJSONObject("album")
+        val albumId = album?.optLong("id")?.takeIf { it > 0 }
+        return SearchSong(
+            id = id,
+            name = value.optString("name").ifBlank { "未知歌曲" },
+            artists = artists.ifBlank { "未知歌手" },
+            album = album?.optString("name").orEmpty(),
+            albumId = albumId,
+            artistId = artistId,
+            artworkUrl = secure(album?.optString("picUrl")?.takeIf(String::isNotBlank)),
+            durationMs = value.optLong("dt", value.optLong("duration", 0L)).coerceAtLeast(0L)
+        )
+    }
     private fun secure(value: String?): String? = value?.let { if (it.startsWith("http://", true)) "https://${it.substringAfter("://")}" else it }
 }

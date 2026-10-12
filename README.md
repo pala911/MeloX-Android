@@ -1,4 +1,4 @@
-# MeloX Android
+# MeloX Android（弥乐）
 
 [中文](README.zh-Hans.md)
 
@@ -22,11 +22,11 @@
 
 > MeloX Android is an unofficial open-source project. It is not affiliated with, partnered with, or authorized by NetEase Cloud Music, Xiaomi, Apple, or their related companies.
 
-## Current version: 0.6.2
+## Current version: 0.6.5
 
-`0.6.2` continues from `0.6.1` with shared-element transitions from cards to detail, a system-locale pass (Simplified/Traditional Chinese and Japanese), YouTube Music home and synced lyrics, a roaming flowing-light background, liquid-glass settings sliders, and a large batch of crash and back-navigation fixes.
+`0.6.5` adds a signed hot-update channel: UI text overrides and sandboxed QuickJS behaviour hooks delivered inside the already-signed remote config, so copy and small logic fixes no longer need an APK. Everything falls back to the built-in text and logic when consent is off, the config is unverified, or a hook fails or times out.
 
-- Download and full notes: [GitHub Releases](https://github.com/lladlam/MeloX-Android/releases/tag/0.6.2)
+- Download and full notes: [GitHub Releases](https://github.com/lladlam/MeloX-Android/releases/tag/0.6.5)
 - Version history: [CHANGELOG.md](CHANGELOG.md)
 
 > [!WARNING]
@@ -282,6 +282,33 @@ Upstream MeloX also credits these projects. The Android port inherits parts of t
 - [qier222/YesPlayMusic](https://github.com/qier222/YesPlayMusic) — NetEase API and player reference.
 
 If a later Android version migrates PV Tool, BeatNet, or other MeloX features, their separate licenses and attribution will be kept as required upstream.
+
+## Contributing
+
+Welcome to MeloX! Contributions are warmly welcome, whether you hand-craft every line or let an AI ride shotgun.
+
+### Reporting issues or suggestions
+
+- Prefer opening an issue on [GitHub Issues](https://github.com/lladlam/MeloX-Android/issues).
+- If GitHub is unreachable from your network, email **`lladlam@outlook.com`** instead. Include a clear **subject**, a **detailed description** of the problem or suggestion, and **screenshots and logs**.
+
+### Contributing code
+
+1. **Fork this repository.** Note that the target branch is **`contributor`**, not `main`.
+2. Make your changes in your fork and commit them with clear messages.
+3. Open a **pull request against the `contributor` branch**.
+4. **Attach a screen recording or screenshots of the change running on a real device** in the PR comments.
+5. After review we merge into `contributor`; once it has been verified again there, it is merged into `main`.
+
+> Pull requests opened directly against `main` are detected automatically and redirected to `contributor`.
+
+### Contribution requirements
+
+Changes are accepted only if they meet all of the following:
+
+1. **No useless features** — anything unrelated to music or the listening experience is not accepted.
+2. **No illegal content** — nothing that violates national laws and regulations, such as providing pirated music services.
+3. **No breaking changes.**
 
 ## Disclaimer
 

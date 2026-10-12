@@ -74,8 +74,6 @@ fun ProviderSettingsHub(
     onOpenAccount: () -> Unit,
     onOpenServices: () -> Unit,
     onOpenMessages: () -> Unit,
-    initialRouteRequest: String? = null,
-    onInitialRouteConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val accountManager = remember(neteaseSession) {
@@ -174,8 +172,6 @@ fun ProviderSettingsHub(
         onOpenAccount = onOpenAccount,
         onOpenServices = onOpenServices,
         onOpenMessages = onOpenMessages,
-        initialRouteRequest = initialRouteRequest,
-        onInitialRouteConsumed = onInitialRouteConsumed,
     )
 
     if (showServiceDialog) {

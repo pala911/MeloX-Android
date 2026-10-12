@@ -2,6 +2,7 @@ package com.lladlam.melox.core.audio
 
 import android.util.Log
 import com.lladlam.melox.core.account.NeteaseSessionStore
+import com.lladlam.melox.core.remoteconfig.MeloXHotStrategies
 import java.io.IOException
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -28,7 +29,7 @@ data class NeteasePlaybackSource(
 class NeteasePlaybackUnavailableException(
     message: String,
     cause: Throwable? = null,
-) : IOException(message, cause)
+) : MeloXPlaybackUnavailableException(message, cause)
 
 /**
  * Android port of the quality-sensitive parts of MeloX NeteaseAPI.
@@ -69,7 +70,14 @@ class NeteaseQualityClient(
         val availability = audioAvailabilityBlocking(songId)
         var lastError: Throwable? = null
         var serverReportedUnavailable = false
-        val candidates = requestedQuality.playbackCandidates(availability)
+        // Signed `compat` strategy: cap the request at 高品质 so lossless and
+        // immersive endpoints can be abandoned remotely.
+        val effectiveQuality = if (MeloXHotStrategies.neteaseCompatMode()) {
+            if (requestedQuality.ordinal > MusicQuality.High.ordinal) MusicQuality.High else requestedQuality
+        } else {
+            requestedQuality
+        }
+        val candidates = effectiveQuality.playbackCandidates(availability)
         if (availability.isKnown && candidates.isEmpty()) {
             serverReportedUnavailable = true
         }

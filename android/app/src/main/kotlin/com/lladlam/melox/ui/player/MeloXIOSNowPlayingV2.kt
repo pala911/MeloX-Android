@@ -1,4 +1,4 @@
-package com.lladlam.melox.ui.player
+﻿package com.lladlam.melox.ui.player
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
@@ -102,6 +102,7 @@ fun MeloXIOSNowPlayingV2(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .navigationBarsPadding()
             .background(if (drawBackdrop) Color.Black else Color.Transparent),
     ) {
         if (drawBackdrop) {
@@ -835,6 +836,8 @@ private fun MeloXVolumeControlV3(state: MeloXPlaybackUiState) {
 
         Slider(
             value = localVolume,
+            // ⚠ 过渡期禁用（收起动画中/收尾瞬间音量仍可被点到，用户报障）。
+            enabled = LocalMeloXPlayerControlsEnabled.current,
             onValueChange = {
                 dragging = true
                 localVolume = it.coerceIn(0f, 1f)

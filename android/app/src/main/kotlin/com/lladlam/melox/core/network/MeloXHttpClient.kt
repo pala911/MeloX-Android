@@ -9,6 +9,8 @@ import okhttp3.OkHttpClient
 /** One process-wide connection pool, dispatcher and bounded HTTP cache. */
 object MeloXHttpClient {
     private val base = OkHttpClient.Builder()
+        .addInterceptor(RetryInterceptor())
+        // 上游 0.6.1（0cc0d0f）：显式超时，避免某个请求把整条链路拖死。
         .callTimeout(20, TimeUnit.SECONDS)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)

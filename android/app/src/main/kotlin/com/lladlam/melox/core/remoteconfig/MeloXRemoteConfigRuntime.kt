@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -31,6 +32,9 @@ object MeloXRemoteConfigRuntime {
     @Volatile
     private var periodicRefreshJob: Job? = null
 
+    @Volatile
+    private var overlayJob: Job? = null
+
     fun initializeAndRefresh(context: Context, versionCode: Int, force: Boolean = false) {
         val appContext = context.applicationContext
         synchronized(this) {
@@ -48,6 +52,23 @@ object MeloXRemoteConfigRuntime {
                     delay(MeloXRemoteConfigRefreshIntervalMs)
                     if (MeloXRemoteConfigConsent.enabled(appContext) && MeloXAppVisibility.isForeground) {
                         refresh(force = true)
+                    }
+                }
+            }
+            // Republish UI text overrides whenever the effective config changes,
+            // so revoking consent or a rolled-back config drops them immediately.
+            if (overlayJob == null) {
+                overlayJob = scope.launch {
+                    mutableStatus.collect { status ->
+                        val effective = MeloXRemoteConfigPolicy.effectiveConfig(
+                            consentEnabled = MeloXRemoteConfigConsent.enabled(appContext),
+                            status = status,
+                        )
+                        MeloXHotStrings.update(effective.textOverrides)
+                        MeloXHotScripts.update(effective.scripts)
+                        MeloXHotStyles.update(effective.colorOverrides)
+                        MeloXHotRules.update(effective.rules)
+                        MeloXHotStrategies.update(effective.strategies)
                     }
                 }
             }

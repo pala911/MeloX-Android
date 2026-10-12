@@ -50,7 +50,7 @@ import com.lladlam.melox.core.network.NeteaseSocialExtrasClient
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.ui.MeloXBottomContentClearance
 import com.lladlam.melox.ui.finishMeloXPage
-import com.lladlam.melox.ui.prepareMeloXPagePredictiveBack
+import com.lladlam.melox.ui.prepareMeloXPageWindow
 import com.lladlam.melox.ui.startMeloXPage
 import com.lladlam.melox.ui.glass.MeloXGlassButton
 import com.lladlam.melox.ui.glass.MeloXGlassButtonStyle
@@ -60,7 +60,7 @@ import com.lladlam.melox.ui.glass.MeloXPinnedListPage
 import com.lladlam.melox.ui.glass.MeloXShapes
 import com.lladlam.melox.ui.library.MeloXUnifiedPlaylistDetailScreen
 import com.lladlam.melox.ui.theme.MeloXTheme
-import com.lladlam.melox.ui.MeloXPredictiveBackPage
+import com.lladlam.melox.ui.MeloXPageHost
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,9 +74,9 @@ class MeloXAccountActivity : ComponentActivity() {
             return
         }
         enableEdgeToEdge()
-        prepareMeloXPagePredictiveBack()
+        prepareMeloXPageWindow()
         setContent {
-            MeloXPredictiveBackPage(onBack = ::finishMeloXPage) {
+            MeloXPageHost {
                 MeloXTheme {
                     AccountHomeScreen(userId, ::finishMeloXPage)
                 }

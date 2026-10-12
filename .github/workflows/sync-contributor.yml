@@ -1,0 +1,62 @@
+name: Sync main into contributor
+
+# Keep the integration branch `contributor` in lockstep with `main`.
+# Whenever a commit lands on `main` (direct push or PR merge), the same
+# content is merged back into `contributor` so contributors branch off an
+# up-to-date base. Conflicts fail the job instead of overwriting anything.
+on:
+  push:
+    branches:
+      - main
+  # Allow running it by hand from the Actions tab.
+  workflow_dispatch:
+
+# The default GITHUB_TOKEN is read-only for `contents` unless declared here.
+permissions:
+  contents: write
+
+# Never run two syncs at once; supersede an older queued run.
+concurrency:
+  group: sync-contributor
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Guard against the (impossible today, but cheap to keep) case where the
+    # bot itself pushes to main and re-triggers this workflow.
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    steps:
+      - name: Checkout contributor with full history
+        uses: actions/checkout@v4
+        with:
+          ref: contributor
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch main
+        run: git fetch origin main:refs/remotes/origin/main
+
+      - name: Fast-forward contributor if possible
+        id: ff
+        run: |
+          if git merge-base --is-ancestor origin/contributor origin/main; then
+            echo "contributor is an ancestor of main -> fast-forwarding"
+            git merge --ff-only origin/main
+          else
+            echo "contributor has its own commits -> merging main into contributor"
+            git merge --no-ff --no-edit origin/main -m "chore: sync main into contributor"
+          fi
+
+      - name: Push contributor
+        run: |
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/contributor)" ]; then
+            echo "contributor already up to date, nothing to push"
+          else
+            git push origin HEAD:contributor
+          fi

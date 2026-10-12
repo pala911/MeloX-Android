@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色（跟随系统）下的页面 Activity 窗口底色 = `MeloXTheme.DarkColors.background`（#0B0B0D）。
+         ⚠ App 内的「主题模式」开关是**应用级**的（不走 AppCompatDelegate/uiMode），
+         所以显式选浅色/深色时这一份静态色可能不对 —— 那种情形由
+         `prepareMeloXPageWindow()` 在 onCreate 里按真实配色覆盖（只会影响转场最初一帧）。 -->
+    <color name="melox_page_background">#FF0B0B0D</color>
+</resources>

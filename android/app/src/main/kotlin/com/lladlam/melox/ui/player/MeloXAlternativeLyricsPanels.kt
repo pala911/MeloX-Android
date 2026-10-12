@@ -2,6 +2,9 @@ package com.lladlam.melox.ui.player
 
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -80,7 +83,13 @@ private fun rememberAlternativeLyrics(
         if (!active || mediaId.isNullOrBlank() || loadedRequestKey == requestKey) return@LaunchedEffect
         loading = true
         error = null
-        runCatching { MeloXProviderLyricsLoader.load(context, state) }
+        runCatching {
+            MeloXProviderLyricsLoader.load(context, state) { upgraded ->
+                // AutoSync/AMLL may finish after the fast line-timed path; only
+                // accept it while this panel still shows the same track.
+                if (state.mediaId == mediaId) document = upgraded
+            }
+        }
             .onSuccess {
                 document = it
                 loadedRequestKey = requestKey
@@ -152,7 +161,13 @@ private fun rememberTextPVLyrics(
         if (!active || mediaId.isNullOrBlank() || loadedRequestKey == requestKey) return@LaunchedEffect
         loading = true
         error = null
-        runCatching { MeloXProviderLyricsLoader.load(context, state) }
+        runCatching {
+            MeloXProviderLyricsLoader.load(context, state) { upgraded ->
+                // AutoSync/AMLL may finish after the fast line-timed path; only
+                // accept it while this panel still shows the same track.
+                if (state.mediaId == mediaId) document = upgraded
+            }
+        }
             .onSuccess {
                 document = it
                 loadedRequestKey = requestKey
@@ -571,12 +586,22 @@ private fun TextPVComposition(line: LyricLine, next: LyricLine?, style: MeloXTex
     }
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 internal fun MeloXSkylineLyricsPanel(
     playback: MeloXPlaybackUiState,
     modifier: Modifier = Modifier,
     onInteraction: () -> Unit = {},
     active: Boolean = true,
+    // ★★ 天际歌词「一镜到底」：歌词页封面飞入天际里这枚 132dp 封面。
+    //   由 `MeloXIOSLandscapeNowPlayingScene` 透传同一个 skyline AnimatedVisibility 的
+    //   scope（source/target 同 key `np-skyline-artwork`），其余调用点（自动横屏歌词面板）
+    //   传 null ⇒ 退化为原行为（不走共享元素）。
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    // ★★ 圆角插值 clip（meloXSkylineArtworkOverlayClip 产物，源端/目标端同一份实例）：
+    //   由调用方（横屏场景，持有 landscapeSize）构建传入；null = 退化为不裁（自动面板）。
+    skylineOverlayClip: SharedTransitionScope.OverlayClip? = null,
 ) {
     val state = rememberAlternativeLyrics(playback, active)
     val ambientLineCount = MeloXSettingsRuntime.skylineAmbientLines
@@ -643,7 +668,39 @@ internal fun MeloXSkylineLyricsPanel(
         Row(Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 24.dp), verticalAlignment = Alignment.CenterVertically) {
             if (MeloXSettingsRuntime.skylineShowSongInfo) {
                 Column(Modifier.weight(.42f), verticalArrangement = Arrangement.Center) {
-                    Artwork(playback.artworkUrl, Modifier.size(132.dp).clip(RoundedCornerShape(20.dp)))
+                    val skylineArtModifier = if (sharedTransitionScope != null && animatedVisibilityScope != null) {
+                        val skylineScope = sharedTransitionScope
+                        with(skylineScope) {
+                            // ⚠ clipInOverlayDuringTransition 非空参、库默认对象引用不到
+                            //   ⇒ null（自动面板路径）走不传 clip 的分支，不能 `?: null`。
+                            if (skylineOverlayClip != null) {
+                                Modifier.sharedElement(
+                                    sharedContentState = rememberSharedContentState("np-skyline-artwork"),
+                                    animatedVisibilityScope = animatedVisibilityScope,
+                                    // ★ 显式 tween：默认渐近弹簧与 AV 淡入淡出脱拍（拖尾+交接硬切）。
+                                    boundsTransform = MeloXSkylineArtworkBoundsTransform,
+                                    // ★ 过渡期间由共享 overlay 渲染 ⇒ 封面在歌词页↔天际之间
+                                    //   平滑「飞」过去，不会被歌词面板 / 天际背景裁掉或压在底下。
+                                    renderInOverlayDuringTransition = true,
+                                    zIndexInOverlay = 100f,
+                                    // ★ 圆角插值：12dp（歌词页大封面）⇄ 20dp（本端）随飞行连续变化。
+                                    clipInOverlayDuringTransition = skylineOverlayClip,
+                                )
+                            } else {
+                                Modifier.sharedElement(
+                                    sharedContentState = rememberSharedContentState("np-skyline-artwork"),
+                                    animatedVisibilityScope = animatedVisibilityScope,
+                                    boundsTransform = MeloXSkylineArtworkBoundsTransform,
+                                    renderInOverlayDuringTransition = true,
+                                    zIndexInOverlay = 100f,
+                                )
+                            }
+                        }
+                    } else Modifier
+                    Artwork(
+                        playback.artworkUrl,
+                        skylineArtModifier.size(132.dp).clip(RoundedCornerShape(20.dp)),
+                    )
                     Text(playback.title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 14.dp))
                     Text(playback.artist, color = Color.White.copy(alpha = .52f), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }

@@ -84,9 +84,8 @@ all three screens so the cover actually flies between the card and the detail he
 
 ## Testing / demo
 
-Recorded on a real device (vivo iQOO 15, Android 17, density 4) — the clip in this PR
-([`docs/media/shared-element-demo.mp4`](media/shared-element-demo.mp4), 1080×2376, 9.3 s, ~12 MB)
-shows the sequence on the **Search** page:
+Recorded on a real device (vivo iQOO 15, Android 17, density 4) — the attached clip
+(`shared-element-demo.mp4`, 1080×2376, 9.3 s) shows the sequence on the **Search** page:
 
 1. search results list, tap a collection card;
 2. the cover morphs continuously from the card into the detail hero (mid-flight frames show the
@@ -96,9 +95,6 @@ shows the sequence on the **Search** page:
 Verified frame-by-frame by extracting stills with ffmpeg: the artwork is present and interpolating
 on every frame between the two end states, i.e. the shared element is genuinely continuous rather
 than a fade between two copies.
-
-> The 12 MB binary is committed on purpose so the clip travels with the PR; drop it (or move it to
-> a release asset / LFS) if you'd rather not carry the bytes in history.
 
 ## Scope note
 

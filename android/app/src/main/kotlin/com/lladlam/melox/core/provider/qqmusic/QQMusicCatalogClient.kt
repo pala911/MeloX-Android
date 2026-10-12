@@ -21,7 +21,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** QQ Music non-song catalog APIs mapped into provider-neutral MeloX models. */
+/** QQ Music catalog APIs (song/playlist/album/artist search and detail) mapped into provider-neutral MeloX models. */
 class QQMusicCatalogClient(
     private val sessionProvider: () -> QQMusicSession,
     private val httpClient: OkHttpClient = com.lladlam.melox.core.network.MeloXHttpClient.shared,
@@ -56,6 +56,49 @@ class QQMusicCatalogClient(
             page = page.coerceAtLeast(1),
             pageSize = pageSize.coerceIn(1, 50),
             total = searchTotal(result),
+        )
+    }
+
+    /**
+     * Song search over `musicu.fcg` / `music.search.SearchCgiService`.
+     *
+     * `QQMusicApiClient.searchSongs` used the legacy `client_search_cp` endpoint, which now
+     * answers HTTP 500 with an empty body (verified 2026-09-29 across UA, Referer and keyword
+     * variants), so QQ song search returned nothing at all. This replaces it:
+     *
+     * - `DoSearchForQQMusicDesktop` returns `body.song.list` as flat song cards. The Mobile
+     *   method returns the grouped shell (`item_song`/`direct_group` all empty, `meta.sum = 0`)
+     *   and is unusable for songs.
+     * - That desktop method only answers under `comm.ct = 11, cv = 0`; the catalog-wide
+     *   `ct = 24, cv = 4_747_474` returns the same shell, so the comm version is a parameter.
+     * - `meta.sum` is the real hit count. `estimate_sum` is a server estimate and is unusable.
+     * - `searchid` must be unique per call: a repeated id makes the gateway answer
+     *   `req_0.code = 2001` with empty lists, which looks like a normal empty result.
+     * - Tracks are built by [parseTrack]; the desktop song card carries the exact same keys
+     *   (`mid`, `name`, `singer[].name`, `album.mid`, `file.media_mid`, `interval`).
+     */
+    suspend fun searchTracks(query: String, page: Int, pageSize: Int): MusicPage<MusicTrack> {
+        val safePage = page.coerceAtLeast(1)
+        val safeSize = pageSize.coerceIn(1, 50)
+        val data = postMusicu(
+            module = "music.search.SearchCgiService",
+            method = "DoSearchForQQMusicDesktop",
+            param = searchParam(query, safePage, safeSize, searchType = 0),
+            commCt = 11,
+            commCv = 0,
+        )
+        val songBlock = data.optJSONObject("body")?.optJSONObject("song") ?: JSONObject()
+        val list = songBlock.optJSONArray("list") ?: JSONArray()
+        val tracks = buildList {
+            for (index in 0 until list.length()) {
+                parseTrack(list.optJSONObject(index) ?: continue)?.let(::add)
+            }
+        }
+        return MusicPage(
+            items = tracks,
+            page = safePage,
+            pageSize = safeSize,
+            total = searchTotal(data),
         )
     }
 
@@ -149,22 +192,28 @@ class QQMusicCatalogClient(
     }
 
     private fun searchByType(query: String, type: Int, page: Int, pageSize: Int): JSONObject {
-        val safePage = page.coerceAtLeast(1)
-        val safeSize = pageSize.coerceIn(1, 50)
         return postMusicu(
             module = "music.search.SearchCgiService",
             method = "DoSearchForQQMusicMobile",
-            param = JSONObject()
-                .put("searchid", "${System.currentTimeMillis()}${Random.nextInt(1000, 9999)}")
+            param = searchParam(query, page, pageSize, searchType = type),
+        )
+    }
+
+    private fun searchParam(query: String, page: Int, pageSize: Int, searchType: Int): JSONObject {
+        val safePage = page.coerceAtLeast(1)
+        val safeSize = pageSize.coerceIn(1, 50)
+        return JSONObject()
+            // Reusing a searchid makes the gateway return req_0.code = 2001 with empty
+            // lists, so every search needs a fresh one.
+            .put("searchid", "${System.currentTimeMillis()}${Random.nextInt(1000, 9999)}${Random.nextInt(0, 1000)}")
                 .put("query", query.trim())
-                .put("search_type", type)
+                .put("search_type", searchType)
                 .put("num_per_page", safeSize)
                 .put("page_num", safePage)
                 .put("highlight", false)
                 .put("grp", true)
                 .put("selectors", JSONObject())
-                .put("vec_selectors", JSONArray()),
-        )
+                .put("vec_selectors", JSONArray())
     }
 
     private fun extractSearchItems(data: JSONObject, key: String): List<JSONObject> {
@@ -293,15 +342,21 @@ class QQMusicCatalogClient(
         )
     }
 
-    private fun postMusicu(module: String, method: String, param: JSONObject): JSONObject {
+    private fun postMusicu(
+        module: String,
+        method: String,
+        param: JSONObject,
+        commCt: Int = 24,
+        commCv: Long = 4_747_474,
+    ): JSONObject {
         val session = sessionProvider()
         val gtk = hash33(session.musicKey)
         val payload = JSONObject()
             .put(
                 "comm",
                 JSONObject()
-                    .put("ct", 24)
-                    .put("cv", 4_747_474)
+                    .put("ct", commCt)
+                    .put("cv", commCv)
                     .put("platform", "yqq.json")
                     .put("chid", "0")
                     .put("uin", session.uin.toLongOrNull() ?: 0L)

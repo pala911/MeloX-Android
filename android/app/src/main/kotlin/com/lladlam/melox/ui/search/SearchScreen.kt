@@ -8,6 +8,7 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,11 +27,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -42,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,20 +56,25 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
@@ -97,6 +107,12 @@ import com.lladlam.melox.core.network.NeteaseUniversalSearchClient
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.playback.ProviderPlaybackCommands
 import com.lladlam.melox.ui.MeloXBottomContentClearance
+import com.lladlam.melox.ui.animation.MeloXMotion
+import com.lladlam.melox.ui.animation.meloXPageRedirectSpec
+import com.lladlam.melox.ui.animation.MeloXPageBoundsTransform
+import com.lladlam.melox.ui.MeloXInterruptiblePage
+import com.lladlam.melox.ui.animation.meloXSettledMillis
+import com.lladlam.melox.ui.meloXPageRecede
 import com.lladlam.melox.ui.account.MeloXAccountActivity
 import com.lladlam.melox.ui.collection.MeloXCollectionDetailActivity
 import com.lladlam.melox.ui.glass.MeloXGlassButton
@@ -118,17 +134,13 @@ import com.lladlam.melox.ui.library.MeloXUnifiedPlaylistDetailScreen
 import com.lladlam.melox.ui.library.MeloXUnifiedProviderAlbumDetailScreen
 import com.lladlam.melox.core.music.provider.MeloXLegacyUiBridge
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
+import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.lladlam.melox.ui.settings.MeloXSwipeFullAction
 import com.lladlam.melox.ui.player.MeloXSongActionsOverlay
-import com.lladlam.melox.ui.animation.MeloXMotion
-import com.lladlam.melox.ui.animation.meloXPageEnter
-import com.lladlam.melox.ui.animation.meloXPageExit
-import com.lladlam.melox.ui.animation.meloXSettledMillis
 import com.lladlam.melox.ui.layout.rememberMeloXWindowInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -143,36 +155,25 @@ object MeloXSearchLaunchBus {
 }
 
 private val SearchAccent = MeloXSystemColors.Blue
+
+// 搜索页可折叠头部尺寸（对齐发现页 EXPLORE_* 同一套节奏）：
+// 折叠行程 74dp（114 → 40）。40dp 已接近下限：标题缩到 24sp 后渲染盒约 31dp，
+// 再压缩会让描边被 Box 裁掉；后续要更大行程只能改「折叠态不保留标题、让标题完全
+// 让位」（另做 MEMO）。
+private val SearchHeaderTopSpaceExpanded = 36.dp
+private val SearchHeaderTopSpaceCollapsed = 4.dp
+private val SearchTitleBlockExpanded = 62.dp
+private val SearchTitleBlockCollapsed = 30.dp
+private val SearchTitleGapExpanded = 16.dp
+private val SearchTitleGapCollapsed = 6.dp
 // 详情覆盖层过渡的收尾余量：动画时长之外再留一点，等 sharedElement 的 overlay
 // 层真正收干净，再解锁并放开卡片。给少了会在切换瞬间看到 overlay 残影。
 private const val OverlayTransitionSettleMillis = 60L
+// 整页子页推入的收尾余量（2026-10-09）。推入弹簧是 ζ=1、k=800（ω≈28.3）⇒ 1px 收敛
+// ≈0.27~0.34s、标称 350ms；再留 80ms 确保「组合真页面」发生在动画**完全落定之后**，
+// 不会和最后几帧抢 UI 线程。⚠ 走 `meloXSettledMillis` ⇒ 自动跟随系统动画缩放。
+private const val SubPageComposeSettleMillis = 80L
 private val SearchCategories = listOf("排行榜", "播客", "华语", "欧美", "日语", "韩语", "粤语", "流行", "摇滚", "民谣", "电子", "说唱", "R&B/Soul", "古典", "ACG", "影视原声", "学习", "工作", "放松", "夜晚")
-
-/** Display label for a browse-category id. The id itself stays Chinese. */
-@Composable
-private fun searchCategoryLabel(id: String): String = when (id) {
-    "排行榜" -> stringResource(R.string.search_cat_charts)
-    "播客" -> stringResource(R.string.search_cat_podcasts)
-    "华语" -> stringResource(R.string.search_cat_chinese)
-    "欧美" -> stringResource(R.string.search_cat_western)
-    "日语" -> stringResource(R.string.search_cat_japanese)
-    "韩语" -> stringResource(R.string.search_cat_korean)
-    "粤语" -> stringResource(R.string.search_cat_cantonese)
-    "流行" -> stringResource(R.string.search_cat_pop)
-    "摇滚" -> stringResource(R.string.search_cat_rock)
-    "民谣" -> stringResource(R.string.search_cat_folk)
-    "电子" -> stringResource(R.string.search_cat_electronic)
-    "说唱" -> stringResource(R.string.search_cat_hiphop)
-    "R&B/Soul" -> stringResource(R.string.search_cat_rnb)
-    "古典" -> stringResource(R.string.search_cat_classical)
-    "ACG" -> stringResource(R.string.search_cat_acg)
-    "影视原声" -> stringResource(R.string.search_cat_soundtrack)
-    "学习" -> stringResource(R.string.search_cat_study)
-    "工作" -> stringResource(R.string.search_cat_work)
-    "放松" -> stringResource(R.string.search_cat_relax)
-    "夜晚" -> stringResource(R.string.search_cat_night)
-    else -> id
-}
 
 private sealed interface ProviderSearchDestination {
     val source: MusicSource
@@ -205,7 +206,10 @@ private sealed interface ProviderSearchDestination {
         override val key = "artist:${source.storageValue}:${value.id.value}"
         override val kind = MeloXSearchKind.Artists
         override val title = value.name
-        override val subtitle = ""
+        override val subtitle = buildList {
+            value.songCount?.let { add("$it 首歌曲") }
+            value.albumCount?.let { add("$it 张专辑") }
+        }.joinToString(" · ")
         override val artworkUrl = value.artworkUrl
     }
 }
@@ -270,6 +274,7 @@ fun SearchScreen(
     backClearSignal: MutableState<SearchBackAction> = remember { mutableStateOf(SearchBackAction.SwitchToHome) },
     onSearchBackState: (SearchBackAction) -> Unit = {},
     onSearchExit: () -> Unit = {},
+    onOpenRecognition: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val appContext = context.applicationContext
@@ -322,15 +327,10 @@ fun SearchScreen(
     // overlayDetail 一直保留到退出过渡跑完。否则返回瞬间 let 取到空、详情子树被
     // 立刻拆掉，共享元素封面就只有进入、没有返回。
     var overlayDetail by remember(source) { mutableStateOf<SearchDetailDestination?>(null) }
-    // 卡片可见性必须与 selectedDetail 同帧同步：点击即退出、返回即进入，才能与详情
-    // hero 的 AnimatedVisibility 完全重叠。原「占用 key」方案把它压后到 LaunchedEffect
-    // 里赋值 —— 返回时要等 PageExitMillis + settle(280ms) 才放开，而 hero 的退场只有
-    // 220ms，卡片 enter 落在它结束之后，两端永不重叠 → sharedElement 无从配对。
-    // 过渡串行化已由 overlayTransitionBusy 排队负责，不再需要占用 key。
-    // 详情覆盖层的进入/退出过渡是否仍在进行。并行动画（退出未跑完就点下一张卡）会让
-    // 单个 AnimatedVisibility 取消旧过渡、直接跳到新目标，旧卡就被遗弃在半途。过渡期间
-    // 直接忽略新的打开请求，把连续切换串行化，代价是一次点击延迟，收益是不会有卡死态。
-    var overlayTransitionBusy by remember(source) { mutableStateOf(false) }
+    // 卡片可见性直接用 `selectedDetail?.key` 驱动，与详情 hero 的 visible 完全同步
+    // （进入即退出、返回即进入），确保 sharedElement 两端同时处于过渡、能一镜到底配对。
+    // ⚠ 不再用 busy/排队串行化：`MeloXInterruptiblePage` 已支持在途改向（弹簧继承值与速度），
+    //   退出途中再点卡直接改向即可 —— 排队会把点击压到 ~350ms 后才响应（＝「退出后不能立刻点击」）。
     // 整页子页面（分类页 / 播客页 / 没有 hero 的详情页）的**内容**：同样的道理，
     // 打开时写入、返回时不清，可见性由 subPageOpen 实时推导。
     var subPageContent by remember(source) { mutableStateOf<SearchSubPage?>(null) }
@@ -340,6 +340,22 @@ fun SearchScreen(
     var error by remember(source) { mutableStateOf<String?>(null) }
     var selectedActionSong by remember(source) { mutableStateOf<SearchSong?>(null) }
     val launchRequest = MeloXSearchLaunchBus.request
+
+    val visibleSongs = songs
+    val visibleProviderSongs = providerSongs
+
+    // 顶部折叠头驱动 —— 复刻 [ExploreCollapsingHeader] 的精确逻辑：折叠进度直接由
+    // 子列表自身的 firstVisibleItemScrollOffset 驱动（与发现页同款），不依赖嵌套滚动
+    // 连接。首屏内随 offset 从 0→1 收缩；越过首屏（index>0）后强制保持折叠、不回弹。
+    val density = LocalDensity.current
+    val collapseDistancePx = with(density) { 120.dp.toPx() }
+    val listState = rememberLazyListState()
+    val collapseProgress by remember(listState, collapseDistancePx) {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) 1f
+            else (listState.firstVisibleItemScrollOffset / collapseDistancePx).coerceIn(0f, 1f)
+        }
+    }
 
     LaunchedEffect(source, availableKinds) {
         if (kind !in availableKinds) kind = MeloXSearchKind.Songs
@@ -391,12 +407,11 @@ fun SearchScreen(
             unifiedFailures = emptyList()
             runCatching { universal.songDetail(linkedId) }
                 .onSuccess {
-                    ensureActive()
                     songs = listOfNotNull(it)
                     media = emptyList()
                     kind = MeloXSearchKind.Songs
                 }
-                .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_link_failed) }
+                .onFailure { error = it.message ?: "无法读取歌曲链接" }
             loading = false
             return@LaunchedEffect
         }
@@ -419,33 +434,31 @@ fun SearchScreen(
                             )
                         }
                     }.onSuccess { result ->
-                        ensureActive()
                         providerSongs = result.aggregated.mapNotNull { it.recommendation?.track }.ifEmpty { result.tracks }
                         unifiedFailures = result.failures
                     }.onFailure { failure ->
-                        if (failure is CancellationException) throw failure
                         providerSongs = emptyList()
                         unifiedFailures = emptyList()
-                        error = failure.message ?: appContext.getString(R.string.search_failed)
+                        error = failure.message ?: "搜索失败"
                     }
                 } else if (source == MusicSource.Netease) {
                     providerSongs = emptyList()
                     unifiedFailures = emptyList()
                     runCatching { songClient.ensureArtwork(songClient.searchSongs(keyword)) }
-                        .onSuccess { ensureActive(); songs = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                        .onSuccess { songs = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 } else {
                     songs = emptyList()
                     unifiedFailures = emptyList()
                     val capability = providerSongSearch
                     if (capability == null) {
                         providerSongs = emptyList()
-                        error = appContext.getString(R.string.search_songs_unavailable, source.displayName)
+                        error = "${source.displayName} 当前没有歌曲搜索能力"
                     } else {
                         runCatching {
                             withContext(Dispatchers.IO) { capability.searchSongs(keyword, page = 1, pageSize = 50).items }
-                        }.onSuccess { ensureActive(); providerSongs = it }
-                            .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                        }.onSuccess { providerSongs = it }
+                            .onFailure { error = it.message ?: "搜索失败" }
                     }
                 }
             }
@@ -454,15 +467,15 @@ fun SearchScreen(
                 songs = emptyList(); providerSongs = emptyList(); media = emptyList(); unifiedFailures = emptyList()
                 if (source == MusicSource.Netease) {
                     runCatching { universal.searchMedia(keyword, kind) }
-                        .onSuccess { ensureActive(); media = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                        .onSuccess { media = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 } else {
                     val capability = providerCatalog
-                    if (capability == null || currentProvider !is PlaylistCapability) error = appContext.getString(R.string.search_playlists_unavailable, source.displayName)
+                    if (capability == null || currentProvider !is PlaylistCapability) error = "${source.displayName} 当前没有可用的歌单详情能力"
                     else runCatching {
                         withContext(Dispatchers.IO) { capability.searchPlaylists(keyword, page = 1, pageSize = 40).items }
-                    }.onSuccess { ensureActive(); providerPlaylists = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                    }.onSuccess { providerPlaylists = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 }
             }
 
@@ -470,15 +483,15 @@ fun SearchScreen(
                 songs = emptyList(); providerSongs = emptyList(); media = emptyList(); unifiedFailures = emptyList()
                 if (source == MusicSource.Netease) {
                     runCatching { universal.searchMedia(keyword, kind) }
-                        .onSuccess { ensureActive(); media = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                        .onSuccess { media = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 } else {
                     val capability = providerCatalog
-                    if (capability == null || currentProvider !is AlbumCapability) error = appContext.getString(R.string.search_albums_unavailable, source.displayName)
+                    if (capability == null || currentProvider !is AlbumCapability) error = "${source.displayName} 当前没有可用的专辑详情能力"
                     else runCatching {
                         withContext(Dispatchers.IO) { capability.searchAlbums(keyword, page = 1, pageSize = 40).items }
-                    }.onSuccess { ensureActive(); providerAlbums = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                    }.onSuccess { providerAlbums = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 }
             }
 
@@ -486,15 +499,15 @@ fun SearchScreen(
                 songs = emptyList(); providerSongs = emptyList(); media = emptyList(); unifiedFailures = emptyList()
                 if (source == MusicSource.Netease) {
                     runCatching { universal.searchMedia(keyword, kind) }
-                        .onSuccess { ensureActive(); media = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                        .onSuccess { media = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 } else {
                     val capability = providerCatalog
-                    if (capability == null || currentProvider !is ArtistCapability) error = appContext.getString(R.string.search_artists_unavailable, source.displayName)
+                    if (capability == null || currentProvider !is ArtistCapability) error = "${source.displayName} 当前没有可用的歌手详情能力"
                     else runCatching {
                         withContext(Dispatchers.IO) { capability.searchArtists(keyword, page = 1, pageSize = 40).items }
-                    }.onSuccess { ensureActive(); providerArtists = it }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                    }.onSuccess { providerArtists = it }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 }
             }
 
@@ -502,11 +515,11 @@ fun SearchScreen(
                 providerSongs = emptyList(); unifiedFailures = emptyList()
                 if (source != MusicSource.Netease) {
                     media = emptyList()
-                    error = appContext.getString(R.string.search_kind_unavailable, source.displayName, kind.title)
+                    error = "${source.displayName} 不提供${kind.title}搜索"
                 } else {
                     runCatching { universal.searchMedia(keyword, kind) }
-                        .onSuccess { ensureActive(); media = it; songs = emptyList() }
-                        .onFailure { if (it is CancellationException) throw it else error = it.message ?: appContext.getString(R.string.search_failed) }
+                        .onSuccess { media = it; songs = emptyList() }
+                        .onFailure { error = it.message ?: "搜索失败" }
                 }
             }
         }
@@ -526,44 +539,55 @@ fun SearchScreen(
     LaunchedEffect(overlayDestination) {
         if (overlayDestination != null) detailBackProgress.snapTo(0f)
     }
+    // ── 「推入动画期间不组合重子页面」闸门（2026-10-09，修「搜索-浏览类别-播客」一顿一顿）──
+    //
+    // ⚠⚠ 根因：推入动画与子页面首屏**抢同一个 UI 线程**。动画期间本轮的目标帧率是 120fps
+    //   （8.3ms/帧，见 `core/display/MeloXFrameRateController`），只要有一项重活落在动画窗口里，
+    //   帧就掉到 16.7ms+ 并被读成顿挫。播客首屏恰好带三样重的**脚手架**：
+    //     ① 自己一层**嵌套** `SharedTransitionLayout`（本页已在外层 search 的 STL 里，
+    //        再套一层 = 每帧多跑一次 lookahead）；
+    //     ② `PullToRefreshBox`（含它自己的无限进度指示器）；
+    //     ③ `PodcastLoadingState` 的 `CircularProgressIndicator`（又一条无限动画）。
+    //   ⇒ 三者一起在推入那几帧被组合，就是用户看到的「一顿一顿」。
+    //   ⚠ 2026-09-26 那次只延后了**网络请求**（`MeloXPodcastScreen(deferLoadMillis=…)`），
+    //     **没有延后组合**，所以这条至今还在 —— 现在补的正是「组合」这一半。
+    //
+    // 对照：同一路径的「排行榜」（`SearchCategoryPage`）**不卡**，因为它只有一个 Column + 列表
+    // （loading 也只是个 spinner），没有嵌套 STL / PTR。这是本判断最直接的旁证。
+    //
+    // ⛔⛔ **不能**对「有 hero 参与推入」的子页做这件事：分类页（`SearchCategoryPage`）与
+    //   详情覆盖层里的共享元素必须**全程在场**，晚组合一步就配不上对、morph 直接断。
+    //   所以只对「推入里没有任何 sharedElement 两端」的子页（播客页 / provider 歌手详情）开闸。
+    //
+    // ⚠ 关页时**不**复位：退场动画期间必须继续画真页面，复位会把它换成占位、滑出去时闪一下。
+    //   复位交给下一次打开（`subPageOpen` 变 true 时先置 false）。
+    var subPageComposed by remember(source) { mutableStateOf(false) }
+    LaunchedEffect(subPageOpen) {
+        if (subPageOpen) {
+            subPageComposed = false
+            delay(meloXSettledMillis(MeloXMotion.PageEnterMillis, SubPageComposeSettleMillis))
+            subPageComposed = true
+        }
+    }
     // 打开详情时可见性（selectedDetail）与内容（overlayDetail）同时写入。
     // 返回只清 selectedDetail，内容留到退出过渡跑完再自然 dispose。
-    // ⚠ 这几个声明必须在下面的过渡生命周期 effect 之前（effect 里要消费待打开的详情）。
-    var pendingDetail by remember(source) { mutableStateOf<SearchDetailDestination?>(null) }
     fun applyDetail(destination: SearchDetailDestination) {
         selectedDetail = destination
         overlayDetail = destination
         // 没有 hero 的详情（provider 歌手）落在整页子页面层，内容同样要留到退场结束。
         if (!destination.hasHeroOverlay()) subPageContent = SearchSubPage.Detail(destination)
     }
-    fun openDetail(destination: SearchDetailDestination) {
-        // 上一段过渡（进入 / 退出）尚未跑完时先排队，等本次过渡跑完立刻执行 —— 直接
-        // 忽略会让「退出后马上点下一张卡」丢输入，直接执行又会掐断旧过渡把卡片遗弃在
-        // 半途。排队两头都避开。
-        if (overlayTransitionBusy) {
-            pendingDetail = destination
-            return
-        }
-        applyDetail(destination)
-    }
-    // 详情覆盖层的过渡生命周期：只负责上锁/解锁与排队。卡片可见性已由 selectedDetail
-    // 同帧同步驱动（见声明处注释），与详情 hero 完全对齐。
+    // ⚠ 立即执行、不排队：退场途中再点卡由 MeloXInterruptiblePage 的弹簧在途改向
+    //   （继承当前位移与速度），点下去即响应 —— 这正是「退出后能立刻点击」。
+    //   直接执行旧过渡会被取消，但那是弹簧改向该做的事（位置/速度双连续，无卡死态）。
+    fun openDetail(destination: SearchDetailDestination) = applyDetail(destination)
+    // 详情覆盖层的内容生命周期：只做「退场跑完再释放 overlayDetail」——
+    // 退场期间详情子树仍在组合，封面才有机会一镜到底 morph 回结果卡片。
+    // 途中再打开会让 overlayDestination 立刻变非空 ⇒ 本 effect 取消重启，内容不被清、直接续上。
     LaunchedEffect(overlayDestination) {
-        overlayTransitionBusy = true
-        if (overlayDestination != null) {
-            // 进入过渡跑完（含 sharedElement morph 收尾）再解锁。
-            delay(meloXSettledMillis(MeloXMotion.PageEnterMillis, OverlayTransitionSettleMillis))
-        } else if (overlayDetail != null) {
-            // 退出过渡：详情内容（overlayDetail）保留到过渡跑完，退场期间详情子树仍在组合。
+        if (overlayDestination == null && overlayDetail != null) {
             delay(meloXSettledMillis(MeloXMotion.PageExitMillis, OverlayTransitionSettleMillis))
             overlayDetail = null
-        }
-        // 被新的打开请求取消时停在 delay，不解锁、也不清空排队。这段自己跑完
-        // 才会接到下一次，避免连续点卡时第一次点击丢失。
-        overlayTransitionBusy = false
-        pendingDetail?.let {
-            pendingDetail = null
-            applyDetail(it)
         }
     }
     // The host-level BackHandler always wins over the system back button, so the
@@ -632,29 +656,93 @@ fun SearchScreen(
     SharedTransitionLayout(Modifier.fillMaxSize()) {
     val searchSharedScope = this
     Box(Modifier.fillMaxSize()) {
-        // 搜索主页层。整页子页面推进来的时候向左做视差退让（-1/4 位移 + 淡出），
-        // 退回时反向复位 —— 与「设置 → 详情页」用的是同一套 [meloXPageEnter]/[meloXPageExit]。
+        // 搜索主页层。整页子页面推进来时**下沉 + 压暗 + 左移视差**（iOS 纵深），退回时反向复位。
+        // ⚠ 有 hero 的详情（overlayDestination）打开时 subPageOpen 仍为 false ⇒ 主页保持静止；
+        //   那是共享元素 morph 的必要条件（旧页一动、封面就错位），详见 [meloXPageRecede]。
+        // ⚠⚠ **绝不能写 `by`**：委托会在组合作用域取 `State.value` ⇒ 搜索主页（含折叠头、
+        //   分类行、结果列表）在整段推入/退回里**每帧重组**，真机读成掉帧。保留 State 对象、
+        //   在 `meloXPageRecede { … }` 的 lambda 里读 `.value`，读取才落在 graphicsLayer
+        //   阶段（只失效图层，不重组）。详见 [meloXPageRecede]。
+        // ⚠ 时长/缓动**必须与推入页完全一致**：子页层已改为 `AnimatedContent` +
+        //   `meloXPagePushSpec()`（ζ=1、k=800 临界阻尼弹簧），主页退让用**同一条**弹簧才严格互补
+        //   （「子页滑出 (1→0)」与「主页回位 (…→0)」同曲线）；任何一侧换了参数，两页之间那条缝会忽宽忽窄。
+        // ⚠ 统一走 `meloXPageRedirectSpec()`（同一条弹簧的 Float 通道）：被打断时弹簧继承当前速度
+        //   ⇒ 主页平滑反转，无瞬移。旧版「snap 到起点再重放」会把主页从半路瞬移，正是顿挫来源，已废。
+        val homeRecede = remember { Animatable(if (subPageOpen) 1f else 0f) }
+        LaunchedEffect(subPageOpen) {
+            val target = if (subPageOpen) 1f else 0f
+            if (homeRecede.value == target) return@LaunchedEffect // 首帧 / 已到位：不重播
+            homeRecede.animateTo(target, meloXPageRedirectSpec())
+        }
+        // ⚠ 主页被整页子页盖住（已下沉）时，它的卡片**不能再占用共享元素 key** —— 否则会与
+        //   子页/详情里的同名卡片构成**重复 shared key**，morph 的起点会错位（`SearchCardVisibility`
+        //   正是靠 `destinationKey != selectedKey` 让被选中那张卡进入 exit 过渡）。
+        val homeSelectedKey = if (subPageOpen) null else selectedDetail?.key
         AnimatedVisibility(
-            visible = !subPageOpen,
-            enter = meloXPageEnter(fromRight = false),
-            exit = meloXPageExit(toRight = false),
+            // 旧页始终在场，退让交给 [meloXPageRecede]（不再走 enter/exit 的淡出）。
+            visible = true,
+            modifier = Modifier
+                .fillMaxSize()
+                .meloXPageRecede { homeRecede.value }
+                // 被覆盖时屏蔽主页的无障碍节点（与设置列表同款），否则读屏会同时读出两层。
+                .then(if (subPageOpen) Modifier.clearAndSetSemantics { } else Modifier),
         ) {
                 val window = rememberMeloXWindowInfo()
                 Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .padding(top = rememberMeloXStableStatusBarHeight())
             .padding(top = 26.dp)
             .padding(horizontal = if (window.supportsTwoPane) window.gutter else 0.dp),
                 ) {
-        MeloXIosTopBar(title = stringResource(R.string.tab_search))
-        Spacer(Modifier.height(16.dp))
+        // 顶部折叠头 —— 复刻 [ExploreCollapsingHeader] 的完整逻辑：**布局高度**随折叠进度
+        // 收缩（而不是只做绘制期缩放），所以下方的搜索框、分类行、结果区会整体上移，
+        // 正是「搜索框跟着一起上移」的来源。头部共收缩 74dp（36→4 + 62→30 + 16→6）。
+        // ⚠ 标题块折叠到 30dp 后会小于 Text 自身的布局盒，必须给 Text 加
+        //   wrapContentSize(unbounded=true)，否则盒子被父级 clamp、绘制被裁到盒底，
+        //   标题下半截会「被水平切平」。
+        Spacer(Modifier.height(lerp(SearchHeaderTopSpaceExpanded, SearchHeaderTopSpaceCollapsed, collapseProgress)))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(lerp(SearchTitleBlockExpanded, SearchTitleBlockCollapsed, collapseProgress))
+                .padding(horizontal = 20.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                text = stringResource(R.string.tab_search),
+                fontSize = 34.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    // 关键①：不写 lineHeight。34sp 的自然行高已经大于 44sp 指定的额外 leading，
+                    //   那部分 leading 不计进 Text 的布局盒，墨迹会被整体往下推约一行高 ——
+                    //   标题就画到了块外、被块底切掉下半截（发现页能容忍是因为它的折叠块
+                    //   有 38dp，比 30dp 的墨迹高；这里不能这么写）。
+                    // 关键②：unbounded 让折叠后的 30dp 标题块**不能反向压缩** Text 自己的
+                    //   布局盒。Box 本身不裁剪，所以盒子溢出到块外是安全的；绘制又被
+                    //   graphicsLayer 等比缩到 24sp 等效，始终落在块内。
+                    .wrapContentSize(unbounded = true)
+                    .graphicsLayer {
+                        // 34sp → 24sp 等效缩放，左侧锚定（transformOrigin x=0）不横向漂移。
+                        val scale = 1f + (24f / 34f - 1f) * collapseProgress
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                        alpha = 1f - 0.15f * collapseProgress
+                    },
+            )
+        }
+        Spacer(Modifier.height(lerp(SearchTitleGapExpanded, SearchTitleGapCollapsed, collapseProgress)))
         SearchField(
             value = query,
             onValueChange = { query = it; skipSearchDebounce = false },
             onSearch = { skipSearchDebounce = true; searchTrigger += 1 },
             source = source,
             onBack = { if (query.isNotBlank()) query = "" else onSearchExit() },
+            onOpenRecognition = onOpenRecognition,
         )
         if (query.isNotBlank()) {
             SearchScopes(kind = kind, availableKinds = availableKinds, onKind = { kind = it })
@@ -663,10 +751,11 @@ fun SearchScreen(
         Box(Modifier.weight(1f)) {
             when {
                 query.isBlank() && source == MusicSource.Netease -> SearchDiscovery(
+                    state = listState,
                     recommendations = recommendations,
                     onPlaylist = { openDetail(SearchDetailDestination.Netease(it.asSearchItem())) },
                     sharedTransitionScope = searchSharedScope,
-                    selectedKey = selectedDetail?.key,
+                    selectedKey = homeSelectedKey,
                     onCategory = { category ->
                         if (category == "播客") {
                             subPageContent = SearchSubPage.Podcast
@@ -678,18 +767,19 @@ fun SearchScreen(
                             scope.launch {
                                 runCatching { library.explorePlaylists(category, 50) }
                                     .onSuccess { categoryPlaylists = it }
-                                    .onFailure { error = it.message ?: context.getString(R.string.search_category_failed) }
+                                    .onFailure { error = it.message ?: "类别加载失败" }
                                 loading = false
                             }
                         }
                     },
                 )
                 query.isBlank() -> ProviderSearchDiscovery(
+                    state = listState,
                     source = source,
                     recommendations = providerRecommendations,
                     onPlaylist = { openDetail(SearchDetailDestination.Provider(ProviderSearchDestination.Playlist(it))) },
                     sharedTransitionScope = searchSharedScope,
-                    selectedKey = selectedDetail?.key,
+                    selectedKey = homeSelectedKey,
                 )
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = SearchAccent)
@@ -698,46 +788,52 @@ fun SearchScreen(
                     Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
                 }
                 kind == MeloXSearchKind.Songs && (unifiedEnabled || source != MusicSource.Netease) -> ProviderSearchSongResults(
-                    values = providerSongs,
+                    state = listState,
+                    values = visibleProviderSongs,
                     failures = unifiedFailures,
                     showSource = unifiedEnabled,
                     onPlay = { track ->
                         ProviderPlaybackCommands.playQueue(
                             context = context,
-                            tracks = providerSongs,
+                            tracks = visibleProviderSongs,
                             selectedTrackId = track.id,
-                            onFailure = { failure -> error = failure.message ?: context.getString(R.string.search_play_failed) },
+                            onFailure = { failure -> error = failure.message ?: "播放失败" },
                         )
                     },
                 )
                 kind == MeloXSearchKind.Songs -> SearchSongResults(
-                    values = songs,
-                    onPlay = { song -> PlaybackCommands.playQueue(context, songs, song.id) },
+                    state = listState,
+                    values = visibleSongs,
+                    onPlay = { song -> PlaybackCommands.playQueue(context, visibleSongs, song.id) },
                     onMore = { selectedActionSong = it },
                     onLike = { song ->
                         scope.launch {
                             runCatching { operations.setSongLiked(song.id, true) }
-                                .onFailure { error = it.message ?: context.getString(R.string.library_add_failed) }
+                                .onFailure { error = it.message ?: "添加到资料库失败" }
                         }
                     },
                 )
                 source != MusicSource.Netease && kind == MeloXSearchKind.Playlists -> ProviderSearchMediaResults(
+                    state = listState,
                     values = providerPlaylists.map { ProviderSearchDestination.Playlist(it) },
                     onOpen = { openDetail(SearchDetailDestination.Provider(it)) },
                     sharedTransitionScope = searchSharedScope,
-                    selectedKey = selectedDetail?.key,
+                    selectedKey = homeSelectedKey,
                 )
                 source != MusicSource.Netease && kind == MeloXSearchKind.Albums -> ProviderSearchMediaResults(
+                    state = listState,
                     values = providerAlbums.map { ProviderSearchDestination.Album(it) },
                     onOpen = { openDetail(SearchDetailDestination.Provider(it)) },
                     sharedTransitionScope = searchSharedScope,
-                    selectedKey = selectedDetail?.key,
+                    selectedKey = homeSelectedKey,
                 )
                 source != MusicSource.Netease && kind == MeloXSearchKind.Artists -> ProviderSearchMediaResults(
+                    state = listState,
                     values = providerArtists.map { ProviderSearchDestination.Artist(it) },
                     onOpen = { openDetail(SearchDetailDestination.Provider(it)) },
                 )
                 else -> SearchMediaResults(
+                    state = listState,
                     values = media,
                     onOpen = { item ->
                         when (item.kind) {
@@ -747,7 +843,7 @@ fun SearchScreen(
                         }
                     },
                     sharedTransitionScope = searchSharedScope,
-                    selectedKey = selectedDetail?.key,
+                    selectedKey = homeSelectedKey,
                 )
             }
         }
@@ -759,15 +855,26 @@ fun SearchScreen(
         // ⚠ 背板必须在这里自己画：MeloX 的页面本身都是透明底、不透明背板只在 MeloXApp 根部
         //   画一次；不补背板，整页滑入的全程会把下层列表透出来，观感是撕裂而不是推入。
         // 内容取 subPageContent（返回时不清），退场动画期间才有东西可画。
-        AnimatedVisibility(
+        MeloXInterruptiblePage(
             visible = subPageOpen,
-            enter = meloXPageEnter(fromRight = true),
-            exit = meloXPageExit(toRight = true),
+            retreatProgress = { 0f },
             modifier = Modifier.fillMaxSize().zIndex(1f),
         ) {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
             when (val page = subPageContent) {
-                SearchSubPage.Podcast -> MeloXPodcastScreen()
+                // ⚠ 组合**本身**推到推入落定之后（见 `subPageComposed`）⇒ 动画窗口里只剩轻量占位：
+                //   嵌套 STL / PullToRefreshBox / 无限进度动画 / 列表 / 图片解码全都不进动画帧。
+                //   因此这里不再需要 `deferLoadMillis` —— 那是「已组合但先不拉数据」的半套补救，
+                //   治不了「组合本身占 UI 线程」这一半。
+                SearchSubPage.Podcast -> if (subPageComposed) MeloXPodcastScreen(
+                    // 推入层 Box 自己不吃状态栏（兄弟子页都各自在内部 statusBarsPadding），
+                    // 播客首页这里也必须让出，否则大标题会顶进状态栏。
+                    applyStatusBarPadding = true,
+                ) else MeloXSubPagePlaceholder()
                 is SearchSubPage.Category -> SearchCategoryPage(
                     title = page.title,
                     values = categoryPlaylists,
@@ -778,13 +885,14 @@ fun SearchScreen(
                     sharedTransitionScope = searchSharedScope,
                     selectedKey = selectedDetail?.key,
                 )
-                is SearchSubPage.Detail -> SearchCollectionDetail(
+                // provider 歌手详情同样「推入里没有 sharedElement 两端」⇒ 同样可以晚组合。
+                is SearchSubPage.Detail -> if (subPageComposed) SearchCollectionDetail(
                     destination = page.destination,
                     universal = universal,
                     library = library,
                     providerRegistry = providerRegistry,
                     onBack = { selectedDetail = null },
-                )
+                ) else MeloXSubPagePlaceholder()
                 null -> Unit
             }
             }
@@ -792,36 +900,23 @@ fun SearchScreen(
         // 详情覆盖层。zIndex 要压在整页子页面层之上（从分类页点歌单时两层同时在场）。
         // visible 只由 selectedDetail 驱动，内容取 overlayDetail（返回时不清），
         // 于是退出过渡期间详情子树仍在组合里，封面才有机会一镜到底 morph 回结果卡片。
-        AnimatedVisibility(
+        MeloXInterruptiblePage(
             visible = overlayDestination != null,
-            enter = meloXPageEnter(fromRight = true),
-            exit = meloXPageExit(toRight = true),
+            retreatProgress = { detailBackProgress.value },
             modifier = Modifier.fillMaxSize().zIndex(2f),
         ) {
             val detailVisibilityScope = this
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = size.width * detailBackProgress.value
-                        val scale = 1f - 0.08f * detailBackProgress.value
-                        scaleX = scale
-                        scaleY = scale
-                        transformOrigin = TransformOrigin(0f, 0.5f)
-                    },
-            ) {
-                overlayDetail?.let { destination ->
-                    SearchCollectionDetail(
-                        destination = destination,
-                        universal = universal,
-                        library = library,
-                        providerRegistry = providerRegistry,
-                        onBack = { selectedDetail = null },
-                        sharedTransitionScope = searchSharedScope,
-                        animatedVisibilityScope = detailVisibilityScope,
-                        artworkSharedKey = searchArtworkSharedKey(destination),
-                    )
-                }
+            overlayDetail?.let { destination ->
+                SearchCollectionDetail(
+                    destination = destination,
+                    universal = universal,
+                    library = library,
+                    providerRegistry = providerRegistry,
+                    onBack = { selectedDetail = null },
+                    sharedTransitionScope = searchSharedScope,
+                    animatedVisibilityScope = detailVisibilityScope,
+                    artworkSharedKey = searchArtworkSharedKey(destination),
+                )
             }
         }
     }
@@ -829,7 +924,7 @@ fun SearchScreen(
     selectedActionSong?.let { song ->
         MeloXSongActionsOverlay(
             song = song,
-            queue = songs,
+            queue = visibleSongs,
             visible = true,
             onDismiss = { selectedActionSong = null },
         )
@@ -867,6 +962,9 @@ private fun Modifier.meloXSearchSharedArtwork(
         this@meloXSearchSharedArtwork.sharedElement(
             sharedContentState = rememberSharedContentState(key = key),
             animatedVisibilityScope = animatedVisibilityScope,
+            // ⚠ 必须显式传：默认是渐近弹簧，会「追动靶」并在整页滑入结束的瞬间被硬切补齐
+            //   —— 用户报的「最后一帧横移调整位置」。见 [MeloXPageBoundsTransform] 的完整推导。
+            boundsTransform = MeloXPageBoundsTransform,
             // 过渡期间封面留在共享 overlay 层，避免被列表/详情的裁剪吃掉。
             renderInOverlayDuringTransition = true,
             zIndexInOverlay = 1f,
@@ -902,10 +1000,10 @@ private fun SearchField(
     onSearch: () -> Unit,
     source: MusicSource,
     onBack: () -> Unit,
+    onOpenRecognition: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val clearDescription = stringResource(R.string.search_clear)
-    val searchDescription = stringResource(R.string.search_content_description)
     MeloXGlassTextField(
         value = value,
         onValueChange = onValueChange,
@@ -936,7 +1034,7 @@ private fun SearchField(
                         modifier = Modifier
                             .size(44.dp)
                             .clickable(role = Role.Button) { onSearch() }
-                            .semantics { contentDescription = searchDescription },
+                            .semantics { contentDescription = "搜索" },
                         contentAlignment = Alignment.Center,
                     ) {
                         MeloXSymbolIcon(
@@ -955,6 +1053,24 @@ private fun SearchField(
                         MeloXSymbolIcon(
                             symbol = MeloXSymbol.Xmark,
                             modifier = Modifier.size(15.dp),
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .56f),
+                        )
+                    }
+                } else {
+                    // 空态给「听歌识曲」让位，输入态让位给搜索 / 清除 ——
+                    // 两个分支互斥，trailing 宽度恒为 44dp（空）或 88dp（有字），文本区不抖动。
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clickable(role = Role.Button) { onOpenRecognition() }
+                            .semantics { contentDescription = "听歌识曲" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        // Microphone 已在 MeloXSymbolIcon 里被换成 ic_melox_mic
+                        // （同 Settings 的品牌矢量分支），这里写法与相邻图标保持一致即可。
+                        MeloXSymbolIcon(
+                            symbol = MeloXSymbol.Microphone,
+                            modifier = Modifier.size(18.dp),
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = .56f),
                         )
                     }
@@ -1006,6 +1122,7 @@ private fun SearchScopes(
 
 @Composable
 private fun SearchDiscovery(
+    state: LazyListState = rememberLazyListState(),
     recommendations: List<NeteasePlaylistSummary>,
     onPlaylist: (NeteasePlaylistSummary) -> Unit,
     onCategory: (String) -> Unit,
@@ -1015,7 +1132,9 @@ private fun SearchDiscovery(
     val window = rememberMeloXWindowInfo()
     val categoryColumns = window.gridColumns.coerceIn(2, 4)
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        state = state,
+        // 触顶/触底橡胶回弹触感。
+        modifier = Modifier.fillMaxSize().meloXEdgeOverscrollHaptic(state),
         contentPadding = PaddingValues(bottom = MeloXBottomContentClearance),
     ) {
         if (recommendations.isNotEmpty()) {
@@ -1027,9 +1146,16 @@ private fun SearchDiscovery(
                         SearchCardVisibility(
                             destinationKey = destinationKey,
                             selectedKey = selectedKey,
+                            modifier = Modifier.animateItem(),
                         ) {
                             val cardVisibilityScope = this
-                            Column(Modifier.width(160.dp).clickable { onPlaylist(p) }) {
+                            Column(
+                                Modifier
+                                    .width(160.dp)
+                                    .clickable {
+                                        onPlaylist(p)
+                                    },
+                            ) {
                                 // 封面单独包一层 Box 承载 sharedElement：size/clip 放在
                                 // sharedElement 之后，阴影之类的外部效果严禁进这条链。
                                 Box(
@@ -1063,6 +1189,7 @@ private fun SearchDiscovery(
 
 @Composable
 private fun ProviderSearchDiscovery(
+    state: LazyListState = rememberLazyListState(),
     source: MusicSource,
     recommendations: List<MusicPlaylistSummary>,
     onPlaylist: (MusicPlaylistSummary) -> Unit,
@@ -1070,7 +1197,9 @@ private fun ProviderSearchDiscovery(
     selectedKey: String? = null,
 ) {
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        state = state,
+        // 触顶/触底橡胶回弹触感。
+        modifier = Modifier.fillMaxSize().meloXEdgeOverscrollHaptic(state),
         contentPadding = PaddingValues(bottom = MeloXBottomContentClearance),
     ) {
         if (recommendations.isNotEmpty()) {
@@ -1082,6 +1211,7 @@ private fun ProviderSearchDiscovery(
                         SearchCardVisibility(
                             destinationKey = destinationKey,
                             selectedKey = selectedKey,
+                            modifier = Modifier.animateItem(),
                         ) {
                             val cardVisibilityScope = this
                             Column(Modifier.width(160.dp).clickable { onPlaylist(p) }) {
@@ -1106,7 +1236,7 @@ private fun ProviderSearchDiscovery(
         }
         item {
             Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 28.dp), contentAlignment = Alignment.Center) {
-                Text(stringResource(R.string.search_source_hint, source.displayName), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f))
+                Text("搜索 ${source.displayName} 的歌曲、歌单、专辑或歌手", color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f))
             }
         }
     }
@@ -1125,11 +1255,12 @@ private fun SearchCategoryCard(title: String, modifier: Modifier, onClick: () ->
             .clickable(onClick = onClick)
             .padding(14.dp),
         contentAlignment = Alignment.BottomStart,
-    ) { Text(searchCategoryLabel(title), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+    ) { Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
 }
 
 @Composable
 private fun ProviderSearchSongResults(
+    state: LazyListState = rememberLazyListState(),
     values: List<MusicTrack>,
     failures: List<UnifiedMusicService.SearchFailure>,
     showSource: Boolean,
@@ -1138,6 +1269,7 @@ private fun ProviderSearchSongResults(
     val context = LocalContext.current
     val providerDownloads = remember(context) { MeloXProviderDownloadStore.get(context) }
     LazyColumn(
+        state = state,
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance),
     ) {
         if (failures.isNotEmpty()) {
@@ -1171,31 +1303,28 @@ private fun ProviderSearchSongResults(
 }
 
 @Composable
-private fun providerSearchSubtitle(item: ProviderSearchDestination): String {
-    val artist = item as? ProviderSearchDestination.Artist ?: return item.subtitle
-    return buildList {
-        artist.value.songCount?.let { add(stringResource(R.string.search_song_count, it)) }
-        artist.value.albumCount?.let { add(stringResource(R.string.search_album_count, it)) }
-    }.joinToString(" · ")
-}
-
-@Composable
 private fun ProviderSearchMediaResults(
+    state: LazyListState = rememberLazyListState(),
     values: List<ProviderSearchDestination>,
     onOpen: (ProviderSearchDestination) -> Unit,
     sharedTransitionScope: SharedTransitionScope? = null,
     selectedKey: String? = null,
 ) {
     if (values.isEmpty()) { SearchEmpty(stringResource(R.string.search_no_results)); return }
-    LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance)) {
+    LazyColumn(
+        state = state,
+        // 触顶/触底橡胶回弹触感。
+        modifier = Modifier.meloXEdgeOverscrollHaptic(state),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance),
+    ) {
         items(values, key = ProviderSearchDestination::key) { item ->
             val artworkShape = if (item.kind == MeloXSearchKind.Artists) CircleShape else RoundedCornerShape(8.dp)
             SearchCardVisibility(
                 destinationKey = item.key,
                 selectedKey = selectedKey,
+                modifier = Modifier.animateItem(),
             ) {
                 val cardVisibilityScope = this
-                val subtitle = providerSearchSubtitle(item).ifBlank { item.kind.title }
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -1219,7 +1348,7 @@ private fun ProviderSearchMediaResults(
                     Column(Modifier.weight(1f)) {
                         Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp)
                         Text(
-                            subtitle,
+                            item.subtitle.ifBlank { item.kind.title },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
@@ -1235,13 +1364,19 @@ private fun ProviderSearchMediaResults(
 
 @Composable
 private fun SearchSongResults(
+    state: LazyListState = rememberLazyListState(),
     values: List<SearchSong>,
     onPlay: (SearchSong) -> Unit,
     onMore: (SearchSong) -> Unit,
     onLike: (SearchSong) -> Unit,
 ) {
     if (values.isEmpty()) { SearchEmpty(stringResource(R.string.search_no_songs)); return }
-    LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance)) {
+    LazyColumn(
+        state = state,
+        // 触顶/触底橡胶回弹触感。
+        modifier = Modifier.meloXEdgeOverscrollHaptic(state),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance),
+    ) {
         items(values, key = { it.id }) { song ->
             SearchSwipeSongRow(
                 song = song,
@@ -1299,24 +1434,30 @@ private fun SearchSwipeSongRow(
 
 @Composable
 private fun SearchMediaResults(
+    state: LazyListState = rememberLazyListState(),
     values: List<MeloXSearchMediaItem>,
     onOpen: (MeloXSearchMediaItem) -> Unit,
     sharedTransitionScope: SharedTransitionScope? = null,
     selectedKey: String? = null,
 ) {
     if (values.isEmpty()) { SearchEmpty(stringResource(R.string.search_no_results)); return }
-    LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance)) {
+    // 播客行内直接短路 launch（OneShot），需要 Activity context。
+    val context = LocalContext.current
+    LazyColumn(
+        state = state,
+        // 触顶/触底橡胶回弹触感。
+        modifier = Modifier.meloXEdgeOverscrollHaptic(state),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance),
+    ) {
         items(values, key = { "${it.kind}-${it.id}" }) { item ->
             val destinationKey = SearchDetailDestination.Netease(item).key
             val artworkShape = if (item.kind == MeloXSearchKind.Artists || item.kind == MeloXSearchKind.Users) CircleShape else RoundedCornerShape(8.dp)
             SearchCardVisibility(
                 destinationKey = destinationKey,
                 selectedKey = selectedKey,
+                modifier = Modifier.animateItem(),
             ) {
                 val cardVisibilityScope = this
-                val subtitle = item.subtitle.ifBlank {
-                    if (item.trackCount > 0) stringResource(R.string.search_song_count_short, item.trackCount) else item.kind.title
-                }
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -1339,12 +1480,32 @@ private fun SearchMediaResults(
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp)
-                        Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f), fontSize = 13.sp)
+                        Text(item.subtitle.ifBlank { if (item.trackCount > 0) "${item.trackCount} 首" else item.kind.title }, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f), fontSize = 13.sp)
                     }
                     MeloXActionIcon("›", Modifier.size(18.dp), MaterialTheme.colorScheme.onSurface.copy(alpha = .3f))
                 }
             }
         }
+    }
+}
+
+/**
+ * **整页子页在「推入动画期间」的轻量占位。**
+ *
+ * ### 为什么需要它（2026-10-09，修「搜索-浏览类别-播客」一顿一顿）
+ * 推入动画的目标帧率是 120fps（8.3ms/帧，见 `core/display/MeloXFrameRateController`）——
+ * 任何重脚手架只要落在动画窗口里就会把帧顶到 16.7ms+，读成顿挫。而播客首屏自带
+ * **嵌套 `SharedTransitionLayout` + `PullToRefreshBox` + 无限进度动画**，一组合就占住 UI 线程。
+ * 占位里**只有**一个（宿主已画的）背板 + 一个进度指示器 ⇒ 逐帧成本可忽略。
+ * 推入落定后由真页面替换（判据见 `SearchScreen` 的 `subPageComposed`）。
+ *
+ * ⛔ 只给「推入期间没有任何 sharedElement 两端」的子页用 —— 分类页 / 详情覆盖层必须全程在场，
+ *   晚组合一步共享元素就配不上对、morph 直接断。
+ */
+@Composable
+private fun MeloXSubPagePlaceholder() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(color = SearchAccent)
     }
 }
 
@@ -1359,8 +1520,8 @@ private fun SearchCategoryPage(
     sharedTransitionScope: SharedTransitionScope? = null,
     selectedKey: String? = null,
 ) {
-    Column(Modifier.fillMaxSize().statusBarsPadding().padding(top = 16.dp)) {
-        SearchDetailHeader(searchCategoryLabel(title), onBack)
+    Column(Modifier.fillMaxSize().padding(top = rememberMeloXStableStatusBarHeight()).padding(top = 16.dp)) {
+        SearchDetailHeader(title, onBack)
         when {
             title == "播客" -> SearchEmpty(stringResource(R.string.search_podcast_hint))
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -1369,13 +1530,19 @@ private fun SearchCategoryPage(
             else -> LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = MeloXBottomContentClearance)) {
                 items(values, key = { it.id }) { p ->
                     val destinationKey = SearchDetailDestination.Netease(p.asSearchItem()).key
-                    val songCount = stringResource(R.string.library_song_count, p.trackCount)
                     SearchCardVisibility(
                         destinationKey = destinationKey,
                         selectedKey = selectedKey,
+                        modifier = Modifier.animateItem(),
                     ) {
                         val cardVisibilityScope = this
-                        Row(Modifier.fillMaxWidth().clickable { onPlaylist(p) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onPlaylist(p) }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Box(
                                 Modifier
                                     .meloXSearchSharedArtwork(
@@ -1391,7 +1558,7 @@ private fun SearchCategoryPage(
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                                Text(songCount, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
+                                Text("${p.trackCount} 首歌曲", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
                             }
                         }
                     }
@@ -1487,17 +1654,17 @@ private fun SearchCollectionDetail(
                         val tracks = when (item) {
                             is ProviderSearchDestination.Playlist -> {
                                 val capability = provider as? PlaylistCapability
-                                    ?: throw IllegalStateException(appContext.getString(R.string.search_playlist_unavailable, item.source.displayName))
+                                    ?: throw IllegalStateException("${item.source.displayName} 当前不提供歌单详情")
                                 capability.loadAllPlaylistTracks(item.value, pageSize = 200).tracks
                             }
                             is ProviderSearchDestination.Album -> {
                                 val capability = provider as? AlbumCapability
-                                    ?: throw IllegalStateException(appContext.getString(R.string.search_album_unavailable, item.source.displayName))
+                                    ?: throw IllegalStateException("${item.source.displayName} 当前不提供专辑详情")
                                 capability.albumDetail(item.value, page = 1, pageSize = 150).tracks
                             }
                             is ProviderSearchDestination.Artist -> {
                                 val capability = provider as? ArtistCapability
-                                    ?: throw IllegalStateException(appContext.getString(R.string.search_artist_unavailable, item.source.displayName))
+                                    ?: throw IllegalStateException("${item.source.displayName} 当前不提供歌手详情")
                                 capability.artistDetail(item.value, page = 1, pageSize = 150).tracks
                             }
                         }
@@ -1508,11 +1675,11 @@ private fun SearchCollectionDetail(
         }.onSuccess { (neteaseSongs, commonTracks) ->
             songs = neteaseSongs
             providerTracks = commonTracks
-        }.onFailure { error = it.message ?: appContext.getString(R.string.search_content_failed) }
+        }.onFailure { error = it.message ?: "内容加载失败" }
         loading = false
     }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding().padding(top = 16.dp)) {
+    Column(Modifier.fillMaxSize().padding(top = rememberMeloXStableStatusBarHeight()).padding(top = 16.dp)) {
         SearchDetailHeader(destination.title, onBack)
         LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = MeloXBottomContentClearance)) {
             item {
@@ -1580,7 +1747,7 @@ private fun SearchCollectionDetail(
                         endAction = MeloXSwipeAction(stringResource(R.string.artist_add_library), MeloXSymbol.Heart, Color(0xFFFF3B30)) {
                             scope.launch {
                                 runCatching { operations.setSongLiked(song.id, true) }
-                                    .onFailure { error = it.message ?: context.getString(R.string.library_add_failed) }
+                                    .onFailure { error = it.message ?: "添加到资料库失败" }
                             }
                         },
                     )

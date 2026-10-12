@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -286,6 +287,23 @@ fun MeloXFirstLaunchLegalConsent(
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
         )
+        // ★ 2026-10-07 用户报障：「不同意并退出」被挤成**两行**。
+        //
+        //   算一下就知道这不是偶发，是必然：屏宽 360dp → 弹窗 304dp（两侧各 28dp）
+        //   → 内容 268dp（`MeloXGlassDialog` 内层再收 18dp×2）→ 每颗按钮 129dp
+        //   （再减 10dp 间隔后÷2）→ 扣掉 `MeloXGlassButton` 默认的 16dp×2 内边距，
+        //   **文字只剩 97dp**；而「不同意并退出」是 6 个全角字，16sp 下 ≈ 96dp
+        //   —— 卡在临界点上，字体渲染多一点点就翻行（右侧 5 字的「同意并继续」≈80dp，
+        //   所以只有左边那颗炸，这也解释了为什么看起来"只有一个是两行"）。
+        //
+        //   修法（两处，都不改文案、不动语义）：
+        //   ① `contentPadding` 16dp → 6dp。按钮宽度由 `weight(1f)` 决定、与内容无关，
+        //      所以**视觉上零变化**（文字本来就居中），可用宽度却从 97dp 抬到 117dp。
+        //   ② 字号 16 → 15sp，再让出约 6% 余量（并给系统字体放大留缓冲）。
+        //      `textAlign = Center` 让万一仍需折行的长文案（en "Don't agree and exit"、
+        //      ja「同意せずに終了」）折出来也是居中的，不歪。
+        //   ⚠ 刻意**不**加 `softWrap = false`：那会让上面两个天生更长的本地化文案
+        //      直接裁字，宁可让它们换行也不能裁。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -296,12 +314,26 @@ fun MeloXFirstLaunchLegalConsent(
                 onClick = onDecline,
                 modifier = Modifier.weight(1f),
                 style = MeloXGlassButtonStyle.Plain,
-            ) { Text(stringResource(R.string.legal_decline_exit)) }
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.legal_decline_exit),
+                    fontSize = 15.sp,
+                    textAlign = TextAlign.Center,
+                )
+            }
             MeloXGlassButton(
                 onClick = onAgree,
                 modifier = Modifier.weight(1f),
                 style = MeloXGlassButtonStyle.BorderedProminent,
-            ) { Text(stringResource(R.string.legal_agree_continue)) }
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.legal_agree_continue),
+                    fontSize = 15.sp,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }

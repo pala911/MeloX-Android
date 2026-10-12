@@ -19,6 +19,25 @@ object MeloXRemoteConfigDefaults {
         "qq_playback" to "v1",
         "kugou_playback" to "v1",
     )
+
+    /**
+     * Values a strategy may take. `compat` caps NetEase requests at 高品质 and
+     * exists so lossless/immersive endpoints can be abandoned without an APK.
+     */
+    val AllowedStrategyValues = mapOf(
+        "netease_playback" to setOf("v1", "compat"),
+        "qq_playback" to setOf("v1"),
+        "kugou_playback" to setOf("v1"),
+    )
+
+    /** Only files under this prefix may be referenced by the updater. */
+    const val PinnedReleasePrefix = "https://github.com/lladlam/MeloX-Android/releases/download/"
+
+    val Rules = MeloXRemoteRules(
+        lyricMatchOriginalToleranceMs = 2_000L,
+        lyricMatchVersionToleranceMs = 1_000L,
+        searchTitleStripSuffixes = emptyList(),
+    )
     val Config = MeloXRemoteConfig(
         schemaVersion = 1,
         configVersion = 0,
@@ -34,5 +53,10 @@ object MeloXRemoteConfigDefaults {
             timeoutMs = 6_000,
         ),
         notice = null,
+        textOverrides = emptyMap(),
+        scripts = emptyMap(),
+        colorOverrides = emptyMap(),
+        rules = Rules,
+        updatePatches = emptyList(),
     )
 }

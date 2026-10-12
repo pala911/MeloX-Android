@@ -49,8 +49,11 @@ import com.lladlam.melox.ui.glass.MeloXIosListRow
 import com.lladlam.melox.ui.glass.MeloXSymbol
 import com.lladlam.melox.ui.glass.MeloXSymbolIcon
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import androidx.compose.ui.res.stringResource
 
 internal enum class MeloXPlaylistSortMode(val titleRes: Int) {
     Original(R.string.playlist_sort_original),
@@ -117,10 +120,17 @@ internal fun MeloXPlaylistActionsOverlay(
                     val desired = subscribed != true
                     busy = true
                     scope.launch {
-                        runCatching { operations.setPlaylistSubscribed(playlist.id, desired) }
-                            .onSuccess { subscribed = desired }
-                            .onFailure { message = it.message }
-                        busy = false
+                        try {
+                            // 超时保护 + finally 复位（2026-10-09）：此前 busy 无 finally，
+                            // eapi 挂起时永久 true ⇒ 之后点不动。
+                            withTimeout(15_000) { operations.setPlaylistSubscribed(playlist.id, desired) }
+                            subscribed = desired
+                        } catch (error: Exception) {
+                            message = if (error is TimeoutCancellationException) "操作超时，请重试"
+                            else error.message ?: "订阅操作失败"
+                        } finally {
+                            busy = false
+                        }
                     }
                 }
                 PlaylistActionRow(stringResource(R.string.action_refresh), MeloXSymbol.Refresh, true) { onRefresh(); onDismiss() }

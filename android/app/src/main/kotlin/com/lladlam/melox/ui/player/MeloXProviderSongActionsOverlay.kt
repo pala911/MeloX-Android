@@ -80,6 +80,7 @@ import com.lladlam.melox.ui.search.MeloXSearchLaunchBus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.res.stringResource
 
 private enum class ProviderSongActionPage {
     Main,
@@ -100,6 +101,9 @@ internal fun MeloXProviderSongActionsOverlay(
     onDismiss: () -> Unit,
     onNavigateSearch: ((String, MeloXSearchKind) -> Unit)? = null,
     onLocalMetadataChanged: () -> Unit = {},
+    // ★ 「天际歌词」入口（2026-10-07）。只有平板双栏传得进来，见
+    //   [MeloXNowPlayingActionsSheet] 同名声明的注释；为 null 时本行不渲染。
+    onShowSkyline: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -194,6 +198,16 @@ internal fun MeloXProviderSongActionsOverlay(
                         MeloXIosGroupedList(surfaceColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
                         when (target) {
                             ProviderSongActionPage.Main -> {
+                                // ★ 平板双栏专属：⋯ 里补一条进「天际歌词」的通道（2026-10-07）。
+                                //   放**第一条**（与 `MeloXSongActionsOverlay` 同位置）—— 它切的是
+                                //   "整屏呈现方式"，与下面那一串歌曲操作不是一类。`onShowSkyline`
+                                //   为 null（手机 / 竖屏）时整行不渲染，旧菜单逐像素不变。
+                                onShowSkyline?.let { openSkyline ->
+                                    ProviderActionItem(stringResource(R.string.player_skyline_lyrics), "☰") {
+                                        openSkyline()
+                                        onDismiss()
+                                    }
+                                }
                                 if (identity.source == MusicSource.Local) {
                                     ProviderActionItem(
                                         title = if (recognitionWorking) stringResource(R.string.player_recognizing) else stringResource(R.string.player_recognize),

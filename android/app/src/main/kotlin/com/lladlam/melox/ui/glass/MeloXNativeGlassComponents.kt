@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.IntOffset
 import com.lladlam.melox.ui.glass.publicdemo.PublicInteractiveHighlight
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.util.lerp
+import androidx.compose.ui.graphics.drawscope.scale
 import kotlin.math.roundToInt
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
@@ -280,7 +281,19 @@ fun MeloXGlassToggle(
                 .then(
                     if (pageBackdrop != null) {
                         Modifier.drawBackdrop(
-                            backdrop = rememberCombinedBackdrop(pageBackdrop, trackBackdrop),
+                            // ⚠ 官方 LiquidToggle 核心：折射源里的轨道不是静态 trackBackdrop，
+                            //   而是按 pressProgress 缩放的动态包装（scaleX 2/3→0.75、scaleY 0→0.75）。
+                            //   真实轨道不动，只有透过 thumb（玻璃）看到的轨道被「吸起变形」——
+                            //   这是官方长按液态感的主要来源，之前的移植把它丢了。
+                            backdrop = rememberCombinedBackdrop(
+                                pageBackdrop,
+                                rememberTransformedBackdrop(trackBackdrop) { drawBackdrop ->
+                                    val tp = safeProgress(animation.pressProgress)
+                                    val sx = lerp(2f / 3f, 0.75f, tp)
+                                    val sy = lerp(0f, 0.75f, tp)
+                                    scale(sx, sy) { drawBackdrop() }
+                                }
+                            ),
                             shape = { Capsule() },
                             effects = {
                                 val p = safeProgress(animation.pressProgress)
@@ -288,6 +301,7 @@ fun MeloXGlassToggle(
                                 // ⚠ 静息（p≈0）**整段跳过** lens：H=0 时 shader 里
                                 //   `circleMap(1.0 - -sd / refractionHeight)` 是 0/0 ⇒ NaN
                                 //   ⇒ `content.eval(NaN)`（见 MeloXGlassSafety 顶部说明）。
+                                //   官方是无条件调用——最新库已修 0/0，2.0.0 未修，保留防护。
                                 if (p > 0.001f) {
                                     lens(5.dp.toPx() * p, 10.dp.toPx() * p, chromaticAberration = true)
                                 }
@@ -307,7 +321,7 @@ fun MeloXGlassToggle(
                             layerBlock = {
                                 // ⚠ 这几个量会直接进 HWUI `RenderNode` 的变换矩阵，而
                                 //   **`coerceIn` 对 NaN 不加防护**（`a < min` 与 `a > max` 同时为 false
-                                //   ⇒ 原样返回 NaN），NaN 一旦进矩阵，拍平后不可逆、绘制结果未定义。
+                                //   ⇒ 原样返回 NaN），NaN 一旦进矩阵，拍扁后不可逆、绘制结果未定义。
                                 //   所以在**源头**先洗 velocity，出口再兜一次输出（正常值恒等，观感零变化）。
                                 val velocity = animation.velocity.finiteOrZero() / 50f
                                 val widenDenom = 1f - (velocity * 0.75f).coerceIn(-0.2f, 0.2f)
@@ -319,9 +333,24 @@ fun MeloXGlassToggle(
                             onDrawSurface = { drawRect(Color.White.copy(alpha = 1f - safeProgress(animation.pressProgress))) },
                         )
                     } else {
+                        // ⚠ 无玻璃背板（API<33 / 无硬件加速 / 页面没提供背板）时的按压反馈：
+                        //   1.5× 凸起缩放与玻璃无关，必须从门控外补回来，否则老设备完全没有按压反馈。
+                        //   按压变暗（alpha 降到 ~0.85）给「按进去」的观感，不降到 0 以免透出轨道色。
+                        //   另加按压投影浮起（shape + shadowElevation）：无 lens 可折射时
+                        //   用立体阴影模拟液态凸起，避免缩放显得单薄。
                         Modifier
+                            .graphicsLayer {
+                                val velocity = animation.velocity.finiteOrZero() / 50f
+                                val widenDenom = 1f - (velocity * 0.75f).coerceIn(-0.2f, 0.2f)
+                                val widenFactor = 1f - (velocity * 0.25f).coerceIn(-0.2f, 0.2f)
+                                val p = safeProgress(animation.pressProgress)
+                                shape = MeloXShapes.capsule
+                                shadowElevation = 8.dp.toPx() * p
+                                scaleX = (animation.scaleX.finiteOrZero() / widenDenom).finiteOrZero()
+                                scaleY = (animation.scaleY.finiteOrZero() * widenFactor).finiteOrZero()
+                                alpha = if (enabled) (1f - p * 0.15f) else 0.45f
+                            }
                             .background(Color.White, MeloXShapes.capsule)
-                            .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
                     },
                 )
                 .size(width = 40.dp, height = 24.dp),
@@ -363,7 +392,7 @@ fun MeloXGlassTextField(
             onValueChange = onValueChange,
             enabled = enabled,
             singleLine = singleLine,
-            textStyle = textStyle.copy(color = textStyle.color.takeIf { it != Color.Unspecified } ?: MaterialTheme.colorScheme.onSurface),
+            textStyle = textStyle,
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
             modifier = Modifier

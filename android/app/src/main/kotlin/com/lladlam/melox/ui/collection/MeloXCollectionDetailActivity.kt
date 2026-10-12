@@ -36,16 +36,17 @@ import com.lladlam.melox.core.model.SearchSong
 import com.lladlam.melox.core.network.*
 import com.lladlam.melox.playback.PlaybackCommands
 import com.lladlam.melox.ui.MeloXBottomContentClearance
-import com.lladlam.melox.ui.finishMeloXPage
-import com.lladlam.melox.ui.prepareMeloXPagePredictiveBack
+import com.lladlam.melox.ui.prepareMeloXPageWindow
 import com.lladlam.melox.ui.startMeloXPage
 import com.lladlam.melox.ui.glass.MeloXActionIcon
 import com.lladlam.melox.ui.glass.meloXLiquidButton
 import com.lladlam.melox.ui.library.MeloXBatchDownloadSheet
 import com.lladlam.melox.ui.library.MeloXUnifiedAlbumDetailScreen
+import com.lladlam.melox.ui.library.MeloXUnifiedPlaylistDetailScreen
+import com.lladlam.melox.core.library.NeteasePlaylistSummary
 import com.lladlam.melox.ui.podcast.MeloXPodcastScreen
 import com.lladlam.melox.ui.sharing.MeloXNeteaseResourceShareActivity
-import com.lladlam.melox.ui.MeloXPredictiveBackPage
+import com.lladlam.melox.ui.MeloXPageHost
 import com.lladlam.melox.ui.theme.MeloXTheme
 import kotlinx.coroutines.launch
 
@@ -56,20 +57,30 @@ class MeloXCollectionDetailActivity : ComponentActivity() {
         val id = intent.getLongExtra(EXTRA_ID, -1L)
         val isProgram = intent.getBooleanExtra(EXTRA_PROGRAM, false)
         val kind = runCatching { MeloXSearchKind.valueOf(intent.getStringExtra(EXTRA_KIND).orEmpty()) }.getOrNull()
-        if (id <= 0L || (!isProgram && kind !in setOf(MeloXSearchKind.Albums, MeloXSearchKind.Artists, MeloXSearchKind.Podcasts))) {
+        if (id <= 0L || (!isProgram && kind !in setOf(MeloXSearchKind.Albums, MeloXSearchKind.Artists, MeloXSearchKind.Podcasts, MeloXSearchKind.Playlists))) {
             finish()
             return
         }
-        prepareMeloXPagePredictiveBack()
+        prepareMeloXPageWindow()
         val onExit: () -> Unit = ::finish
         setContent {
-            MeloXPredictiveBackPage(onBack = onExit) {
+            MeloXPageHost {
               MeloXTheme {
                 val page: @Composable () -> Unit = {
                     when {
                         isProgram -> PodcastProgramScreen(id, onExit)
                         kind == MeloXSearchKind.Albums -> MeloXUnifiedAlbumDetailScreen(id, ::finish)
                         kind == MeloXSearchKind.Artists -> MeloXArtistDetailScreen(id, onExit)
+                        kind == MeloXSearchKind.Playlists -> MeloXUnifiedPlaylistDetailScreen(
+                            playlist = NeteasePlaylistSummary(
+                                id = id,
+                                name = intent.getStringExtra(EXTRA_NAME).orEmpty().ifBlank { "歌单" },
+                                coverUrl = intent.getStringExtra(EXTRA_COVER),
+                                trackCount = intent.getIntExtra(EXTRA_COUNT, 0),
+                                creatorName = intent.getStringExtra(EXTRA_CREATOR).orEmpty(),
+                            ),
+                            onBack = onExit,
+                        )
                         kind == MeloXSearchKind.Podcasts -> MeloXPodcastScreen(
                             initialPodcastId = id,
                             onExit = onExit,
@@ -87,18 +98,24 @@ class MeloXCollectionDetailActivity : ComponentActivity() {
         private const val EXTRA_ID = "id"
         private const val EXTRA_KIND = "kind"
         private const val EXTRA_PROGRAM = "program"
+        private const val EXTRA_NAME = "name"
+        private const val EXTRA_COVER = "cover"
+        private const val EXTRA_COUNT = "count"
+        private const val EXTRA_CREATOR = "creator"
         fun launch(context: Context, item: MeloXSearchMediaItem) = launch(context, item.id, item.kind)
         fun launchAlbum(context: Context, a: MeloXAlbumSummary) = launch(context, a.id, MeloXSearchKind.Albums)
         fun launchPodcast(context: Context, id: Long) = launch(context, id, MeloXSearchKind.Podcasts)
         fun launchPodcastProgram(context: Context, id: Long) {
-            context.startMeloXPage(Intent(context, MeloXCollectionDetailActivity::class.java).putExtra(EXTRA_ID, id).putExtra(EXTRA_PROGRAM, true).apply { if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+            val intent = Intent(context, MeloXCollectionDetailActivity::class.java).putExtra(EXTRA_ID, id).putExtra(EXTRA_PROGRAM, true).apply { if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            context.startMeloXPage(intent)
         }
         private fun launch(context: Context, id: Long, kind: MeloXSearchKind) {
             val intent = Intent(context, MeloXCollectionDetailActivity::class.java)
                 .putExtra(EXTRA_ID, id)
                 .putExtra(EXTRA_KIND, kind.name)
                 .apply { if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-            if (kind == MeloXSearchKind.Albums) context.startActivity(intent) else context.startMeloXPage(intent)
+            if (kind == MeloXSearchKind.Albums) context.startActivity(intent)
+            else context.startMeloXPage(intent)
         }
     }
 }
@@ -208,7 +225,8 @@ private fun AlbumScreen(id: Long, onBack: () -> Unit) {
         program?.let { value ->
             item {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    AsyncImage(value.artworkUrl, value.name, contentScale = ContentScale.Crop, modifier = Modifier.size(210.dp).clip(RoundedCornerShape(18.dp)))
+                    AsyncImage(value.artworkUrl, value.name, contentScale = ContentScale.Crop, modifier = Modifier
+                        .size(210.dp).clip(RoundedCornerShape(18.dp)))
                     Text(value.name, Modifier.padding(top = 14.dp), fontSize = 23.sp, fontWeight = FontWeight.Bold)
                     Text(value.radioName, Modifier.padding(top = 5.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
                     value.playbackSong?.let { song -> Action(stringResource(R.string.artist_play_episode)) { PlaybackCommands.playQueue(context, listOf(song), song.id) } }

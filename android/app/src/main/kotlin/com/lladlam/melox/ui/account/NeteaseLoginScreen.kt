@@ -6,6 +6,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -43,12 +48,15 @@ import com.lladlam.melox.core.music.provider.PlaybackAccountSlot
 import com.lladlam.melox.core.network.NeteasePhoneAuthClient
 import com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigPolicy
 import com.lladlam.melox.ui.glass.meloXLiquidButton
+import com.lladlam.melox.ui.glass.MeloXGlassIconButton
+import com.lladlam.melox.ui.glass.MeloXSymbol
+import com.lladlam.melox.ui.animation.meloXPagePushSpec
 import com.lladlam.melox.ui.legal.MeloXLegalLinks
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-private const val NETEASE_LOGIN_URL = "https://music.163.com/#/login"
+
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -70,6 +78,8 @@ fun NeteaseLoginScreen(
     var verifying by remember { mutableStateOf(false) }
     var verificationError by remember { mutableStateOf<String?>(null) }
     var handledCookie by remember { mutableStateOf<String?>(null) }
+    // 独立扫码登录页（后台自动点开扫码弹窗 → 提取 canvas 二维码原生显示）
+    var showQrPage by remember { mutableStateOf(false) }
 
     BackHandler(enabled = useWebLogin) {
         val view = webView
@@ -126,29 +136,53 @@ fun NeteaseLoginScreen(
     }
 
     if (!useWebLogin) {
-        MeloXPhoneCodeLoginScreen(
-            serviceName = stringResource(R.string.account_netease),
-            brandColor = Color(0xFFE60026),
-            description = stringResource(R.string.account_netease_phone_desc),
-            onClose = onDismiss,
-            onSendCode = { countryCode, phone ->
-                runCatching { phoneAuthClient.sendCode(countryCode, phone) }
-            },
-            onSubmitCode = { countryCode, phone, code ->
-                runCatching {
-                    val cookie = phoneAuthClient.login(countryCode, phone, code)
-                    session.acceptAuthenticatedCookie(
-                        cookie,
-                        persist = targetSlot == PlaybackAccountSlot.Main,
-                    ).getOrThrow()
-                    if (targetSlot == PlaybackAccountSlot.Playback) {
-                        NeteaseSessionStore.writePlaybackCookie(context, cookie)
-                    }
-                    onLoggedIn()
-                }
-            },
-            onWebLogin = { useWebLogin = true },
-        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            // 手机号/验证码页 ↔ 扫码页：同款 push/pop 滑动转场（自右滑入、向左滑出），
+            // 与外层登录页、设置子页一致。两屏叠放、扫码页在后（back 调度优先），
+            // 过渡期不会两个 BackHandler 同时生效导致误关整页。
+            AnimatedVisibility(
+                visible = !showQrPage,
+                enter = slideInHorizontally(meloXPagePushSpec()) { -it },
+                exit = slideOutHorizontally(meloXPagePushSpec()) { -it },
+            ) {
+                MeloXPhoneCodeLoginScreen(
+                    serviceName = stringResource(R.string.account_netease),
+                    brandColor = Color(0xFFE60026),
+                    description = stringResource(R.string.account_netease_phone_desc),
+                    onClose = onDismiss,
+                    onSendCode = { countryCode, phone ->
+                        runCatching { phoneAuthClient.sendCode(countryCode, phone) }
+                    },
+                    onSubmitCode = { countryCode, phone, code ->
+                        runCatching {
+                            val cookie = phoneAuthClient.login(countryCode, phone, code)
+                            session.acceptAuthenticatedCookie(
+                                cookie,
+                                persist = targetSlot == PlaybackAccountSlot.Main,
+                            ).getOrThrow()
+                            if (targetSlot == PlaybackAccountSlot.Playback) {
+                                NeteaseSessionStore.writePlaybackCookie(context, cookie)
+                            }
+                            onLoggedIn()
+                        }
+                    },
+                    onWebLogin = { useWebLogin = true },
+                    onQrLogin = { showQrPage = true },
+                )
+            }
+            AnimatedVisibility(
+                visible = showQrPage,
+                enter = slideInHorizontally(meloXPagePushSpec()) { it },
+                exit = slideOutHorizontally(meloXPagePushSpec()) { it },
+            ) {
+                NeteaseQrLoginScreen(
+                    session = session,
+                    onDismiss = { showQrPage = false },
+                    onLoggedIn = onLoggedIn,
+                    targetSlot = targetSlot,
+                )
+            }
+        }
     } else Column(
         modifier = Modifier
             .fillMaxSize()
@@ -162,20 +196,10 @@ fun NeteaseLoginScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = stringResource(R.string.action_cancel),
-                modifier = Modifier
-                    .meloXLiquidButton(
-                        shape = RoundedCornerShape(18.dp),
-                        tint = Color(0xFFFF3147),
-                        surfaceColor = Color(0xFFFF3147).copy(alpha = 0.08f),
-                        lensRadius = 7.dp,
-                        refractionHeight = 11.dp,
-                    )
-                    .clickable(onClick = onDismiss)
-                    .padding(8.dp),
-                color = Color(0xFFFF3147),
-                fontSize = 16.sp,
+            // 返回键与全站统一：液态玻璃圆钮（MeloXGlassIconButton，44dp）。
+            MeloXGlassIconButton(
+                symbol = MeloXSymbol.ChevronLeft,
+                onClick = onDismiss,
             )
             Text(
                 text = stringResource(R.string.account_netease_phone_title),
@@ -218,6 +242,11 @@ fun NeteaseLoginScreen(
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 pageLoading = false
+                                // 自动切到「扫码登录」tab：登录页默认是手机号登录，需手动点
+                                // 一下才出二维码。SPA 的 tab 由前端 JS 挂载，onPageFinished 时
+                                // 未必已渲染，脚本内部 setInterval 轮询重试（约 12s 上限）；
+                                // 命中即 click()，找不到则退化为手动点（行为不变，不更差）。
+                                view?.evaluateJavascript(NETEASE_AUTO_CLICK_QR_TAB_JS, null)
                                 super.onPageFinished(view, url)
                             }
                         }
@@ -267,7 +296,79 @@ fun NeteaseLoginScreen(
     }
 }
 
-private fun collectNeteaseCookieHeader(): String {
+/** 网易云网页登录页地址（含 hash 路由，SPA 首页默认渲染首页而非登录框）。 */
+internal const val NETEASE_LOGIN_URL = "https://music.163.com/#/login"
+
+/**
+ * 登录页加载完成后自动点完「顶部登录」→「扫码登录」两步的注入脚本。
+ *
+ * 网易云 #/login 默认只渲染首页：必须先点顶部「登录」（真实可点元素是 a.link，
+ * 外层 div.m-tophead 只是包装层，click 它无效）打开弹窗，再点弹窗内「扫码登录」tab。
+ * SPA 由前端 JS 挂载，onPageFinished 时未必已渲染，故 setInterval 轮询重试。
+ *
+ * ⚠ 这条路径只用于「网页登录」兜底页。独立扫码页（[NeteaseQrLoginScreen]）已改为
+ * 直接调网页版 `/weapi/w/user/login/qr/` 系列接口拿图，不再需要跟 SPA 渲染时序赛跑。
+ */
+internal const val NETEASE_AUTO_CLICK_QR_TAB_JS = """
+(function(){
+  if (window.__meloxQrInit) return;
+  window.__meloxQrInit = true;
+  function textOf(n){ return (n.textContent || n.innerText || '').trim(); }
+  function log(m){ try { (window.__meloxQrLog = window.__meloxQrLog || []).push(m); } catch(e){} }
+  function safeClick(el){
+    log('click:' + el.tagName);
+    try { el.click(); } catch(e){ log('clickErr'); }
+  }
+  function findScanTab(){
+    var nodes = document.querySelectorAll('a,button,li,div,span,em,i,label');
+    for (var i = 0; i < nodes.length; i++){
+      var t = textOf(nodes[i]);
+      if (t && t.length <= 12 && (t.indexOf('扫码登录') >= 0 || t.indexOf('二维码登录') >= 0)) return nodes[i];
+    }
+    return null;
+  }
+  function findTopLoginButton(){
+    var nodes = document.querySelectorAll('a.link, a[class*=link]');
+    for (var i = 0; i < nodes.length; i++){
+      if (textOf(nodes[i]) === '登录') return nodes[i];
+    }
+    var heads = document.querySelectorAll('div.m-tophead, div[class*=tophead]');
+    for (var j = 0; j < heads.length; j++){
+      var inner = heads[j].querySelector('a');
+      if (inner && textOf(inner) === '登录') return inner;
+      if (textOf(heads[j]) === '登录') return heads[j];
+    }
+    return null;
+  }
+  var tries = 0;
+  var timer = setInterval(function(){
+    try {
+      tries++;
+      if (window.__meloxQrClicked || tries > 30){
+        clearInterval(timer);
+        window.__meloxQrInit = false;
+        log('stop');
+        return;
+      }
+      var scan = findScanTab();
+      if (scan){
+        safeClick(scan);
+        window.__meloxQrClicked = true;
+        clearInterval(timer);
+        return;
+      }
+      var login = findTopLoginButton();
+      if (login){
+        if (!login.__meloxTried){ login.__meloxTried = true; safeClick(login); log('openBox'); }
+        else log('boxTried');
+      } else log('noBtn');
+    } catch(e){ log('tickErr'); }
+  }, 400);
+})();
+"""
+
+/** 汇总网易云网页 cookie（网页登录页使用）。 */
+internal fun collectNeteaseCookieHeader(): String {
     val manager = CookieManager.getInstance()
     val values = linkedMapOf<String, String>()
     val urls = listOf(

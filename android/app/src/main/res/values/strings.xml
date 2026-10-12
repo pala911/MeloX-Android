@@ -1325,4 +1325,38 @@
     <string name="search_cat_work">Work</string>
     <string name="search_cat_relax">Relax</string>
     <string name="search_cat_night">Night</string>
+    <string name="account_netease_qr_entry">Scan QR code</string>
+    <string name="account_netease_qr_expired">This QR code has expired. Tap refresh to get a new one.</string>
+    <string name="account_netease_qr_hint">Scan the QR code with the NetEase Cloud Music app\nSigning in will finish automatically</string>
+    <string name="account_netease_qr_hint2">Scan it with the NetEase Cloud Music app</string>
+    <string name="account_netease_qr_open_verify_page">Open verification page</string>
+    <string name="account_netease_qr_prepare_failed">Couldn\'t read the QR code from the sign-in page. Check your connection and retry.</string>
+    <string name="account_netease_qr_preparing">Preparing QR code…</string>
+    <string name="account_netease_qr_refresh">Refresh</string>
+    <string name="account_netease_qr_risk_controlled">NetEase rejected this sign-in attempt. Wait a few minutes and refresh, or sign in with your phone number.</string>
+    <string name="account_netease_qr_save_failed">Couldn\'t save the QR code</string>
+    <string name="account_netease_qr_saved">QR code saved to Photos</string>
+    <string name="account_netease_qr_title">NetEase QR sign-in</string>
+    <string name="account_netease_qr_verify_failed">Couldn\'t verify this sign-in. Try scanning again, or use phone code sign-in.</string>
+    <string name="account_netease_qr_waiting">Waiting to be scanned…</string>
+    <string name="account_netease_qr_web_waiting">Scan the QR code in the page above; signing in will finish automatically</string>
+    <string name="account_web_login_done">I have finished signing in</string>
+    <string name="autosync_model_confirm">This downloads about %1$s. Continue?</string>
+    <string name="autosync_model_delete">Delete</string>
+    <string name="autosync_model_download">Download</string>
+    <string name="autosync_model_downloading">Downloading %1$d%%</string>
+    <string name="autosync_model_failed">Failed: %1$s</string>
+    <string name="autosync_model_installed">Installed %1$s</string>
+    <string name="autosync_model_not_installed">Not installed</string>
+    <string name="autosync_models_loading">Loading model list…</string>
+    <string name="autosync_models_retry">Retry</string>
+    <string name="autosync_models_title">AutoSync models</string>
+    <string name="player_skyline_lyrics">Skyline lyrics</string>
+    <string name="settings_autosync_models">Installed AutoSync models: %1$s</string>
+    <string name="settings_autosync_no_model">No AutoSync model installed yet. Add one under the app folder files/autosync/&lt;language&gt;/ to enable generation.</string>
+    <string name="settings_autosync_word">AutoSync word lyrics</string>
+    <string name="settings_autosync_word_note">When a song only has line-timed lyrics, generate real word timing on this device (ONNX, fully offline). Lyrics stay line-timed when the model is missing or alignment fails.</string>
+    <string name="settings_floating_requires_android_8">Floating lyrics require Android 8.0 or later. Core music features remain available on this device.</string>
+
+    <!-- 0.6.3+ 新增（贡献者分支与 AutoSync） -->
 </resources>

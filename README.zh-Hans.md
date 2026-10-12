@@ -22,11 +22,11 @@
 
 > MeloX Android 是非官方开源项目，与网易云音乐、小米、Apple 及其关联公司不存在隶属、合作或授权关系。
 
-## 当前版本：0.6.2
+## 当前版本：0.6.5
 
-`0.6.2` 在 `0.6.1` 的基础上加入共享元素转场（卡片 → 详情封面一镜到底）、跟随系统语言（简中/繁中/日语）、YouTube Music 主页与同步歌词、流光背景游走、液态玻璃设置滑条，并修复大量崩溃与返回动画问题。
+`0.6.5` 新增签名热更新通道：文案覆盖与受限 QuickJS 脚本都随已签名的云控 payload 下发，文案与小逻辑修复不再需要发 APK；未授权云控、验签失败或脚本失败/超时时一律回落内置行为。
 
-- 下载与完整更新日志：[GitHub Releases](https://github.com/lladlam/MeloX-Android/releases/tag/0.6.2)
+- 下载与完整更新日志：[GitHub Releases](https://github.com/lladlam/MeloX-Android/releases/tag/0.6.5)
 - 详细版本记录：[CHANGELOG.md](CHANGELOG.md)
 - 本次版本说明：[CHANGELOG.md](CHANGELOG.md)
 
