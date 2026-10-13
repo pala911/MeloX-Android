@@ -423,7 +423,11 @@ private const val SearchPageSize = 10
 // 已按 coerceIn(1,50) 处理过同一量级。其余源仍走 SearchPageSize —— 不动共享常数，
 // 避免波及网易云/酷狗/酷我/QQ 的调用量（历史教训：候选搜索 14 次全 405 限频）。
 private const val BiliSearchPageSize = 25
-private const val SearchTimeoutMs = 2_500L
+// ⚠ 2.5s 对 B 站太紧：搜索条目不带 cid，provider 内部要并发补 view() 才能建候选，
+//   加上 WBI 签名握手与重搜一轮，2.5s 必然超时（日志实测：搜 B 站 0 candidates /
+//   InterruptedIOException: timeout）。放宽到 6s；整条 resolve 另有
+//   fallbackConfig.timeoutMs 墙钟兜着，不会拖垮播放。
+private const val SearchTimeoutMs = 6_000L
 // 任务①b：初排取 top3 分P 展开（并行 view），单候选展开预算 1.5s，超时/失败维持原候选。
 private const val ExpandedCandidateLimit = 3
 private const val PageExpandTimeoutMs = 1_500L

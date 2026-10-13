@@ -3,6 +3,9 @@ package com.lladlam.melox.core.provider.bilibili
 import com.lladlam.melox.core.music.model.*
 import com.lladlam.melox.core.music.provider.*
 import java.io.IOException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -140,12 +143,26 @@ class BilibiliProvider(
         ) + (if (durationBucket > 0) mapOf("duration" to durationBucket.toString()) else emptyMap())
         val data = cachedWbiGet("search", "/x/web-interface/wbi/search/type", params, BilibiliApiCache.Search).data()
         val results = data.optJSONArray("result") ?: JSONArray()
-        val tracks = results.objects().mapNotNull { item ->
+        // B 站搜索条目**不带 cid**（实测 2026-10-13 真机：result[] 里没有 cid 字段），
+        // 所以每条都得再调一次 view() 补。原来这里是**串行** mapNotNull，
+        // pageSize=25 就是 25 次网络请求，而跨源兜底的搜索预算只有 SearchTimeoutMs=2.5s
+        // —— 必然整条超时，日志表现为「search bilibili: 0 candidates」/「timeout」。
+        // 改为：只对缺 cid 的条目**并发**补 view()，2.5s 内能跑完。
+        val items = results.objects().take(MaxCandidatesPerSearch)
+        val missingCid = items
+            .filter { it.optString("bvid").isNotBlank() && it.optLong("cid") <= 0L }
+            .map { it.optString("bvid") }
+        val views = coroutineScope {
+            missingCid.map { bvid ->
+                async { bvid to runCatching { view(bvid) }.getOrNull() }
+            }.awaitAll().mapNotNull { (bvid, json) -> json?.let { bvid to it } }.toMap()
+        }
+        val tracks = items.mapNotNull { item ->
             val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return@mapNotNull null
             val itemCid = item.optLong("cid").takeIf { it > 0 }
             // page=1 硬编码修正：条目缺 cid 才回退 view()——此时按 cid 反查分P 页码/part/时长
             // （搜索条目的 duration 是合集总时长，part 时长才是本P 的，供打分用）。
-            val viewJson = if (itemCid == null) runCatching { view(bvid) }.getOrNull() else null
+            val viewJson = if (itemCid == null) views[bvid] else null
             val cid = itemCid ?: viewJson?.optLong("cid")?.takeIf { it > 0 } ?: return@mapNotNull null
             val pageMeta = viewJson?.optJSONArray("pages")?.objects()
                 ?.firstOrNull { it.optLong("cid") == cid }
@@ -153,7 +170,9 @@ class BilibiliProvider(
                 item, bvid, cid, item.optLong("aid"),
                 pageMeta?.optInt("page")?.takeIf { it > 0 } ?: 1,
                 part = pageMeta?.optString("part")?.takeIf(String::isNotBlank),
-                durationMs = pageMeta?.optLong("duration")?.takeIf { it > 0 }?.times(1000),
+                // 分P 时长才是本P 的；view 失败时回落条目自带时长，别让整条丢掉。
+                durationMs = pageMeta?.optInt("duration")?.takeIf { it > 0 }?.times(1000)
+                    ?: parseDuration(item.optString("duration")),
                 owner = viewJson?.optJSONObject("owner")?.optString("name")?.takeIf(String::isNotBlank),
             )
         }
@@ -370,6 +389,12 @@ class BilibiliProvider(
 
     companion object {
         const val UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+
+        /**
+         * 单次搜索最多细化的候选数。每条都要并发补一次 view() 取 cid，
+         * 2.5s 的搜索预算下这个量级才塞得下（实测约 12 条）。
+         */
+        private const val MaxCandidatesPerSearch = 12
         private val SafeAndroidAudioIds = setOf(30216, 30232, 30280, 30250)
         fun cleanTitle(value: String) = value.replace(Regex("</?em[^>]*>", RegexOption.IGNORE_CASE), "").trim()
         fun parseDuration(value: String): Long? {
