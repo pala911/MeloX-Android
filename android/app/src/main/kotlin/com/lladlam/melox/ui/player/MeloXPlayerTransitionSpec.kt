@@ -319,7 +319,11 @@ private class MeloXPlayerSinkVectorizedSpec<V : AnimationVector>(
         val f = progressOf(playTimeNanos)
         val initial = converter.convertFromVector(initialValue)
         val target = converter.convertFromVector(targetValue)
-        val enabled = sinkEnabled() && sinkPeakPx > 0f && target.height < initial.height * 0.6f
+        // ⚠ `reduceMotion`（系统「移除动画」/ 应用内减弱动效）时整条下沉必须为 0：
+        //   它是纯装饰性的回弹，和 recede 层已有的 `if (reduceMotion) 0f` 是同一个理由。
+        val enabled = sinkEnabled() && sinkPeakPx > 0f &&
+            !MeloXSettingsRuntime.reduceMotion &&
+            target.height < initial.height * 0.6f
         MeloXPlayerSinkDiag.frame(
             f = f,
             dy = if (enabled) meloXPlayerSinkFraction(linearProgressOf(playTimeNanos)) * sinkPeakPx else 0f,
@@ -365,7 +369,11 @@ private class MeloXPlayerSinkVectorizedSpec<V : AnimationVector>(
         val target = converter.convertFromVector(targetValue)
         val p = MeloXPlayerAppleEasing.transform(f)
         // ⚠ 方向 / 护栏**每帧**重判：这是「打断」也能沉下去的关键。
-        val enabled = sinkEnabled() && sinkPeakPx > 0f && target.height < initial.height * 0.6f
+        // ⚠ `reduceMotion`（系统「移除动画」/ 应用内减弱动效）时整条下沉必须为 0：
+        //   它是纯装饰性的回弹，和 recede 层已有的 `if (reduceMotion) 0f` 是同一个理由。
+        val enabled = sinkEnabled() && sinkPeakPx > 0f &&
+            !MeloXSettingsRuntime.reduceMotion &&
+            target.height < initial.height * 0.6f
         val dy = if (enabled) meloXPlayerSinkFraction(t) * sinkPeakPx else 0f
         return converter.convertToVector(
             Rect(
@@ -507,8 +515,27 @@ internal fun meloXPlayerSinkFraction(f: Float): Float {
     return kotlin.math.sin(kotlin.math.PI.toFloat() * u)
 }
 
-/** 下沉峰值（dp）。density 4 ⇒ 88px ≈ 屏高 2.8%、栏高 46% —— 必须**看得见**。 */
-internal const val MeloXPlayerSinkPeakDp = 22f
+/**
+ * 下沉峰值（dp）。
+ *
+ * ⚠⚠⚠ **本 fork 覆写了上游的 22f（2026-10-13，用户报障「从播放页返回时，首页 / 发现 /
+ *   设置 / 音乐库这几个页面都会下拉一下」）** —— 原值在真机上实测为 **82px**
+ *   （density 3.75 × 22dp），已经**超过迷你播放器自身的高度**（约 180px 的一半），
+ *   于是下沉期间它**直接盖住底部标签栏**（首页/发现/音乐库/设置 被遮住）。
+ *   底部 chrome 是**每个 tab 共享**的，所以四个根页面"都"会跟着顿一下，
+ *   观感上是「页面下拉了一下」，而不是「迷你栏轻轻落座」。
+ *
+ *   录像取证（真机 60fps，`screenrecord` + 逐帧比对）：关闭尾段底部 chrome 持续运动到
+ *   动画结束后约 400ms，其中迷你栏下沉峰值与本常量逐帧吻合。
+ *   对照：**0.6.2 完全没有这套下沉回弹**（`SinkPeakDp` / `sinkFraction` /
+ *   `MiniBarBounce` 符号在 `e0ac26b9` 里一个都搜不到），它是 0.6.3 播放页重做时
+ *   连同共享元素转场一起引入的。
+ *
+ * ⇒ 现在取 **7dp（≈26px，占迷你栏高度 ~14%）**：保留一点"落座重量感"，
+ *   但不再越过标签栏上沿，也就不会被读成页面级抖动。
+ *   想完全关掉：置 `0f`（调用点会退化成普通 tween，无需改别处）。
+ */
+internal const val MeloXPlayerSinkPeakDp = 7f
 
 // ⚠ 单峰形状后**只剩一个常量**（`SinkPhaseEnd` / `ReboundPhaseEnd` / `ReboundFraction`
 //   三个都已删除）：形状整体由 `sin(π·u)` 决定，不再有可调相位。
