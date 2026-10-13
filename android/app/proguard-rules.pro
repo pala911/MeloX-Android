@@ -25,6 +25,21 @@
 -dontwarn org.lsposed.hiddenapibypass.**
 -dontwarn com.apple.android.music.**
 
+## ONNX Runtime (AutoSync 逐字歌词对齐，0.6.5 新增)
+# ⚠ 上游 0.6.5 引入了 onnxruntime-android 却没带任何 keep 规则。
+#   它的 .so 在运行时用 JNI 按「类名 + 方法签名」反查 Java 侧方法，R8 一旦
+#   改名/裁掉就直接 abort：
+#     Abort message: JNI DETECTED ERROR IN APPLICATION: java_class == null
+#       in call to GetMethodID
+#       from boolean[] ai.onnxruntime.OrtSession.run(...)
+#   症状：歌词加载到一半进程 SIGABRT，表现为「放几秒就停并退回后台」。
+#   上游 CI 只跑 assembleDebug（不过 R8），所以它自己从没跑到这条路径。
+-keep class ai.onnxruntime.** { *; }
+-keepclasseswithmembernames,includedescriptorclasses class ai.onnxruntime.** {
+    native <methods>;
+}
+-dontwarn ai.onnxruntime.**
+
 ## Rules for NewPipeExtractor
 -keep class org.mozilla.javascript.** { *; }
 -keep class org.mozilla.classfile.ClassFileWriter
