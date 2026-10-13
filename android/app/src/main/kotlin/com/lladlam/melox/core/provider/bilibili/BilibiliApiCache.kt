@@ -92,6 +92,8 @@ class BilibiliApiCache private constructor(context: Context) {
         val Folders = Policy(2 * 60_000L, 15 * 60_000L)
         val FolderDetail = Policy(2 * 60_000L, 10 * 60_000L)
         val View = Policy(6 * 60 * 60_000L, 24 * 60 * 60_000L)
+    // 分P 列表与 view 同生命周期（分P 基本不变），但响应只有几百字节，多缓存无压力。
+    val PageList = Policy(6 * 60 * 60_000L, 24 * 60 * 60_000L)
         val Search = Policy(3 * 60_000L)
         private const val MaxMemoryEntries = 128
         private const val MixinTtlMs = 6 * 60 * 60_000L

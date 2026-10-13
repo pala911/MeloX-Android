@@ -143,37 +143,41 @@ class BilibiliProvider(
         ) + (if (durationBucket > 0) mapOf("duration" to durationBucket.toString()) else emptyMap())
         val data = cachedWbiGet("search", "/x/web-interface/wbi/search/type", params, BilibiliApiCache.Search).data()
         val results = data.optJSONArray("result") ?: JSONArray()
-        // B 站搜索条目**不带 cid**（实测 2026-10-13 真机：result[] 里没有 cid 字段），
-        // 所以每条都得再调一次 view() 补。原来这里是**串行** mapNotNull，
-        // pageSize=25 就是 25 次网络请求，而跨源兜底的搜索预算只有 SearchTimeoutMs=2.5s
-        // —— 必然整条超时，日志表现为「search bilibili: 0 candidates」/「timeout」。
-        // 改为：只对缺 cid 的条目**并发**补 view()，2.5s 内能跑完。
+        // B 站搜索条目**不带 cid**（实测 2026-10-13 真机：page_size=25 的 25 条结果里`cid` 出现 0 次），
+        // 所以每条候选都得再补一次分P 信息。原来是**串行** view()，pageSize=25 就是
+        // 25 次请求；而跨源兜底的搜索预算只有几秒 —— 必然整条超时，日志表现为
+        //「search bilibili: 0 candidates」/「InterruptedIOException: timeout」。
+        //
+        // 关键优化：改用 `/x/player/pagelist` 代替 `/x/web-interface/view`。
+        // 实测同一 bvid：view = 28284 字节，pagelist = 355 字节（**差 80 倍**）——
+        // view 会把整个视频元信息（含 stat/desc/动态/相关推荐）全带回来，而这里只要
+        // cid/page/part/duration。pagelist 不含 owner，artist 回落到条目的 author
+        // （mapTrack 本来就有这个优先级）。
         val items = results.objects().take(MaxCandidatesPerSearch)
         val missingCid = items
             .filter { it.optString("bvid").isNotBlank() && it.optLong("cid") <= 0L }
             .map { it.optString("bvid") }
-        val views = coroutineScope {
+        val pageLists = coroutineScope {
             missingCid.map { bvid ->
-                async { bvid to runCatching { view(bvid) }.getOrNull() }
+                async { bvid to runCatching { pageList(bvid) }.getOrNull() }
             }.awaitAll().mapNotNull { (bvid, json) -> json?.let { bvid to it } }.toMap()
         }
         val tracks = items.mapNotNull { item ->
             val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return@mapNotNull null
             val itemCid = item.optLong("cid").takeIf { it > 0 }
-            // page=1 硬编码修正：条目缺 cid 才回退 view()——此时按 cid 反查分P 页码/part/时长
-            // （搜索条目的 duration 是合集总时长，part 时长才是本P 的，供打分用）。
-            val viewJson = if (itemCid == null) views[bvid] else null
-            val cid = itemCid ?: viewJson?.optLong("cid")?.takeIf { it > 0 } ?: return@mapNotNull null
-            val pageMeta = viewJson?.optJSONArray("pages")?.objects()
-                ?.firstOrNull { it.optLong("cid") == cid }
+            val pages = if (itemCid == null) pageLists[bvid]?.optJSONArray("data") else null
+            val first = pages?.objects()?.firstOrNull()
+            val cid = itemCid ?: first?.optLong("cid")?.takeIf { it > 0 } ?: return@mapNotNull null
+            // page=1 硬编码修正：条目缺 cid 才回退分P 页码 —— 搜索条目的 duration 是
+            // 合集总时长，part 时长才是本P 的（供打分用）。
+            val pageMeta = pages?.objects()?.firstOrNull { it.optLong("cid") == cid } ?: first
             mapTrack(
                 item, bvid, cid, item.optLong("aid"),
                 pageMeta?.optInt("page")?.takeIf { it > 0 } ?: 1,
                 part = pageMeta?.optString("part")?.takeIf(String::isNotBlank),
-                // 分P 时长才是本P 的；view 失败时回落条目自带时长，别让整条丢掉。
+                // 分P 时长才是本P 的；pagelist 失败时回落条目自带时长，别让整条丢掉。
                 durationMs = pageMeta?.optLong("duration")?.takeIf { it > 0 }?.times(1000L)
                     ?: parseDuration(item.optString("duration")),
-                owner = viewJson?.optJSONObject("owner")?.optString("name")?.takeIf(String::isNotBlank),
             )
         }
         return MusicPage(tracks, page, pageSize, data.optLong("numResults").takeIf { it > 0 })
@@ -286,6 +290,17 @@ class BilibiliProvider(
     private fun view(bvid: String) = cachedGet(
         "view", "/x/web-interface/view", mapOf("bvid" to bvid), BilibiliApiCache.View,
     ).data()
+
+    /**
+     * 分P 列表 —— 只为拿 cid/page/part/duration，比 [view] 轻约 80 倍
+     * （实测同一 bvid：pagelist 355 字节 vs view 28284 字节）。搜索路径并发调用十几次，
+     * 这个差别直接决定能不能塞进兜底的搜索预算。
+     *
+     * 匿名可用（与 view 一样只吃 buvid 指纹 cookie）。
+     */
+    private fun pageList(bvid: String) = cachedGet(
+        "pagelist", "/x/player/pagelist", mapOf("bvid" to bvid), BilibiliApiCache.PageList,
+    )
 
     private fun mapTrack(item: JSONObject, bvid: String, cid: Long, aid: Long, page: Int, part: String? = null,
                          durationMs: Long? = null, owner: String? = null, pic: String? = null): MusicTrack {
