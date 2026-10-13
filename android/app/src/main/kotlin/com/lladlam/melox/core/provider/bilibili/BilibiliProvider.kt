@@ -306,10 +306,16 @@ class BilibiliProvider(
 
     private fun currentMixinKey(): String {
         val loader = {
-            cachedGet("nav", "/x/web-interface/nav", emptyMap(), BilibiliApiCache.Account)
-                .data().optJSONObject("wbi_img")?.let {
-                    BilibiliWbiSigner.mixinKey(it.optString("img_url"), it.optString("sub_url"))
-                }?.takeIf(String::isNotBlank) ?: throw IOException("无法获取 Bilibili WBI key")
+            // ⚠ `/x/web-interface/nav` 未登录时返回 code=-101「账号未登录」，但**响应里
+            //   照样带着 wbi_img**。这里不能用 .data()（它见 code!=0 就抛），否则匿名兜底
+            //   在拿 WBI 签名密钥这一步就整个断掉 —— 表现为跨源兜底永远搜不到，日志里
+            //   每条查询都刷「search bilibili failed: 账号未登录」。
+            //   实测（2026-10-13 真机）：无 cookie 与匿名 cookie 均返回
+            //   {"code":-101,...,"wbi_img":{img_url,sub_url}}。
+            val response = cachedGet("nav", "/x/web-interface/nav", emptyMap(), BilibiliApiCache.Account)
+            val wbi = response.optJSONObject("data")?.optJSONObject("wbi_img")
+            BilibiliWbiSigner.mixinKey(wbi?.optString("img_url").orEmpty(), wbi?.optString("sub_url").orEmpty())
+                .takeIf(String::isNotBlank) ?: throw IOException("无法获取 Bilibili WBI key")
         }
         return apiCache?.mixinKey(sessionScope(), loader) ?: loader()
     }
