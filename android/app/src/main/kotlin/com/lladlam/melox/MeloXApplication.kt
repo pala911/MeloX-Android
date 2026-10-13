@@ -14,9 +14,11 @@ import com.lladlam.melox.core.audio.MusicQualityRuntime
 import com.lladlam.melox.core.audio.MobileDataQualityRuntime
 import com.lladlam.melox.core.diagnostics.MeloXCrashRecorder
 import com.lladlam.melox.core.display.MeloXFrameRateHost
+import com.lladlam.melox.core.provider.bilibili.BilibiliSessionStore
 import com.lladlam.melox.platform.xiaomi.ShizukuXmsfNetworkHelper
 import com.lladlam.melox.ui.animation.MeloXSystemScale
 import com.lladlam.melox.ui.player.ArtworkDynamicPaletteProvider
+import kotlinx.coroutines.runBlocking
 import java.io.File
 
 class MeloXApplication : Application() {
@@ -48,6 +50,12 @@ class MeloXApplication : Application() {
         // 可变刷新率：用 lifecycle callbacks 统一挂到**每个** Activity（8 个），
         // 各 Activity 零改动。见 MeloXFrameRateHost 的说明。
         MeloXFrameRateHost.install(this)
+        // B 站匿名设备指纹：未登录时搜索/歌单接口靠 buvid3/buvid4 就能用（B 站是跨源兜底
+        // 的候选主力）。抓取有网络与超时，放在后台协程里预热，不阻塞冷启动首帧；
+        // 拿不到也不影响登录用户或其它音源。
+        Thread {
+            runCatching { runBlocking { BilibiliSessionStore.primeAnonymousCookie(this@MeloXApplication) } }
+        }.apply { isDaemon = true }.start()
         registerActivityLifecycleCallbacks(MeloXAppVisibility)
         registerComponentCallbacks(MeloXMemoryCallbacks)
     }

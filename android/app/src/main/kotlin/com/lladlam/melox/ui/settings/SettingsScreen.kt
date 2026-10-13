@@ -679,10 +679,9 @@ private fun ExperimentalSettings(context: android.content.Context, source: Music
             MeloXSettingsPreferences.setBoolean(context, "autosync_word_lyrics_enabled", enabled)
         }
     }
-    if (autoSyncEnabled) {
-        SettingsGlassGroup { AutoSyncModelPanel(context) }
-        Spacer(Modifier.height(10.dp))
-    }
+    // ⚠ 上游在这里还渲染 AutoSyncModelPanel（从云端下载 ONNX 权重）。神经对齐已停用，
+    //   AutoSyncModelRepository / AutoSyncDeviceRunner 等已删除，入口一并去掉。
+    //   上面那个开关现在只控制「是否读取此前已生成并缓存的逐字时间轴」。
 
     val neteaseLoginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == Activity.RESULT_OK) refreshRevision++

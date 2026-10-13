@@ -50,11 +50,13 @@ android {
         targetSdk = 37
         versionCode = 23
         versionName = "0.6.5"
-        testInstrumentationRunner = "com.lladlam.melox.core.autosync.AutoSyncDeviceRunner"
+        // 上游这里指向 com.lladlam.melox.core.autosync.AutoSyncDeviceRunner
+        // (ONNX 设备回归)。神经对齐已停用，该 runner 连同它的 onnx 依赖一起删除。
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // One APK for real phones: both ARM architectures stay in the package,
         // so 32-bit devices keep working exactly as before. Only the
-        // emulator-only x86/x86_64 copies are removed — ONNX Runtime alone
-        // ships ~39 MB of native code per x86 ABI and no phone loads them.
+        // emulator-only x86/x86_64 copies are removed (ONNX Runtime used to ship
+        // ~39 MB of native code per x86 ABI; it is gone now anyway).
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
@@ -333,9 +335,15 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-session:1.10.1")
 
-    // AutoSync word-level lyric alignment. Inference is fully local (ONNX
-    // Runtime on CPU); weights are supplied per language, never bundled here.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
+    // ⚠ 上游 0.6.5 在这里加了
+    //   implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
+    // 用于 AutoSync 逐字歌词的 CTC 强制对齐。本地 fork 已停用神经对齐
+    // （见 AutoSyncCoordinator.kt 顶部说明），依赖已移除：
+    //   1. 省 55.7 MB（libonnxruntime.so arm64 32.6 + armv7 23.1），占整包 68%
+    //   2. 它没有对应的 ProGuard keep 规则，release(R8) 下会 JNI abort，
+    //      上游 CI 只跑 assembleDebug 所以从未暴露
+    // 逐字歌词改由服务端逐字源提供：网易云 YRC 与 AMLL 本身就带逐字时间戳，
+    // 解析即可，不需要神经网络。详见 AmlldbLyricsClient / NeteaseLyricApi。
 
     implementation("io.coil-kt.coil3:coil-compose:3.5.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.5.0")

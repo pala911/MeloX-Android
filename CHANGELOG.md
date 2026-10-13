@@ -4,6 +4,32 @@
 
 ## 未发布
 
+### 移除 AutoSync 神经对齐（ONNX），逐字歌词改走 YRC / AMLL
+
+- 上游 0.6.5 引入 `onnxruntime-android:1.31.0` 做 CTC 强制对齐，本地已**停用**：
+  - **包体 −55.7 MB**：`libonnxruntime.so`（arm64 32.6 MB + armv7 23.1 MB）占整包 68%。
+    移除后 APK 预计从 78 MB 回落到 ~25 MB。
+  - **修掉 release 必崩**：上游没给 `ai.onnxruntime` 写 ProGuard keep 规则，其 `.so`
+    运行时按 JNI 类名+签名反查 Java 方法，R8 一改名就
+    `JNI DETECTED ERROR: java_class == null` → SIGABRT。触发点
+    `MeloXProviderLyricsLoader → AutoSyncCoordinator.generate`（加载歌词时），
+    表现为「放几秒就停并退回后台」。上游 CI 只跑 `assembleDebug`（不过 R8）所以从未暴露。
+  - **功能不丢**：逐字歌词改由服务端逐字源提供 —— 网易云 YRC 与 AMLL 本身带逐字时间戳，
+    解析即可，不需要神经网络。只有「完全没有逐字时间戳」的歌不再做强制对齐。
+- 删除 `OnnxCtcEngine` / `ZhAlignmentEngine` / `CtcForcedAligner` / `ZhCifPostprocess` /
+  `AutoSyncAudioDecoder` / `AutoSyncPcmFile` / `AutoSyncStreamingResampler` /
+  `AutoSyncText` / `AutoSyncModelRepository` / `AutoSyncModelPanel` 及对应测试。
+- 保留 `applyStored` / `merge`：此前已生成并缓存的逐字时间轴仍可读取；
+  设置里的开关现在只控制「是否读取已缓存的逐字时间轴」，不再下载权重。
+
+### B 站免登录（匿名设备指纹）
+
+- 未登录时不再整条失效：`BilibiliSessionStore.read()` 在无登录态时补一份匿名
+  `buvid3`/`buvid4`/`buvid_fp`/`b_lsid`（来自 `api.bilibili.com/x/frontend/finger/spi`），
+  跨源兜底搜 B 站不再报「账号未登录」。
+- 已登录时**不掺**匿名指纹，避免把登录请求降级成游客。
+- 抓取在后台协程预热（冷启动不阻塞首帧），结果缓存 1 小时。
+
 ### 合并上游 0.6.5（`8af2f5dc`）
 
 - 基线 `723aa764`（0.6.2）三方合并，冲突 15 处全部按「取上游逻辑 + 保留本地定制」解决。

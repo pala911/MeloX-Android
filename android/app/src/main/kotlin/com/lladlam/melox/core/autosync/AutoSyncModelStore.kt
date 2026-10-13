@@ -24,6 +24,13 @@ object AutoSyncModelStore {
     private const val TAG = "MeloXAutoSync"
     private const val ROOT = "autosync"
 
+    /**
+     * 云端权重清单的版本标签。此前由 [AutoSyncModelRepository] 提供，云端下载入口
+     * 已随神经对齐一起停用，故这里内联保留 —— [AutoSyncCoordinator.applyStored]
+     * 仍用它校验此前缓存的时间轴是否与本机权重版本匹配。
+     */
+    private const val RELEASE_TAG = "android-models-v0.1.0-beta.2"
+
     /** Languages that currently have a usable model, sorted for stable display. */
     fun installedLanguages(context: Context): List<String> {
         val languages = sortedSetOf<String>()
@@ -44,7 +51,7 @@ object AutoSyncModelStore {
             val directory = languageDirectory(context, language) ?: return@filter false
             runCatching {
                 JSONObject(File(directory, "manifest.json").readText())
-                    .optString("release_tag") == AutoSyncModelRepository.RELEASE_TAG && manifest(context, language) != null
+                    .optString("release_tag") == RELEASE_TAG && manifest(context, language) != null
             }.getOrDefault(false)
         }
     }
