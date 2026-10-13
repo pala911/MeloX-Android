@@ -5,8 +5,12 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * **稳定**的状态栏高度（dp）：与系统栏当前隐/显无关，沉浸切换时不会跳。
@@ -14,58 +18,66 @@ import androidx.compose.ui.unit.dp
  * 用途：给需要**自己**加顶部 padding 的地方取稳定值（尤其是 `statusBarsPadding()` 被消费掉、
  * 或手动读 insets 的页面）。
  *
- * ⚠⚠ **取数走 Compose 的 `WindowInsets.statusBars`（可见值），不走 ViewCompat 的
- * `getInsetsIgnoringVisibility`**：实测本机上后者在背景页那条链路**恒读到 0**
- * （缓存一次都没被写入 ⇒ innerPadding 恒 0 ⇒ 内容贴顶，真机症状：歌单页按钮顶到最上面）。
- * 而 Compose 这条链路实测是准的 —— 改动前各页面靠 `statusBarsPadding()` 定位一直正确。
+ * ⚠⚠⚠ **必须以 ViewCompat 为主源，不能只靠 Compose 的 `WindowInsets`（2026-10-13 修）**
  *
- * 在可靠原始值之上做缓存：
- * - 原始值 > 0（系统栏可见）⇒ 直接用，并**刷新缓存**；
- * - 原始值 = 0（`hide()` 后归零）⇒ **沿用缓存的上一次真实高度** ⇒ 位置不变、不跳。
+ * 真机逐帧取证（用户 110s 录屏，30fps 追踪首页「首页」大标题上沿，单位半px）：
  *
- * ⚠ 手动读（`asPaddingValues()`）**不受** `Modifier.consumeWindowInsets` 约束，
- *   所以在已消费的子树里也能读到真实原始值 —— 这正是它能兜住的原因。
+ * | 帧 | 状态 | 标题上沿 |
+ * |---|---|---|
+ * | 2894–2905 | 沉浸中，状态栏隐藏 | **66** |
+ * | 2906–2912 | 恢复过程（约 200ms 逐帧下移） | 68→75→87→96→101→104→106 |
+ * | 2913 之后 | 稳定，**不回弹** | **106** |
  *
- * ⚠⚠⚠ **缓存必须是进程级、不能是 `remember`（2026-10-13 修，用户报障
- *   「打开沉浸播放后，从播放页返回时首页 / 发现 / 音乐库 / 设置都会往下拉一下，
- *   整屏一起往下然后回弹」）**：
+ * ⇒ 每次「进播放页 → 返回」都把根页面**整体下移 40 半px = 80 实px 并永久保持**。
  *
- *   原实现是 `remember { StatusBarTopCache(raw) }` —— 缓存的生命周期 = **组合作用域**。
- *   沉浸播放 `hide(statusBars)` 之后，可见 inset 恒为 0；只要此刻该屏的组合作用域被
- *   重建（切 tab 回前台、`SaveableStateProvider` 换 key、配置变化…），`remember` 就会
- *   用 `raw = 0` 重新初始化缓存 —— 缓存在这一轮里**恒为 0**。于是：
+ * 80px 的来历：沉浸隐藏期间本函数返回 **80px**，恢复后返回 **161px**（= 状态栏真高，
+ * density 3.75 × 43dp）。**差值 161−80 = 81px，与实测 80px 吻合。**
  *
- *   | 时刻 | 状态栏 | raw | 返回值 |
- *   |---|---|---|---|
- *   | 平时 | 可见 | 161px | 161px |
- *   | 进播放页（沉浸隐藏） | 隐藏 | 0 | **0**（缓存已被重置） ← 内容顶上去 |
- *   | 返回播放页 | 恢复 | 161px | 161px ← **整屏内容下移 161px = 「下拉一下」** |
+ * 而 80px 正是 **Compose 的 `WindowInsets.displayCutout` 在本位置读到的值**；
+ * 同一时刻 ViewCompat 链路读到的是 **161px**（设备自带埋点 `mxdiag.txt` 里
+ * `inset.top=stable=161 cutout=161 cache=161` 可证 —— 它用的就是 ViewCompat）。
  *
- *   161px ≈ 屏高 5%，肉眼就是"整屏往下拽一下再回弹"；因为底部 chrome 每个 tab 共享，
- *   四个 tab 全都复现 ⇒ 与用户观察到的现象逐字吻合。
+ * ⇒ **两条链路在本机返回不同的数**。之前那版兜底用 Compose 的 `displayCutout`，
+ * 于是「隐藏时 80 / 可见时 161」，正好制造了这个位移。
  *
- *   ⇒ 改成 `object` 进程级缓存：**只在读到真实值时写、任何组合重建都不再重置**。
- *   这与 `MeloXPlayerInsets.MeloXPlayerInsetCache` 是同一种做法（同代码库既有模式）。
- *
- *   另外补一条兜底：万一首次进入时状态栏就已经是隐藏的（缓存从未拿到过真实值），
- *   用 `displayCutout` 的顶部 inset 顶上 —— 挖孔/摄像头区域**不随状态栏显隐变化**
- *   （`MeloXPlayerInsets` 里已实测记录该性质），至少不会退化成 0。
+ * 现在：
+ * - 主源 = `ViewCompat.getRootWindowInsets(...).getInsetsIgnoringVisibility(statusBars)`
+ *   （与 `MeloXPlayerInsets` 同一取数路径，实测准）；
+ * - 与 Compose 的 `statusBars` / `displayCutout` 取 **max** 兜底；
+ * - 结果写进**进程级** [StatusBarTopCache]，且**只增不减** ⇒ 隐藏期间返回的必然还是
+ *   隐藏前缓存的真值，恒定不跳。
  */
 @Composable
 fun rememberMeloXStableStatusBarHeight(): Dp {
-    val raw = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    if (raw > 0.dp) StatusBarTopCache.value = raw
-    val stable = StatusBarTopCache.value
-    if (stable > 0.dp) return stable
-    // ⚠ 兜底：displayCutout 的顶部 inset 与 statusBars 的可见性无关。
-    return WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
+    val view = LocalView.current
+    val density = LocalDensity.current
+
+    val liveDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val cutoutDp = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
+
+    // ⚠ 每次组合都读（不 remember）：该 Composable 会随 inset 变化重组，读一次可能正好
+    //   落在状态栏被 hide 的那一帧而拿到 0。getRootWindowInsets 只是取值，开销可忽略。
+    val viewPx = ViewCompat.getRootWindowInsets(view)?.let { insets ->
+        maxOf(
+            insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.statusBars()).top,
+            insets.getInsets(WindowInsetsCompat.Type.statusBars()).top,
+            insets.getInsets(WindowInsetsCompat.Type.displayCutout()).top,
+        )
+    } ?: 0
+    val viewDp = with(density) { viewPx.toDp() }
+
+    val best = maxOf(liveDp, cutoutDp, viewDp, StatusBarTopCache.value)
+    if (best > StatusBarTopCache.value) StatusBarTopCache.value = best
+    return StatusBarTopCache.value
 }
 
 /**
- * 进程级状态栏顶部高度缓存。
+ * 进程级状态栏顶部高度缓存，**只增不减**。
  *
- * ⚠ **不能改回 `remember`** —— 见 [rememberMeloXStableStatusBarHeight] 的 KDoc：
- * 组合作用域重建会在沉浸隐藏期间用 0 重新初始化，导致状态栏恢复瞬间整屏下移。
+ * ⚠ 两个"不能改回去"的点（都踩过）：
+ * 1. 不能用 `remember {}` —— 组合作用域重建会在沉浸隐藏期间用 0 重新初始化；
+ * 2. 不能用「读到 0 就回落挖孔」—— Compose 的 `displayCutout` 在本机只给 80px，
+ *    而真实状态栏高 161px，两者不一致 ⇒ 每次沉浸切换位移 80px。
  */
 private object StatusBarTopCache {
     var value: Dp = 0.dp
