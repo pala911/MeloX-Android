@@ -171,7 +171,7 @@ class BilibiliProvider(
                 pageMeta?.optInt("page")?.takeIf { it > 0 } ?: 1,
                 part = pageMeta?.optString("part")?.takeIf(String::isNotBlank),
                 // 分P 时长才是本P 的；view 失败时回落条目自带时长，别让整条丢掉。
-                durationMs = pageMeta?.optInt("duration")?.takeIf { it > 0 }?.times(1000)
+                durationMs = pageMeta?.optLong("duration")?.takeIf { it > 0 }?.times(1000L)
                     ?: parseDuration(item.optString("duration")),
                 owner = viewJson?.optJSONObject("owner")?.optString("name")?.takeIf(String::isNotBlank),
             )
