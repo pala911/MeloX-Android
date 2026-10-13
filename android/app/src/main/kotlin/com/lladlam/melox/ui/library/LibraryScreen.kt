@@ -43,7 +43,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -1527,7 +1526,10 @@ private fun MeloXProviderArtistDetailScreen(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding(),
+            // ⚠ 与本文件其余入口一致：用**稳定**高度，不用可见式 `statusBarsPadding()` ——
+            //   后者在沉浸 `hide()/show()` 时会 0↔真实高度跳（用户报障「沉浸播放下从播放页
+            //   返回时整屏往下拉一下」）。`background` 在 `padding` 之前 ⇒ 背景仍铺到 y=0。
+            .padding(top = rememberMeloXStableStatusBarHeight()),
     ) {
         Row(
             Modifier
